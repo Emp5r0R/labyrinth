@@ -1,0 +1,56 @@
+[package]
+name = "labyrinth"
+version = "1.0.0"
+edition = "2021"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4.5.4", features = ["derive"] }
+tokio-tun = "0.11.0"
+tokio-rustls = "0.26.2"
+rustls = { version = "0.23.29" }
+rustls-pemfile = "2.2.0"
+rcgen = "0.14.3"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22.1"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+colored = "2.1.0"
+thiserror = "1.0"
+ring = "0.17.14"
+hex = "0.4.3"
+tokio-socks = "0.5.2"
+url = "2.5.0"
+rustls-pki-types = "1.12.0"
+rustyline = "14.0.0"
+dialoguer = "0.11.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+bytes = { version = "1.0", features = ["serde"] }
+async-trait = "0.1"
+hostname = "0.4.0"
+whoami = "1.4.1"
+futures = "0.3"
+fastrand = "2.0"
+
+# Optional: userland TCP/IP stack for Fullhouse (server-side)
+# Enable with: `--features netstack_smoltcp`
+smoltcp = { version = "0.11.0", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "socket-tcp"], optional = true }
+
+[features]
+default = []
+# Fullhouse userland stack on server
+netstack_smoltcp = ["smoltcp"]
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3.0"
