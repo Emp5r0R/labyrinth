@@ -1,0 +1,302 @@
+warning: type `TargetConnection` is more private than the item `AgentReversePortForwardManager::get_connection`
+   --> src/agent/reverse_port_forward.rs:108:5
+    |
+108 |     pub async fn get_connection(&self, local_port: u16) -> Option<Arc<Mutex<TargetConnection>>> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `AgentReversePortForwardManager::get_connection` is reachable at visibility `pub`
+    |
+note: but type `TargetConnection` is only usable at visibility `pub(self)`
+   --> src/agent/reverse_port_forward.rs:25:1
+    |
+25  | struct TargetConnection {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: fields `stream` and `target_addr` are never read
+  --> src/agent/reverse_port_forward.rs:26:5
+   |
+25 | struct TargetConnection {
+   |        ---------------- fields in this struct
+26 |     stream: TcpStream,
+   |     ^^^^^^
+27 |     target_addr: String,
+   |     ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: field `current_throughput` is never read
+   --> src/streaming/metrics.rs:199:5
+    |
+196 | struct TransferTrackingInfo {
+    |        -------------------- field in this struct
+...
+199 |     current_throughput: u64,
+    |     ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `TransferTrackingInfo` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `connection_id` and `memory_usage` are never read
+  --> src/streaming/resource_manager.rs:52:5
+   |
+51 | struct ResourceInfo {
+   |        ------------ fields in this struct
+52 |     connection_id: ConnectionId,
+   |     ^^^^^^^^^^^^^
+...
+56 |     memory_usage: usize,
+   |     ^^^^^^^^^^^^
+   |
+   = note: `ResourceInfo` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: `labyrinth` (lib) generated 4 warnings
+warning: type `TargetConnection` is more private than the item `AgentReversePortForwardManager::get_connection`
+   --> src/agent/reverse_port_forward.rs:108:5
+    |
+108 |     pub async fn get_connection(&self, local_port: u16) -> Option<Arc<Mutex<TargetConnection>>> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `AgentReversePortForwardManager::get_connection` is reachable at visibility `pub(crate)`
+    |
+note: but type `TargetConnection` is only usable at visibility `pub(self)`
+   --> src/agent/reverse_port_forward.rs:25:1
+    |
+25  | struct TargetConnection {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: field `connections` is never read
+  --> src/agent/reverse_port_forward.rs:33:5
+   |
+31 | pub struct AgentReversePortForwardManager {
+   |            ------------------------------ field in this struct
+32 |     /// Active connections by connection ID
+33 |     connections: Arc<RwLock<HashMap<ConnectionId, Arc<Mutex<TargetConnection>>>>>,
+   |     ^^^^^^^^^^^
+
+warning: methods `get_connection`, `handle_client_connection`, and `handle_cleanup` are never used
+   --> src/agent/reverse_port_forward.rs:108:18
+    |
+41  | impl AgentReversePortForwardManager {
+    | ----------------------------------- methods in this implementation
+...
+108 |     pub async fn get_connection(&self, local_port: u16) -> Option<Arc<Mutex<TargetConnection>>> {
+    |                  ^^^^^^^^^^^^^^
+...
+122 |     pub async fn handle_client_connection(
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+136 |     pub async fn handle_cleanup(&self, connection_id: String) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^
+
+warning: field `stream_sender` is never read
+  --> src/server/streaming_reverse_port_forward.rs:13:5
+   |
+12 | pub struct StreamingReversePortForward {
+   |            --------------------------- field in this struct
+13 |     stream_sender: mpsc::Sender<StreamMessage>,
+   |     ^^^^^^^^^^^^^
+
+warning: methods `send_stream_message`, `get_active_streams`, and `close_stream` are never used
+   --> src/server/streaming_reverse_port_forward.rs:225:18
+    |
+19  | impl StreamingReversePortForward {
+    | -------------------------------- methods in this implementation
+...
+225 |     pub async fn send_stream_message(&self, message: StreamMessage) -> Result<(), LabyrinthError> {
+    |                  ^^^^^^^^^^^^^^^^^^^
+...
+231 |     pub async fn get_active_streams(&self) -> Vec<String> {
+    |                  ^^^^^^^^^^^^^^^^^^
+...
+236 |     pub async fn close_stream(&self, stream_id: &str) -> Result<(), LabyrinthError> {
+    |                  ^^^^^^^^^^^^
+
+warning: method `update_connection_status` is never used
+  --> src/streaming/traits.rs:31:14
+   |
+11 | pub trait ConnectionManager: Send + Sync {
+   |           ----------------- method in this trait
+...
+31 |     async fn update_connection_status(
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `create_bidirectional_stream` and `send_to_client` are never used
+  --> src/streaming/traits.rs:42:14
+   |
+40 | pub trait StreamManager: Send + Sync {
+   |           ------------- methods in this trait
+41 |     /// Create a bidirectional stream for a client connection
+42 |     async fn create_bidirectional_stream(
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+59 |     async fn send_to_client(&self, connection_id: ConnectionId, data: Bytes) -> StreamResult<()>;
+   |              ^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+   --> src/streaming/metrics.rs:467:18
+    |
+212 | impl MetricsCollector {
+    | --------------------- methods in this implementation
+...
+467 |     pub async fn update_performance_metrics(
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+488 |     pub async fn perform_health_check(&self) -> HealthStatus {
+    |                  ^^^^^^^^^^^^^^^^^^^^
+...
+548 |     pub async fn get_metrics(&self) -> StreamingMetrics {
+    |                  ^^^^^^^^^^^
+...
+553 |     pub async fn reset_metrics(&self) {
+    |                  ^^^^^^^^^^^^^
+...
+583 |     async fn check_connection_health(&self, metrics: &StreamingMetrics) -> HealthCheck {
+    |              ^^^^^^^^^^^^^^^^^^^^^^^
+...
+608 |     async fn check_error_health(&self, metrics: &StreamingMetrics) -> HealthCheck {
+    |              ^^^^^^^^^^^^^^^^^^
+...
+630 |     async fn check_performance_health(&self, metrics: &StreamingMetrics) -> HealthCheck {
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+652 |     async fn check_resource_health(&self, metrics: &StreamingMetrics) -> HealthCheck {
+    |              ^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new` and `perform_proactive_recovery` are never used
+   --> src/streaming/recovery.rs:34:12
+    |
+32  | impl ErrorRecoveryCoordinator {
+    | ----------------------------- associated items in this implementation
+33  |     /// Create a new error recovery coordinator
+34  |     pub fn new(
+    |            ^^^
+...
+364 |     pub async fn perform_proactive_recovery(&self) -> StreamResult<()> {
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `new` and `with_buffer_size` are never used
+  --> src/streaming/stream_manager.rs:46:12
+   |
+44 | impl BidirectionalStreamManager {
+   | ------------------------------- associated functions in this implementation
+45 |     /// Create a new BidirectionalStreamManager
+46 |     pub fn new(agent_sender: mpsc::Sender<StreamMessage>) -> Self {
+   |            ^^^
+...
+62 |     pub fn with_buffer_size(buffer_size: usize) -> (Self, mpsc::Receiver<StreamMessage>) {
+   |            ^^^^^^^^^^^^^^^^
+
+warning: fields `connection_timeout`, `health_check_interval`, and `idle_timeout` are never read
+  --> src/streaming/resource_manager.rs:28:9
+   |
+18 | pub struct ResourceConfig {
+   |            -------------- fields in this struct
+...
+28 |     pub connection_timeout: Duration,
+   |         ^^^^^^^^^^^^^^^^^^
+29 |     /// Health check interval
+30 |     pub health_check_interval: Duration,
+   |         ^^^^^^^^^^^^^^^^^^^^^
+31 |     /// Idle connection timeout
+32 |     pub idle_timeout: Duration,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `ResourceConfig` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `connection_id`, `last_activity`, and `memory_usage` are never read
+  --> src/streaming/resource_manager.rs:52:5
+   |
+51 | struct ResourceInfo {
+   |        ------------ fields in this struct
+52 |     connection_id: ConnectionId,
+   |     ^^^^^^^^^^^^^
+...
+55 |     last_activity: Instant,
+   |     ^^^^^^^^^^^^^
+56 |     memory_usage: usize,
+   |     ^^^^^^^^^^^^
+   |
+   = note: `ResourceInfo` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: methods `update_activity`, `is_idle`, and `is_timed_out` are never used
+  --> src/streaming/resource_manager.rs:76:8
+   |
+59 | impl ResourceInfo {
+   | ----------------- methods in this implementation
+...
+76 |     fn update_activity(&mut self) {
+   |        ^^^^^^^^^^^^^^^
+...
+80 |     fn is_idle(&self, idle_timeout: Duration) -> bool {
+   |        ^^^^^^^
+...
+84 |     fn is_timed_out(&self, timeout: Duration) -> bool {
+   |        ^^^^^^^^^^^^
+
+warning: field `cleanup_rx` is never read
+   --> src/streaming/resource_manager.rs:104:5
+    |
+90  | pub struct StreamResourceManager {
+    |            --------------------- field in this struct
+...
+104 |     cleanup_rx: Arc<RwLock<Option<mpsc::UnboundedReceiver<ConnectionId>>>>,
+    |     ^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src/streaming/resource_manager.rs:109:12
+    |
+107 | impl StreamResourceManager {
+    | -------------------------- associated items in this implementation
+108 |     /// Create a new resource manager with the given configuration and connection manager
+109 |     pub fn new(
+    |            ^^^
+...
+133 |     pub async fn start(&self) -> StreamResult<()> {
+    |                  ^^^^^
+...
+155 |     async fn start_health_monitor(&self) -> StreamResult<impl std::future::Future<Output = ()>> {
+    |              ^^^^^^^^^^^^^^^^^^^^
+...
+181 |     async fn start_cleanup_task(&self) -> StreamResult<impl std::future::Future<Output = ()>> {
+    |              ^^^^^^^^^^^^^^^^^^
+...
+219 |     async fn start_timeout_monitor(&self) -> StreamResult<impl std::future::Future<Output = ()>> {
+    |              ^^^^^^^^^^^^^^^^^^^^^
+...
+245 |     async fn perform_health_check(
+    |              ^^^^^^^^^^^^^^^^^^^^
+...
+302 |     async fn check_timeouts(
+    |              ^^^^^^^^^^^^^^
+...
+404 |     pub async fn update_activity(&self, connection_id: &ConnectionId) -> StreamResult<()> {
+    |                  ^^^^^^^^^^^^^^^
+...
+414 |     pub fn get_shutdown_receiver(&self) -> broadcast::Receiver<()> {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `labyrinth` (bin "labyrinth") generated 17 warnings (2 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running `target/debug/labyrinth server`
+
+ )   _ ( _        _ o  _  _)_ ( _  
+(__ (_( )_) (_(  )  ( ) ) (_   ) ) 
+              _)
+
+                 by Emp5r0R
+[+] Starting Labyrinth server in interactive mode
+[2m2025-08-09T16:41:46.111936Z[0m [32m INFO[0m Server listening on 0.0.0.0:44344
+[+]  Server started on 0.0.0.0:44344
+
+[+] Certificate fingerprint for agent connections:
+  2022311ef794c494d9622ecaa0ac587007767e5c8c3e9bb15d57ae096882304e
+
+[!] Running without sudo privileges
+  Some features may be limited:
+    • Fullhouse mode (TUN interface creation)
+    • Network interface manipulation
+    • System-level routing changes
+  Run with 'sudo' for full functionality
+
+
+[+] Labyrinth Control Interface
+Navigate the network maze with precision
+
+^D
