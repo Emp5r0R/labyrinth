@@ -40,6 +40,22 @@ impl PortForwardListener {
     }
 }
 
+struct FullhouseListener {
+    proxy_port: u16,
+    handle: JoinHandle<()>,
+}
+
+impl FullhouseListener {
+    fn new(proxy_port: u16, handle: JoinHandle<()>) -> Self {
+        Self { proxy_port, handle }
+    }
+
+    fn stop(self) -> u16 {
+        self.handle.abort();
+        self.proxy_port
+    }
+}
+
 /// Single Responsibility: Core server state management
 pub struct LabyrinthServer {
     agents: Arc<RwLock<HashMap<String, ConnectedAgent>>>,
@@ -51,6 +67,7 @@ pub struct LabyrinthServer {
     connection_manager: Arc<RwLock<Option<Arc<dyn StreamConnectionManager>>>>,
     port_forward_listeners: Arc<RwLock<HashMap<u16, PortForwardListener>>>,
     connection_owners: Arc<RwLock<HashMap<ConnectionId, String>>>,
+    fullhouse_listeners: Arc<RwLock<HashMap<String, FullhouseListener>>>,
 }
 
 impl LabyrinthServer {
@@ -64,6 +81,7 @@ impl LabyrinthServer {
             connection_manager: Arc::new(RwLock::new(None)),
             port_forward_listeners: Arc::new(RwLock::new(HashMap::new())),
             connection_owners: Arc::new(RwLock::new(HashMap::new())),
+            fullhouse_listeners: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -81,6 +99,20 @@ impl LabyrinthServer {
 
     pub fn auth_key(&self) -> &Option<String> {
         &self.auth_key
+    }
+
+    pub fn clone_for_tasks(&self) -> Self {
+        Self {
+            agents: Arc::clone(&self.agents),
+            current_agent: Arc::clone(&self.current_agent),
+            auth_required: self.auth_required,
+            auth_key: self.auth_key.clone(),
+            stream_manager: Arc::clone(&self.stream_manager),
+            connection_manager: Arc::clone(&self.connection_manager),
+            port_forward_listeners: Arc::clone(&self.port_forward_listeners),
+            connection_owners: Arc::clone(&self.connection_owners),
+            fullhouse_listeners: Arc::clone(&self.fullhouse_listeners),
+        }
     }
 
     // Streaming manager accessors
@@ -165,6 +197,24 @@ impl LabyrinthServer {
     pub async fn register_connection_owner(&self, connection_id: ConnectionId, agent_id: String) {
         let mut owners = self.connection_owners.write().await;
         owners.insert(connection_id, agent_id);
+    }
+
+    pub async fn register_fullhouse_listener(
+        &self,
+        agent_id: String,
+        proxy_port: u16,
+        handle: JoinHandle<()>,
+    ) {
+        let mut listeners = self.fullhouse_listeners.write().await;
+        if let Some(existing) = listeners.remove(&agent_id) {
+            existing.stop();
+        }
+        listeners.insert(agent_id, FullhouseListener::new(proxy_port, handle));
+    }
+
+    pub async fn stop_fullhouse_listener(&self, agent_id: &str) -> Option<u16> {
+        let mut listeners = self.fullhouse_listeners.write().await;
+        listeners.remove(agent_id).map(FullhouseListener::stop)
     }
 
     pub async fn unregister_connection_owner(

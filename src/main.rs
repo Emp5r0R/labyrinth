@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use tracing::info;
+use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 mod agent;
@@ -68,12 +69,19 @@ enum Commands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     print_logo();
+    let cli = Cli::parse();
+
+    let log_level = match &cli.command {
+        Commands::Server { headless, .. } if !headless => Level::ERROR,
+        _ => Level::INFO,
+    };
+
     tracing_subscriber::fmt()
         .with_span_events(FmtSpan::CLOSE)
         .with_target(false)
         .with_level(true)
+        .with_max_level(log_level)
         .init();
-    let cli = Cli::parse();
 
     match &cli.command {
         Commands::Server {

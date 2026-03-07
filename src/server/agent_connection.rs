@@ -1,8 +1,6 @@
 use crate::error::Result;
 use crate::protocol::Message;
 use crate::server::core::LabyrinthServer;
-#[cfg(target_os = "linux")]
-use crate::server::netstack_bridge::NetstackBridge;
 #[cfg(target_os = "windows")]
 use crate::server::netstack_bridge_windows::WindowsNetstackBridge;
 use crate::streaming::models::{ConnectionStatus, DataDirection, StreamMessage};
@@ -166,11 +164,6 @@ async fn process_message(
             }
         }
         Message::Stream(stream_msg) => {
-            // Give Fullhouse netstack a chance to consume the message first.
-            #[cfg(target_os = "linux")]
-            if NetstackBridge::try_handle_agent_stream(&stream_msg).await {
-                return Ok(());
-            }
             #[cfg(target_os = "windows")]
             if WindowsNetstackBridge::try_handle_agent_stream(&stream_msg).await {
                 return Ok(());
