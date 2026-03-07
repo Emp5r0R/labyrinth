@@ -30,9 +30,10 @@ use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::Editor;
 use rustyline::{Context as RustyContext, Helper};
+use std::borrow::Cow;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -776,6 +777,22 @@ mod tests {
             vec!["/help".to_string(), "/history".to_string()]
         );
     }
+
+    #[test]
+    fn upload_normalizer_keeps_regular_paths() {
+        assert_eq!(
+            normalize_remote_upload_path("/tmp/text", r"C:\Temp\text.txt"),
+            r"C:\Temp\text.txt"
+        );
+    }
+
+    #[test]
+    fn upload_normalizer_fixes_windows_prompt_directory_input() {
+        assert_eq!(
+            normalize_remote_upload_path("/tmp/text", r"C:\Users\gMSA_ADFS_prod$\Documents>"),
+            r"C:\Users\gMSA_ADFS_prod$\Documents\text"
+        );
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -813,7 +830,11 @@ impl CommandHelper {
 }
 
 impl Helper for CommandHelper {}
-impl Highlighter for CommandHelper {}
+impl Highlighter for CommandHelper {
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        Cow::Owned(hint.bright_black().to_string())
+    }
+}
 impl Validator for CommandHelper {}
 
 impl Hinter for CommandHelper {
@@ -871,7 +892,11 @@ impl ShellHelper {
 }
 
 impl Helper for ShellHelper {}
-impl Highlighter for ShellHelper {}
+impl Highlighter for ShellHelper {
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        Cow::Owned(hint.bright_black().to_string())
+    }
+}
 impl Validator for ShellHelper {}
 
 impl Hinter for ShellHelper {
@@ -1317,6 +1342,7 @@ async fn perform_upload(
     local_path: &str,
     remote_path: &str,
 ) -> Result<()> {
+    let remote_path = normalize_remote_upload_path(local_path, remote_path);
     let bytes = fs::read(local_path).map_err(|e| {
         LabyrinthError::Message(format!("Failed to read local file '{}': {}", local_path, e))
     })?;
@@ -1337,7 +1363,7 @@ async fn perform_upload(
         agent_sender,
         command_response,
         Message::FileUpload {
-            remote_path: remote_path.to_string(),
+            remote_path: remote_path.clone(),
             content_b64: encoded,
         },
         Duration::from_secs(300),
@@ -1920,6 +1946,39 @@ fn shell_prompt(agent_name: &str) -> String {
         agent_name.cyan(),
         styling::ARROW_INDICATOR.cyan()
     )
+}
+
+fn normalize_remote_upload_path(local_path: &str, remote_path: &str) -> String {
+    let trimmed = remote_path.trim();
+    if trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+
+    let mut candidate = trimmed.to_string();
+    let mut treat_as_directory = false;
+
+    if candidate.ends_with('>') && candidate.contains('\\') {
+        candidate.pop();
+        candidate = candidate.trim_end().to_string();
+        treat_as_directory = true;
+    }
+
+    if candidate.ends_with(['\\', '/']) {
+        candidate = candidate.trim_end_matches(['\\', '/']).to_string();
+        treat_as_directory = true;
+    }
+
+    if treat_as_directory {
+        if let Some(file_name) = Path::new(local_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+        {
+            let separator = if candidate.contains('\\') { "\\" } else { "/" };
+            return format!("{}{}{}", candidate, separator, file_name);
+        }
+    }
+
+    candidate
 }
 
 async fn refresh_remote_shell_prompt(
