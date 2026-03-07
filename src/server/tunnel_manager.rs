@@ -1,17 +1,26 @@
 use crate::error::{LabyrinthError, Result};
-// Message import already present above
 use crate::protocol::Message;
 use crate::server::core::LabyrinthServer;
-#[cfg(target_os = "linux")]
-use crate::server::netstack_bridge::NetstackBridge;
 #[cfg(target_os = "windows")]
 use crate::server::netstack_bridge_windows::WindowsNetstackBridge;
 #[cfg(target_os = "linux")]
 use crate::server::privileges::PrivilegeManager;
+#[cfg(target_os = "linux")]
+use crate::streaming::{models::PortMapping, ConnectionId, StreamMessage};
 use crate::styling;
 use colored::Colorize;
 use dialoguer::Input;
+#[cfg(target_os = "linux")]
+use std::mem;
+#[cfg(target_os = "linux")]
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::process::Command;
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 // Server-only TUN; userland stack handled by NetstackBridge
@@ -98,41 +107,50 @@ impl TunnelManager {
                 ))
             );
 
+            let agent_sender = {
+                let agents = server.agents().read().await;
+                let Some(agent) = agents.get(&agent_id) else {
+                    return Err(LabyrinthError::Message(
+                        "Selected agent not found".to_string(),
+                    ));
+                };
+                agent.sender.clone()
+            };
+
             #[cfg(target_os = "linux")]
-            let tun = Self::setup_tunnel(&tun_name, &subnet).await?;
+            Self::setup_tunnel(server, &agent_id, &agent_sender, &tun_name, &subnet).await?;
             #[cfg(target_os = "windows")]
             Self::setup_tunnel_windows(&tun_name, &subnet).await?;
 
-            // Send tunnel start message to agent
+            let start_msg = Message::StartTunnel {
+                subnet: subnet.clone(),
+                tun_name: tun_name.clone(),
+            };
+
+            if let Err(e) = agent_sender.send(start_msg).await {
+                #[cfg(target_os = "linux")]
+                let _ = Self::cleanup_tunnel(server, &agent_id, &tun_name, &subnet).await;
+                #[cfg(target_os = "windows")]
+                let _ = Self::cleanup_tunnel_windows(&tun_name).await;
+                error!(
+                    "Failed to send tunnel start request to agent {}: {}",
+                    agent_id, e
+                );
+                return Err(LabyrinthError::Message(format!(
+                    "Failed to send tunnel start request: {}",
+                    e
+                )));
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                WindowsNetstackBridge::start(&tun_name, agent_sender.clone()).map_err(|e| {
+                    LabyrinthError::Message(format!("Failed to start Wintun bridge: {}", e))
+                })?;
+            }
+
             let mut agents = server.agents().write().await;
             if let Some(agent) = agents.get_mut(&agent_id) {
-                let start_msg = Message::StartTunnel {
-                    subnet: subnet.clone(),
-                    tun_name: tun_name.clone(),
-                };
-
-                if let Err(e) = agent.sender.send(start_msg).await {
-                    error!(
-                        "Failed to send tunnel start request to agent {}: {}",
-                        agent.id, e
-                    );
-                    return Err(LabyrinthError::Message(format!(
-                        "Failed to send tunnel start request: {}",
-                        e
-                    )));
-                }
-
-                // Start server-side bridge to drive ligolo-like behavior
-                #[cfg(target_os = "linux")]
-                NetstackBridge::start(tun, agent.sender.clone());
-                #[cfg(target_os = "windows")]
-                {
-                    WindowsNetstackBridge::start(&tun_name, agent.sender.clone()).map_err(|e| {
-                        LabyrinthError::Message(format!("Failed to start Wintun bridge: {}", e))
-                    })?;
-                }
-
-                // Update agent status
                 agent.tunnel_active = true;
                 agent.tunnel_subnet = Some(subnet.clone());
                 agent.tun_name = Some(tun_name.clone());
@@ -148,6 +166,13 @@ impl TunnelManager {
                     styling::format_agent_name(&subnet)
                 );
                 println!("Interface: {}", styling::format_agent_name(&tun_name));
+                #[cfg(target_os = "linux")]
+                println!(
+                    "{}",
+                    styling::format_hint(
+                        "Linux Fullhouse currently proxies TCP flows. Use connect-style tooling; ICMP/UDP are not redirected yet."
+                    )
+                );
                 println!();
             } else {
                 return Err(LabyrinthError::Message(
@@ -396,6 +421,8 @@ impl TunnelManager {
                     if let Some(ref tun_name) = agent.tun_name {
                         #[cfg(target_os = "linux")]
                         let cleanup_result = Self::cleanup_tunnel(
+                            server,
+                            &agent_id,
                             tun_name,
                             agent
                                 .tunnel_subnet
@@ -445,7 +472,13 @@ impl TunnelManager {
     }
 
     #[cfg(target_os = "linux")]
-    async fn setup_tunnel(tun_name: &str, subnet: &str) -> Result<tokio_tun::Tun> {
+    async fn setup_tunnel(
+        server: &LabyrinthServer,
+        agent_id: &str,
+        agent_sender: &tokio::sync::mpsc::Sender<Message>,
+        tun_name: &str,
+        subnet: &str,
+    ) -> Result<()> {
         // Check for sudo privileges before attempting tunnel operations
         if !PrivilegeManager::has_sudo_privileges() {
             return Err(LabyrinthError::Message(
@@ -458,53 +491,78 @@ impl TunnelManager {
             tun_name, subnet
         );
 
-        // Create TUN interface
-        let tun_ip = "10.0.0.1"; // Default server IP for tunnel
-        let tun = match Self::build_linux_tun(tun_name, tun_ip) {
-            Ok(tun) => tun,
+        let tun_ip = "10.0.0.1";
+        let proxy_port = Self::pick_proxy_port().await?;
+
+        match Self::create_linux_tun_device(tun_name) {
+            Ok(()) => {}
             Err(err) if Self::should_recover_existing_tun(&err) => {
                 warn!(
                     "Detected stale tunnel interface {}. Removing it before retrying setup.",
                     tun_name
                 );
                 let _ = Self::run_command("ip", &["link", "del", tun_name]);
-                Self::build_linux_tun(tun_name, tun_ip)?
+                Self::create_linux_tun_device(tun_name)?;
             }
             Err(err) => return Err(err),
-        };
+        }
 
-        // Setup routing
+        Self::run_command(
+            "ip",
+            &[
+                "addr",
+                "replace",
+                &format!("{}/32", tun_ip),
+                "dev",
+                tun_name,
+            ],
+        )?;
+        Self::run_command("ip", &["link", "set", tun_name, "up"])?;
+
         Self::run_command("sysctl", &["-w", "net.ipv4.ip_forward=1"])?;
-        Self::run_command("ip", &["route", "replace", subnet, "dev", tun_name])?;
-
-        // Setup iptables for NAT
+        Self::run_command("ip", &["route", "replace", "local", subnet, "dev", "lo"])?;
         Self::ensure_iptables_rule(
             "iptables",
             &[
                 "-t",
                 "nat",
-                "POSTROUTING",
-                "-s",
-                "10.0.0.0/24",
+                "OUTPUT",
+                "-p",
+                "tcp",
+                "-d",
+                subnet,
                 "-j",
-                "MASQUERADE",
+                "REDIRECT",
+                "--to-ports",
+                &proxy_port.to_string(),
             ],
         )?;
-        Self::ensure_iptables_rule("iptables", &["FORWARD", "-i", tun_name, "-j", "ACCEPT"])?;
-        Self::ensure_iptables_rule("iptables", &["FORWARD", "-o", tun_name, "-j", "ACCEPT"])?;
 
-        Ok(tun)
+        let proxy_task = Self::spawn_linux_fullhouse_proxy(
+            server,
+            agent_id.to_string(),
+            agent_sender.clone(),
+            proxy_port,
+        )
+        .await?;
+        server
+            .register_fullhouse_listener(agent_id.to_string(), proxy_port, proxy_task)
+            .await;
+
+        println!(
+            "{}",
+            styling::format_hint(&format!(
+                "Transparent TCP pivot active on local redirect port {}.",
+                proxy_port
+            ))
+        );
+
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
-    fn build_linux_tun(tun_name: &str, tun_ip: &str) -> Result<tokio_tun::Tun> {
-        Ok(tokio_tun::Tun::builder()
-            .name(tun_name)
-            .tap(false)
-            .packet_info(false)
-            .up()
-            .address(tun_ip.parse().unwrap())
-            .try_build()?)
+    fn create_linux_tun_device(tun_name: &str) -> Result<()> {
+        Self::run_command("ip", &["tuntap", "add", "dev", tun_name, "mode", "tun"])
     }
 
     #[cfg(target_os = "linux")]
@@ -542,6 +600,156 @@ impl TunnelManager {
         Self::run_command(cmd, &add_args)
     }
 
+    #[cfg(target_os = "linux")]
+    async fn pick_proxy_port() -> Result<u16> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(LabyrinthError::Io)?;
+        let port = listener.local_addr().map_err(LabyrinthError::Io)?.port();
+        drop(listener);
+        Ok(port)
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn spawn_linux_fullhouse_proxy(
+        server: &LabyrinthServer,
+        agent_id: String,
+        agent_sender: tokio::sync::mpsc::Sender<Message>,
+        proxy_port: u16,
+    ) -> Result<tokio::task::JoinHandle<()>> {
+        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, proxy_port))
+            .await
+            .map_err(LabyrinthError::Io)?;
+        let server = Arc::new(server.clone_for_tasks());
+
+        Ok(tokio::spawn(async move {
+            loop {
+                let (client_socket, client_addr) = match listener.accept().await {
+                    Ok(accepted) => accepted,
+                    Err(e) => {
+                        warn!("Fullhouse proxy accept error on {}: {}", proxy_port, e);
+                        break;
+                    }
+                };
+
+                let Ok(target_addr) = Self::original_destination(&client_socket) else {
+                    warn!("Failed to resolve original destination for redirected connection");
+                    continue;
+                };
+
+                let server = Arc::clone(&server);
+                let agent_sender = agent_sender.clone();
+                let agent_id = agent_id.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = Self::bridge_fullhouse_connection(
+                        server,
+                        agent_id,
+                        agent_sender,
+                        client_socket,
+                        client_addr,
+                        target_addr,
+                        proxy_port,
+                    )
+                    .await
+                    {
+                        warn!("Fullhouse proxy bridge failed: {}", e);
+                    }
+                });
+            }
+        }))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn original_destination(stream: &tokio::net::TcpStream) -> Result<SocketAddr> {
+        let fd = stream.as_raw_fd();
+        let mut addr: libc::sockaddr_in = unsafe { mem::zeroed() };
+        let mut len = mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_IP,
+                80,
+                &mut addr as *mut _ as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        if rc != 0 {
+            return Err(LabyrinthError::Message(format!(
+                "getsockopt(SO_ORIGINAL_DST) failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        let ip = Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
+        let port = u16::from_be(addr.sin_port);
+        Ok(SocketAddr::V4(SocketAddrV4::new(ip, port)))
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn bridge_fullhouse_connection(
+        server: Arc<LabyrinthServer>,
+        agent_id: String,
+        agent_sender: tokio::sync::mpsc::Sender<Message>,
+        client_socket: tokio::net::TcpStream,
+        client_addr: SocketAddr,
+        target_addr: SocketAddr,
+        proxy_port: u16,
+    ) -> Result<()> {
+        let stream_manager = server.get_stream_manager().await.ok_or_else(|| {
+            LabyrinthError::Message("Streaming manager not initialized".to_string())
+        })?;
+        let connection_manager = server.get_connection_manager().await.ok_or_else(|| {
+            LabyrinthError::Message("Connection manager not initialized".to_string())
+        })?;
+
+        let mapping = PortMapping {
+            local_port: proxy_port,
+            target_host: target_addr.ip().to_string(),
+            target_port: target_addr.port(),
+        };
+
+        let connection_id = ConnectionId::new_v4();
+        connection_manager
+            .track_existing_connection(connection_id, client_addr, mapping.clone())
+            .await
+            .map_err(|e| {
+                LabyrinthError::Message(format!("Failed to track Fullhouse connection: {}", e))
+            })?;
+        server
+            .register_connection_owner(connection_id, agent_id)
+            .await;
+
+        if let Err(e) = stream_manager
+            .create_bidirectional_stream(connection_id, client_socket)
+            .await
+        {
+            let _ = connection_manager.cleanup_connection(&connection_id).await;
+            let _ = server.unregister_connection_owner(&connection_id).await;
+            return Err(LabyrinthError::Message(format!(
+                "Failed to create Fullhouse stream: {}",
+                e
+            )));
+        }
+
+        if let Err(e) = agent_sender
+            .send(Message::Stream(StreamMessage::Setup {
+                connection_id,
+                mapping,
+            }))
+            .await
+        {
+            let _ = stream_manager.terminate_stream(connection_id).await;
+            let _ = connection_manager.cleanup_connection(&connection_id).await;
+            let _ = server.unregister_connection_owner(&connection_id).await;
+            return Err(LabyrinthError::Message(format!(
+                "Failed to send Fullhouse setup to agent: {}",
+                e
+            )));
+        }
+
+        Ok(())
+    }
+
     #[cfg(target_os = "windows")]
     async fn setup_tunnel_windows(tun_name: &str, subnet: &str) -> Result<()> {
         info!(
@@ -573,35 +781,38 @@ impl TunnelManager {
     }
 
     #[cfg(target_os = "linux")]
-    async fn cleanup_tunnel(tun_name: &str, subnet: &str) -> Result<()> {
+    async fn cleanup_tunnel(
+        server: &LabyrinthServer,
+        agent_id: &str,
+        tun_name: &str,
+        subnet: &str,
+    ) -> Result<()> {
         info!(
             "[+] Cleaning up tunnel interface {} for subnet {}",
             tun_name, subnet
         );
 
-        // Remove routes and iptables rules
-        let _ = Self::run_command("ip", &["route", "del", subnet, "dev", tun_name]);
-        let _ = Self::run_command(
-            "iptables",
-            &[
-                "-t",
-                "nat",
-                "-D",
-                "POSTROUTING",
-                "-s",
-                "10.0.0.0/24",
-                "-j",
-                "MASQUERADE",
-            ],
-        );
-        let _ = Self::run_command(
-            "iptables",
-            &["-D", "FORWARD", "-i", tun_name, "-j", "ACCEPT"],
-        );
-        let _ = Self::run_command(
-            "iptables",
-            &["-D", "FORWARD", "-o", tun_name, "-j", "ACCEPT"],
-        );
+        if let Some(proxy_port) = server.stop_fullhouse_listener(agent_id).await {
+            let _ = Self::run_command(
+                "iptables",
+                &[
+                    "-t",
+                    "nat",
+                    "-D",
+                    "OUTPUT",
+                    "-p",
+                    "tcp",
+                    "-d",
+                    subnet,
+                    "-j",
+                    "REDIRECT",
+                    "--to-ports",
+                    &proxy_port.to_string(),
+                ],
+            );
+        }
+        let _ = Self::run_command("ip", &["route", "del", "local", subnet, "dev", "lo"]);
+        let _ = Self::run_command("ip", &["addr", "del", "10.0.0.1/32", "dev", tun_name]);
         let _ = Self::run_command("ip", &["link", "del", tun_name]);
 
         Ok(())

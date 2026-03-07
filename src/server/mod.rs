@@ -2,8 +2,6 @@ pub mod agent_connection;
 pub mod agent_manager;
 pub mod certificate;
 pub mod core;
-#[cfg(target_os = "linux")]
-pub mod netstack_bridge;
 #[cfg(target_os = "windows")]
 pub mod netstack_bridge_windows;
 pub mod privileges;
