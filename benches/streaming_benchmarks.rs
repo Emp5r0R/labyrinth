@@ -1,12 +1,12 @@
 //! Performance benchmarks for streaming vs synchronous implementations
-//! 
+//!
 //! This module provides comprehensive benchmarks comparing the new streaming
 //! architecture against the old synchronous implementation.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use labyrinth::streaming::{
-    BidirectionalStreamManager, ConnectionManager, ServerConnectionManager, 
-    StreamManager, PortMapping,
+    BidirectionalStreamManager, ConnectionManager, PortMapping, ServerConnectionManager,
+    StreamManager,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,7 +50,7 @@ impl BenchmarkHarness {
     async fn setup_echo_server(&self) -> (u16, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        
+
         let handle = tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
                 tokio::spawn(async move {
@@ -73,10 +73,11 @@ impl BenchmarkHarness {
     /// Benchmark streaming implementation throughput
     async fn benchmark_streaming_throughput(&self, data_size: usize) -> Duration {
         let (target_port, _server_handle) = self.setup_echo_server().await;
-        
+
         // Setup streaming components
         let connection_manager = Arc::new(ServerConnectionManager::new());
-        let (stream_manager, _message_receiver) = BidirectionalStreamManager::with_buffer_size(1000);
+        let (stream_manager, _message_receiver) =
+            BidirectionalStreamManager::with_buffer_size(1000);
         let stream_manager = Arc::new(stream_manager);
 
         // Create test data
@@ -85,7 +86,7 @@ impl BenchmarkHarness {
         // Setup connection
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap();
-        
+
         let client_stream = TcpStream::connect(local_addr).await.unwrap();
         let (server_stream, _) = listener.accept().await.unwrap();
 
@@ -109,11 +110,11 @@ impl BenchmarkHarness {
 
         // Benchmark the actual data transfer
         let start = std::time::Instant::now();
-        
+
         // Send data in chunks
         let mut client_stream = client_stream;
         let chunk_size = 8192.min(data_size);
-        
+
         for chunk in test_data.chunks(chunk_size) {
             client_stream.write_all(chunk).await.unwrap();
         }
@@ -121,7 +122,7 @@ impl BenchmarkHarness {
         // Wait for echo response
         let mut received = 0;
         let mut buffer = vec![0u8; chunk_size];
-        
+
         while received < data_size {
             let n = client_stream.read(&mut buffer).await.unwrap();
             if n == 0 {
@@ -142,7 +143,7 @@ impl BenchmarkHarness {
     /// Benchmark connection establishment latency
     async fn benchmark_connection_latency(&self) -> Duration {
         let (target_port, _server_handle) = self.setup_echo_server().await;
-        
+
         let connection_manager = Arc::new(ServerConnectionManager::new());
         let (stream_manager, _message_receiver) = BidirectionalStreamManager::with_buffer_size(100);
         let stream_manager = Arc::new(stream_manager);
@@ -152,7 +153,7 @@ impl BenchmarkHarness {
         // Setup connection
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap();
-        
+
         let client_stream = TcpStream::connect(local_addr).await.unwrap();
         let (server_stream, _) = listener.accept().await.unwrap();
 
@@ -184,24 +185,25 @@ impl BenchmarkHarness {
     /// Benchmark concurrent connections
     async fn benchmark_concurrent_connections(&self, connection_count: usize) -> Duration {
         let (target_port, _server_handle) = self.setup_echo_server().await;
-        
+
         let connection_manager = Arc::new(ServerConnectionManager::new());
-        let (stream_manager, _message_receiver) = BidirectionalStreamManager::with_buffer_size(1000);
+        let (stream_manager, _message_receiver) =
+            BidirectionalStreamManager::with_buffer_size(1000);
         let stream_manager = Arc::new(stream_manager);
 
         let start = std::time::Instant::now();
 
         // Create multiple concurrent connections
         let mut handles = Vec::new();
-        
+
         for _ in 0..connection_count {
             let connection_manager = Arc::clone(&connection_manager);
             let stream_manager = Arc::clone(&stream_manager);
-            
+
             let handle = tokio::spawn(async move {
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let local_addr = listener.local_addr().unwrap();
-                
+
                 let client_stream = TcpStream::connect(local_addr).await.unwrap();
                 let (server_stream, _) = listener.accept().await.unwrap();
 
@@ -228,7 +230,7 @@ impl BenchmarkHarness {
 
                 connection_id
             });
-            
+
             handles.push(handle);
         }
 
@@ -255,7 +257,7 @@ impl BenchmarkHarness {
 fn bench_streaming_throughput(c: &mut Criterion) {
     let harness = BenchmarkHarness::new();
     let mut group = c.benchmark_group("streaming_throughput");
-    
+
     for &data_size in &harness.config.data_sizes {
         group.throughput(Throughput::Bytes(data_size as u64));
         group.bench_with_input(
@@ -270,19 +272,19 @@ fn bench_streaming_throughput(c: &mut Criterion) {
             },
         );
     }
-    
+
     group.finish();
 }
 
 /// Benchmark connection establishment latency
 fn bench_connection_latency(c: &mut Criterion) {
     let harness = BenchmarkHarness::new();
-    
+
     c.bench_function("connection_latency", |b| {
         b.iter(|| {
-            harness.rt.block_on(async {
-                black_box(harness.benchmark_connection_latency().await)
-            })
+            harness
+                .rt
+                .block_on(async { black_box(harness.benchmark_connection_latency().await) })
         });
     });
 }
@@ -291,7 +293,7 @@ fn bench_connection_latency(c: &mut Criterion) {
 fn bench_concurrent_connections(c: &mut Criterion) {
     let harness = BenchmarkHarness::new();
     let mut group = c.benchmark_group("concurrent_connections");
-    
+
     for &conn_count in &harness.config.concurrent_connections {
         group.bench_with_input(
             BenchmarkId::new("streaming", conn_count),
@@ -305,31 +307,32 @@ fn bench_concurrent_connections(c: &mut Criterion) {
             },
         );
     }
-    
+
     group.finish();
 }
 
 /// Benchmark memory usage patterns
 fn bench_memory_usage(c: &mut Criterion) {
     let harness = BenchmarkHarness::new();
-    
+
     c.bench_function("memory_usage", |b| {
         b.iter(|| {
             harness.rt.block_on(async {
                 // Create and destroy many connections to test memory usage
                 let (target_port, _server_handle) = harness.setup_echo_server().await;
-                
+
                 let connection_manager = Arc::new(ServerConnectionManager::new());
-                let (stream_manager, _message_receiver) = BidirectionalStreamManager::with_buffer_size(100);
+                let (stream_manager, _message_receiver) =
+                    BidirectionalStreamManager::with_buffer_size(100);
                 let stream_manager = Arc::new(stream_manager);
 
                 // Create multiple connections
                 let mut connection_ids = Vec::new();
-                
+
                 for _ in 0..10 {
                     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
                     let local_addr = listener.local_addr().unwrap();
-                    
+
                     let client_stream = TcpStream::connect(local_addr).await.unwrap();
                     let (server_stream, _) = listener.accept().await.unwrap();
 

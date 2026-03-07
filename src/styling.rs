@@ -41,12 +41,24 @@ pub fn format_field(label: &str, value: &str) -> String {
     format!("{:<20} {}", label, value)
 }
 
+pub fn format_section_title(title: &str, subtitle: &str) -> String {
+    format!("{} {}", title.cyan().bold(), subtitle.bright_black())
+}
+
+pub fn format_status_badge(label: &str, ok: bool) -> String {
+    if ok {
+        format!("{} {}", CHECK_INDICATOR.green(), label.green())
+    } else {
+        format!("{} {}", CROSS_INDICATOR.red(), label.red())
+    }
+}
+
+pub fn format_hint(text: &str) -> String {
+    format!("{} {}", INFO_INDICATOR.blue(), text.bright_black())
+}
+
 pub fn format_arrow_mapping(from: &str, to: &str) -> String {
-    format!("{} {} {}", 
-        from.yellow(), 
-        ARROW_INDICATOR.cyan(), 
-        to.cyan()
-    )
+    format!("{} {} {}", from.yellow(), ARROW_INDICATOR.cyan(), to.cyan())
 }
 
 pub fn format_check_item(item: &str) -> String {
@@ -58,9 +70,10 @@ pub fn format_cross_item(item: &str) -> String {
 }
 
 pub fn format_numbered_item(number: usize, name: &str, detail: &str) -> String {
-    format!("[{}]: {} ({})", 
-        number.to_string().cyan().bold(), 
-        name.green(), 
+    format!(
+        "[{}]: {} ({})",
+        number.to_string().cyan().bold(),
+        name.green(),
         detail.bright_black()
     )
 }
@@ -76,18 +89,26 @@ pub fn format_logo() -> String {
 (__ (_( )_) (_(  )  ( ) ) (_   ) ) 
               _)
 "#;
-    format!("{}\n{}", logo.yellow(), "                 by Emp5r0R".bright_black())
+    format!(
+        "{}\n{}",
+        logo.yellow(),
+        "                 by Emp5r0R".bright_black()
+    )
 }
 
 pub fn format_welcome_header() -> String {
-    format!("{} {}", 
-        SUCCESS_INDICATOR.green(), 
+    format!(
+        "{} {}",
+        SUCCESS_INDICATOR.green(),
         "Labyrinth Control Interface".cyan().bold()
     )
 }
 
 pub fn format_welcome_subtitle() -> String {
-    format!("{}", "Navigate the network maze with precision".bright_black())
+    format!(
+        "{}",
+        "Navigate the network maze with precision".bright_black()
+    )
 }
 
 // Command prompt formatting
@@ -106,8 +127,6 @@ pub fn format_status_active(text: &str) -> colored::ColoredString {
 pub fn format_status_inactive(text: &str) -> colored::ColoredString {
     text.red()
 }
-
-
 
 pub fn format_agent_id(id: &str) -> colored::ColoredString {
     id.yellow()

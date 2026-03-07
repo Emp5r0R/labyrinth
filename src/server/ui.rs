@@ -16,10 +16,17 @@ impl ServerUI {
                 "\n{}",
                 styling::format_warning_msg(styling::WARNING_INDICATOR, "No agents connected")
             );
+            println!(
+                "{}",
+                styling::format_hint("Start an agent, then use 'agents' to refresh.")
+            );
             return;
         }
 
-        println!("\n{}", styling::format_header("Connected Agents"));
+        println!(
+            "\n{}",
+            styling::format_section_title("Connected Agents", &format!("{} online", agents.len()))
+        );
         println!("{}", styling::format_separator(styling::SECTION_SEPARATOR));
 
         let agent_list: Vec<_> = agents.values().collect();
@@ -49,10 +56,7 @@ impl ServerUI {
             );
             println!(
                 "{}",
-                styling::format_field(
-                    "Status:",
-                    &styling::format_status_active("Online").to_string()
-                )
+                styling::format_field("Status:", &styling::format_status_badge("Online", true))
             );
 
             // Tunnel status with color coding
@@ -68,7 +72,10 @@ impl ServerUI {
             } else {
                 styling::format_status_inactive("Inactive").to_string()
             };
-            println!("{}", styling::format_field("Fullhouse (Tunnel):", &tunnel_status));
+            println!(
+                "{}",
+                styling::format_field("Fullhouse (Tunnel):", &tunnel_status)
+            );
 
             // Add visual separator between agents (except for the last one)
             if index < agent_list.len() - 1 {
@@ -99,12 +106,21 @@ impl ServerUI {
             .map(|a| format!("{} - {} ({})", a.id, a.info.name, a.info.hostname))
             .collect();
 
-        println!("\n{}", styling::format_header("Available Agents"));
+        println!(
+            "\n{}",
+            styling::format_section_title("Available Agents", "choose an active session")
+        );
         println!("{}", styling::format_separator(styling::SECTION_SEPARATOR));
-        
+
         for (i, selection) in selections.iter().enumerate() {
             println!("  {}. {}", i + 1, selection.cyan());
         }
+        println!(
+            "\n{}",
+            styling::format_hint(
+                "Tip: use 'info' after selecting to inspect interfaces and routing context."
+            )
+        );
         println!();
 
         let selection = Select::new()
@@ -132,7 +148,10 @@ impl ServerUI {
             let agents = server.agents().read().await;
             if let Some(agent) = agents.get(&agent_id) {
                 // Agent Profile Header
-                println!("\n{}", styling::format_header("Agent Profile"));
+                println!(
+                    "\n{}",
+                    styling::format_section_title("Agent Profile", &agent.info.name)
+                );
                 println!("{}", styling::format_separator("────────────"));
 
                 // Basic agent information in structured format
@@ -179,7 +198,13 @@ impl ServerUI {
                 );
 
                 // Network Interfaces section
-                println!("\n{}", styling::format_header("Network Interfaces"));
+                println!(
+                    "\n{}",
+                    styling::format_section_title(
+                        "Network Interfaces",
+                        &format!("{} detected", agent.info.interfaces.len())
+                    )
+                );
                 println!("{}", styling::format_separator(styling::SECTION_SEPARATOR));
 
                 for (i, iface) in agent.info.interfaces.iter().enumerate() {
@@ -228,7 +253,10 @@ impl ServerUI {
         let current_agent = server.current_agent().read().await.clone();
         let active_tunnels = agents.values().filter(|a| a.tunnel_active).count();
 
-        println!("\n{}", "Labyrinth Status".cyan().bold());
+        println!(
+            "\n{}",
+            styling::format_section_title("Labyrinth Status", "control plane overview")
+        );
         println!("{}", "───────────────".bright_black());
         println!("{:<20} {}", "Server:", "Running".green());
         println!(
@@ -249,7 +277,10 @@ impl ServerUI {
 
         if let Some(agent_id) = current_agent {
             if let Some(agent) = agents.get(&agent_id) {
-                println!("\n{}", "Selected Agent".cyan().bold());
+                println!(
+                    "\n{}",
+                    styling::format_section_title("Selected Agent", "active context")
+                );
                 println!("{}", "──────────────".bright_black());
                 println!(
                     "{:<20} {} ({})",

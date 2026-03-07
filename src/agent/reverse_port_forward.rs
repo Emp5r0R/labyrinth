@@ -6,7 +6,8 @@ use tokio::sync::{mpsc, Mutex};
 type ResponseChannel = (mpsc::Sender<Message>, Arc<Mutex<mpsc::Receiver<Message>>>);
 static RESPONSE_CHANNEL: OnceLock<ResponseChannel> = OnceLock::new();
 
-pub fn get_response_channel() -> &'static (mpsc::Sender<Message>, Arc<Mutex<mpsc::Receiver<Message>>>) {
+pub fn get_response_channel(
+) -> &'static (mpsc::Sender<Message>, Arc<Mutex<mpsc::Receiver<Message>>>) {
     RESPONSE_CHANNEL.get_or_init(|| {
         let (tx, rx) = mpsc::channel(1000);
         (tx, Arc::new(Mutex::new(rx)))

@@ -103,10 +103,7 @@ pub enum StreamMessage {
     /// Response to a stream request
     StreamResponse(StreamResponse),
     /// Data flowing through the stream
-    StreamData {
-        stream_id: String,
-        data: Vec<u8>,
-    },
+    StreamData { stream_id: String, data: Vec<u8> },
     /// Close a stream
     StreamClose(String),
     /// Setup a new stream connection
@@ -220,7 +217,7 @@ impl ConnectionStats {
             ConnectionStatus::Closed => "closed".to_string(),
             ConnectionStatus::Error(_) => "error".to_string(),
         };
-        
+
         *self.connections_by_status.entry(status_key).or_insert(0) += 1;
     }
 }

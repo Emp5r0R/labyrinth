@@ -1,8 +1,11 @@
 use crate::error::Result;
 use crate::protocol::Message;
 use crate::server::core::LabyrinthServer;
-use crate::streaming::models::{StreamMessage, DataDirection, ConnectionStatus};
+#[cfg(target_os = "linux")]
 use crate::server::netstack_bridge::NetstackBridge;
+#[cfg(target_os = "windows")]
+use crate::server::netstack_bridge_windows::WindowsNetstackBridge;
+use crate::streaming::models::{ConnectionStatus, DataDirection, StreamMessage};
 
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -114,9 +117,62 @@ async fn process_message(
                 }
             }
         }
+        Message::FileUploadResponse { success, message } => {
+            if let Some(agent) = server.agents().read().await.get(agent_id) {
+                let mut command_response = agent.command_response.lock().await;
+                if let Some(sender) = command_response.take() {
+                    if sender
+                        .send(Message::FileUploadResponse { success, message })
+                        .is_err()
+                    {
+                        error!("Failed to send file upload response to waiting UI task.");
+                    }
+                }
+            }
+        }
+        Message::FileDownloadResponse {
+            success,
+            message,
+            remote_path,
+            content_b64,
+        } => {
+            if let Some(agent) = server.agents().read().await.get(agent_id) {
+                let mut command_response = agent.command_response.lock().await;
+                if let Some(sender) = command_response.take() {
+                    if sender
+                        .send(Message::FileDownloadResponse {
+                            success,
+                            message,
+                            remote_path,
+                            content_b64,
+                        })
+                        .is_err()
+                    {
+                        error!("Failed to send file download response to waiting UI task.");
+                    }
+                }
+            }
+        }
+        Message::ShellSessionStarted { .. }
+        | Message::ShellSessionOutput { .. }
+        | Message::ShellSessionClose { .. } => {
+            if let Some(agent) = server.agents().read().await.get(agent_id) {
+                let shell_events = agent.shell_events.lock().await;
+                if let Some(sender) = shell_events.as_ref() {
+                    if sender.send(message).is_err() {
+                        error!("Failed to send shell session event to interactive shell task.");
+                    }
+                }
+            }
+        }
         Message::Stream(stream_msg) => {
             // Give Fullhouse netstack a chance to consume the message first.
+            #[cfg(target_os = "linux")]
             if NetstackBridge::try_handle_agent_stream(&stream_msg).await {
+                return Ok(());
+            }
+            #[cfg(target_os = "windows")]
+            if WindowsNetstackBridge::try_handle_agent_stream(&stream_msg).await {
                 return Ok(());
             }
 
@@ -142,9 +198,7 @@ async fn process_message(
                         }
                     }
                 }
-                StreamMessage::Close {
-                    connection_id, ..
-                } => {
+                StreamMessage::Close { connection_id, .. } => {
                     if let Some(sm) = server.get_stream_manager().await {
                         let _ = sm.terminate_stream(connection_id).await;
                     }
@@ -167,7 +221,8 @@ async fn process_message(
                                 .update_connection_status(&connection_id, ConnectionStatus::Active)
                                 .await;
                         } else {
-                            let reason = error_message.unwrap_or_else(|| "unknown error".to_string());
+                            let reason =
+                                error_message.unwrap_or_else(|| "unknown error".to_string());
                             let _ = cm
                                 .update_connection_status(
                                     &connection_id,

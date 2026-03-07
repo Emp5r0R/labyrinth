@@ -1,10 +1,10 @@
 //! Test interfaces and mock implementations for testing
 
+use crate::streaming::errors::StreamResult;
+use crate::streaming::traits::{ConnectionManager, StreamManager};
 use crate::streaming::{
     ConnectionId, ConnectionState, ConnectionStats, ConnectionStatus, PortMapping,
 };
-use crate::streaming::errors::StreamResult;
-use crate::streaming::traits::{ConnectionManager, StreamManager};
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -43,8 +43,12 @@ impl ConnectionManager for MockConnectionManager {
         mapping: PortMapping,
     ) -> StreamResult<ConnectionId> {
         let connection_id = uuid::Uuid::new_v4();
-        let client_addr = connection.peer_addr()
-            .map_err(|e| crate::streaming::errors::StreamError::connection_failed(format!("Failed to get peer address: {}", e)))?;
+        let client_addr = connection.peer_addr().map_err(|e| {
+            crate::streaming::errors::StreamError::connection_failed(format!(
+                "Failed to get peer address: {}",
+                e
+            ))
+        })?;
 
         let connection_state = ConnectionState::new(connection_id, client_addr, mapping);
 
@@ -72,7 +76,10 @@ impl ConnectionManager for MockConnectionManager {
         Ok(stats.clone())
     }
 
-    async fn get_connection_state(&self, connection_id: &ConnectionId) -> StreamResult<Option<ConnectionState>> {
+    async fn get_connection_state(
+        &self,
+        connection_id: &ConnectionId,
+    ) -> StreamResult<Option<ConnectionState>> {
         let connections = self.connections.read().await;
         Ok(connections.get(connection_id).cloned())
     }
@@ -194,7 +201,7 @@ mod tests {
             target_host: "localhost".to_string(),
             target_port: 3000,
         };
-        
+
         let state = ConnectionState::new(id, addr, mapping.clone());
         assert_eq!(state.id, id);
         assert_eq!(state.client_addr, addr);
@@ -216,9 +223,12 @@ mod tests {
             connection_id: id,
             mapping: mapping.clone(),
         };
-        
+
         match setup_msg {
-            StreamMessage::Setup { connection_id, mapping: _ } => {
+            StreamMessage::Setup {
+                connection_id,
+                mapping: _,
+            } => {
                 assert_eq!(connection_id, id);
             }
             _ => panic!("Expected Setup message"),
@@ -229,9 +239,12 @@ mod tests {
             connection_id: id,
             reason: CloseReason::ClientDisconnected,
         };
-        
+
         match close_msg {
-            StreamMessage::Close { connection_id, reason } => {
+            StreamMessage::Close {
+                connection_id,
+                reason,
+            } => {
                 assert_eq!(connection_id, id);
                 assert_eq!(reason, CloseReason::ClientDisconnected);
             }
@@ -242,17 +255,17 @@ mod tests {
     #[test]
     fn test_stream_error_creation() {
         let id = Uuid::new_v4();
-        
+
         // Test various error types
         let conn_err = StreamError::connection_failed("Connection refused");
         assert!(matches!(conn_err, StreamError::ConnectionFailed(_)));
-        
+
         let stream_err = StreamError::stream_broken(id, "Stream closed unexpectedly");
         assert!(matches!(stream_err, StreamError::StreamBroken { .. }));
-        
+
         let protocol_err = StreamError::protocol_error("Invalid message format");
         assert!(matches!(protocol_err, StreamError::ProtocolError(_)));
-        
+
         let timeout_err = StreamError::timeout(std::time::Duration::from_secs(30));
         assert!(matches!(timeout_err, StreamError::Timeout { .. }));
     }
@@ -261,7 +274,7 @@ mod tests {
     fn test_error_recoverability() {
         let recoverable_err = StreamError::connection_failed("Temporary failure");
         assert!(recoverable_err.is_recoverable());
-        
+
         let non_recoverable_err = StreamError::protocol_error("Invalid format");
         assert!(!non_recoverable_err.is_recoverable());
     }
@@ -270,10 +283,10 @@ mod tests {
     fn test_error_categories() {
         let conn_err = StreamError::connection_failed("Test");
         assert_eq!(conn_err.category(), "connection");
-        
+
         let protocol_err = StreamError::protocol_error("Test");
         assert_eq!(protocol_err.category(), "protocol");
-        
+
         let timeout_err = StreamError::timeout(std::time::Duration::from_secs(1));
         assert_eq!(timeout_err.category(), "timeout");
     }
@@ -283,12 +296,12 @@ mod tests {
         let mut stats = ConnectionStats::new();
         assert_eq!(stats.total_connections, 0);
         assert_eq!(stats.active_connections, 0);
-        
+
         stats.increment_total();
         stats.increment_active();
         assert_eq!(stats.total_connections, 1);
         assert_eq!(stats.active_connections, 1);
-        
+
         stats.decrement_active();
         assert_eq!(stats.active_connections, 0);
     }

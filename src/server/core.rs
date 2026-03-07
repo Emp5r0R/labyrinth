@@ -22,6 +22,7 @@ pub struct ConnectedAgent {
     pub tun_name: Option<String>,
     pub last_seen: Arc<Mutex<Instant>>,
     pub command_response: Arc<Mutex<Option<oneshot::Sender<Message>>>>,
+    pub shell_events: Arc<Mutex<Option<mpsc::UnboundedSender<Message>>>>,
 }
 
 struct PortForwardListener {
@@ -130,7 +131,9 @@ impl LabyrinthServer {
 
     pub async fn has_port_forwarding(&self, agent_id: &str) -> bool {
         let listeners = self.port_forward_listeners.read().await;
-        listeners.values().any(|listener| listener.agent_id == agent_id)
+        listeners
+            .values()
+            .any(|listener| listener.agent_id == agent_id)
     }
 
     pub async fn stop_port_forwarding_for_agent(&self, agent_id: &str) -> Vec<u16> {
@@ -164,7 +167,10 @@ impl LabyrinthServer {
         owners.insert(connection_id, agent_id);
     }
 
-    pub async fn unregister_connection_owner(&self, connection_id: &ConnectionId) -> Option<String> {
+    pub async fn unregister_connection_owner(
+        &self,
+        connection_id: &ConnectionId,
+    ) -> Option<String> {
         let mut owners = self.connection_owners.write().await;
         owners.remove(connection_id)
     }

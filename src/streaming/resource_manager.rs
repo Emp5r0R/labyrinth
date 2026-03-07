@@ -1,10 +1,8 @@
 //! Resource management for connection lifecycle and system resources
 
-use crate::streaming::{
-    ConnectionId,
-};
 use crate::streaming::errors::{StreamError, StreamResult};
 use crate::streaming::traits::{ConnectionManager, ResourceManager, ResourceType, ResourceUsage};
+use crate::streaming::ConnectionId;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,10 +33,10 @@ pub struct ResourceConfig {
 impl Default for ResourceConfig {
     fn default() -> Self {
         Self {
-            max_connections: 2000,  // Increased for better scalability
-            max_streams: 4000,      // Increased proportionally
+            max_connections: 2000,               // Increased for better scalability
+            max_streams: 4000,                   // Increased proportionally
             max_memory_bytes: 256 * 1024 * 1024, // Reduced to 256MB for better memory efficiency
-            max_file_descriptors: 2048, // Increased for more concurrent connections
+            max_file_descriptors: 2048,          // Increased for more concurrent connections
             connection_timeout: Duration::from_secs(30),
             health_check_interval: Duration::from_secs(10),
             idle_timeout: Duration::from_secs(300), // 5 minutes
@@ -57,7 +55,7 @@ struct ResourceInfo {
 impl ResourceInfo {
     fn new(_connection_id: ConnectionId, resource_type: ResourceType) -> Self {
         let now = Instant::now();
-        
+
         Self {
             resource_type,
             created_at: now,
@@ -98,13 +96,10 @@ pub struct StreamResourceManager {
 
 impl StreamResourceManager {
     /// Create a new resource manager with the given configuration and connection manager
-    pub fn new(
-        config: ResourceConfig,
-        connection_manager: Arc<dyn ConnectionManager>,
-    ) -> Self {
+    pub fn new(config: ResourceConfig, connection_manager: Arc<dyn ConnectionManager>) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
         let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
-        
+
         Self {
             config,
             resources: Arc::new(RwLock::new(HashMap::new())),
@@ -124,21 +119,21 @@ impl StreamResourceManager {
     /// Start the resource manager background tasks
     pub async fn start(&self) -> StreamResult<()> {
         info!("Starting resource manager background tasks");
-        
+
         // Start health monitoring task
         let health_monitor = self.start_health_monitor().await?;
-        
+
         // Start cleanup task
         let cleanup_task = self.start_cleanup_task().await?;
-        
+
         // Start timeout monitoring task
         let timeout_monitor = self.start_timeout_monitor().await?;
-        
+
         // Spawn all tasks
         tokio::spawn(health_monitor);
         tokio::spawn(cleanup_task);
         tokio::spawn(timeout_monitor);
-        
+
         info!("Resource manager background tasks started successfully");
         Ok(())
     }
@@ -149,10 +144,10 @@ impl StreamResourceManager {
         let usage = Arc::clone(&self.usage);
         let config = self.config.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
-        
+
         Ok(async move {
             let mut interval = interval(config.health_check_interval);
-            
+
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -177,15 +172,15 @@ impl StreamResourceManager {
                 StreamError::resource_exhausted("Cleanup task already started".to_string())
             })?
         };
-        
+
         let resources = Arc::clone(&self.resources);
         let usage = Arc::clone(&self.usage);
         let connection_manager = Arc::clone(&self.connection_manager);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
-        
+
         Ok(async move {
             let mut cleanup_rx = cleanup_rx;
-            
+
             loop {
                 tokio::select! {
                     Some(connection_id) = cleanup_rx.recv() => {
@@ -213,10 +208,10 @@ impl StreamResourceManager {
         let config = self.config.clone();
         let cleanup_tx = self.cleanup_tx.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
-        
+
         Ok(async move {
             let mut interval = interval(config.health_check_interval);
-            
+
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -241,13 +236,13 @@ impl StreamResourceManager {
     ) -> StreamResult<()> {
         let resources_guard = resources.read().await;
         let mut usage_guard = usage.write().await;
-        
+
         // Update current usage statistics
         let mut connections = 0;
         let mut streams = 0;
         let mut memory = 0;
         let mut file_descriptors = 0;
-        
+
         for resource in resources_guard.values() {
             match resource.resource_type {
                 ResourceType::Connection => connections += 1,
@@ -256,29 +251,41 @@ impl StreamResourceManager {
                 ResourceType::FileDescriptor => file_descriptors += 1,
             }
         }
-        
+
         usage_guard.active_connections = connections;
         usage_guard.active_streams = streams;
         usage_guard.memory_usage_bytes = memory;
         usage_guard.file_descriptors = file_descriptors;
-        
+
         // Check for resource limit violations
         if connections > config.max_connections {
-            warn!("Connection limit exceeded: {} > {}", connections, config.max_connections);
+            warn!(
+                "Connection limit exceeded: {} > {}",
+                connections, config.max_connections
+            );
         }
-        
+
         if streams > config.max_streams {
-            warn!("Stream limit exceeded: {} > {}", streams, config.max_streams);
+            warn!(
+                "Stream limit exceeded: {} > {}",
+                streams, config.max_streams
+            );
         }
-        
+
         if memory > config.max_memory_bytes {
-            warn!("Memory limit exceeded: {} > {}", memory, config.max_memory_bytes);
+            warn!(
+                "Memory limit exceeded: {} > {}",
+                memory, config.max_memory_bytes
+            );
         }
-        
+
         if file_descriptors > config.max_file_descriptors {
-            warn!("File descriptor limit exceeded: {} > {}", file_descriptors, config.max_file_descriptors);
+            warn!(
+                "File descriptor limit exceeded: {} > {}",
+                file_descriptors, config.max_file_descriptors
+            );
         }
-        
+
         debug!(
             connections = connections,
             streams = streams,
@@ -286,7 +293,7 @@ impl StreamResourceManager {
             file_descriptors = file_descriptors,
             "Health check completed"
         );
-        
+
         Ok(())
     }
 
@@ -298,7 +305,7 @@ impl StreamResourceManager {
     ) -> StreamResult<()> {
         let resources_guard = resources.read().await;
         let mut timed_out_connections = Vec::new();
-        
+
         for (connection_id, resource) in resources_guard.iter() {
             if resource.is_timed_out(config.connection_timeout) {
                 warn!(
@@ -316,14 +323,14 @@ impl StreamResourceManager {
                 timed_out_connections.push(*connection_id);
             }
         }
-        
+
         // Schedule cleanup for timed out connections
         for connection_id in timed_out_connections {
             if let Err(e) = cleanup_tx.send(connection_id) {
                 error!("Failed to schedule cleanup for {}: {}", connection_id, e);
             }
         }
-        
+
         Ok(())
     }
 
@@ -335,13 +342,13 @@ impl StreamResourceManager {
         connection_id: ConnectionId,
     ) -> StreamResult<()> {
         debug!(connection_id = %connection_id, "Cleaning up resource");
-        
+
         // Remove from resources tracking
         let resource_info = {
             let mut resources_guard = resources.write().await;
             resources_guard.remove(&connection_id)
         };
-        
+
         if let Some(resource) = resource_info {
             // Update usage statistics
             {
@@ -369,7 +376,7 @@ impl StreamResourceManager {
                     }
                 }
             }
-            
+
             // Clean up through connection manager
             if let Err(e) = connection_manager.cleanup_connection(&connection_id).await {
                 warn!(
@@ -378,7 +385,7 @@ impl StreamResourceManager {
                     "Connection manager cleanup failed"
                 );
             }
-            
+
             info!(
                 connection_id = %connection_id,
                 resource_type = ?resource.resource_type,
@@ -388,7 +395,7 @@ impl StreamResourceManager {
         } else {
             warn!(connection_id = %connection_id, "Attempted to cleanup non-existent resource");
         }
-        
+
         Ok(())
     }
 
@@ -409,7 +416,8 @@ impl StreamResourceManager {
 
     /// Schedule a resource for cleanup
     pub async fn schedule_cleanup(&self, connection_id: ConnectionId) -> StreamResult<()> {
-        self.cleanup_tx.send(connection_id)
+        self.cleanup_tx
+            .send(connection_id)
             .map_err(|_| StreamError::resource_exhausted("Cleanup channel closed".to_string()))?;
         Ok(())
     }
@@ -417,49 +425,62 @@ impl StreamResourceManager {
 
 #[async_trait]
 impl ResourceManager for StreamResourceManager {
-    async fn track_resource(&self, connection_id: ConnectionId, resource_type: ResourceType) -> StreamResult<()> {
+    async fn track_resource(
+        &self,
+        connection_id: ConnectionId,
+        resource_type: ResourceType,
+    ) -> StreamResult<()> {
         debug!(
             connection_id = %connection_id,
             resource_type = ?resource_type,
             "Tracking new resource"
         );
-        
+
         // Check resource limits before tracking
         let current_usage = self.get_resource_usage().await?;
-        
+
         match resource_type {
-            ResourceType::Connection if current_usage.active_connections >= self.config.max_connections => {
-                return Err(StreamError::resource_exhausted(
-                    format!("Connection limit exceeded: {}", self.config.max_connections)
-                ));
+            ResourceType::Connection
+                if current_usage.active_connections >= self.config.max_connections =>
+            {
+                return Err(StreamError::resource_exhausted(format!(
+                    "Connection limit exceeded: {}",
+                    self.config.max_connections
+                )));
             }
             ResourceType::Stream if current_usage.active_streams >= self.config.max_streams => {
-                return Err(StreamError::resource_exhausted(
-                    format!("Stream limit exceeded: {}", self.config.max_streams)
-                ));
+                return Err(StreamError::resource_exhausted(format!(
+                    "Stream limit exceeded: {}",
+                    self.config.max_streams
+                )));
             }
-            ResourceType::Memory(size) if current_usage.memory_usage_bytes + size > self.config.max_memory_bytes => {
-                return Err(StreamError::resource_exhausted(
-                    format!("Memory limit exceeded: {} + {} > {}", 
-                        current_usage.memory_usage_bytes, size, self.config.max_memory_bytes)
-                ));
+            ResourceType::Memory(size)
+                if current_usage.memory_usage_bytes + size > self.config.max_memory_bytes =>
+            {
+                return Err(StreamError::resource_exhausted(format!(
+                    "Memory limit exceeded: {} + {} > {}",
+                    current_usage.memory_usage_bytes, size, self.config.max_memory_bytes
+                )));
             }
-            ResourceType::FileDescriptor if current_usage.file_descriptors >= self.config.max_file_descriptors => {
-                return Err(StreamError::resource_exhausted(
-                    format!("File descriptor limit exceeded: {}", self.config.max_file_descriptors)
-                ));
+            ResourceType::FileDescriptor
+                if current_usage.file_descriptors >= self.config.max_file_descriptors =>
+            {
+                return Err(StreamError::resource_exhausted(format!(
+                    "File descriptor limit exceeded: {}",
+                    self.config.max_file_descriptors
+                )));
             }
             _ => {}
         }
-        
+
         // Track the resource
         let resource_info = ResourceInfo::new(connection_id, resource_type.clone());
-        
+
         {
             let mut resources = self.resources.write().await;
             resources.insert(connection_id, resource_info);
         }
-        
+
         // Update usage statistics
         {
             let mut usage = self.usage.write().await;
@@ -470,22 +491,22 @@ impl ResourceManager for StreamResourceManager {
                 ResourceType::FileDescriptor => usage.file_descriptors += 1,
             }
         }
-        
+
         info!(
             connection_id = %connection_id,
             resource_type = ?resource_type,
             "Resource tracked successfully"
         );
-        
+
         Ok(())
     }
 
     async fn release_resource(&self, connection_id: ConnectionId) -> StreamResult<()> {
         debug!(connection_id = %connection_id, "Releasing resource");
-        
+
         // Schedule cleanup through the cleanup channel
         self.schedule_cleanup(connection_id).await?;
-        
+
         Ok(())
     }
 
@@ -496,32 +517,32 @@ impl ResourceManager for StreamResourceManager {
 
     async fn graceful_shutdown(&self) -> StreamResult<()> {
         info!("Starting graceful shutdown of resource manager");
-        
+
         // Get all tracked connection IDs
         let connection_ids: Vec<ConnectionId> = {
             let resources = self.resources.read().await;
             resources.keys().cloned().collect()
         };
-        
+
         info!("Shutting down {} tracked resources", connection_ids.len());
-        
+
         // Send shutdown signal to all background tasks
         if let Err(e) = self.shutdown_tx.send(()) {
             warn!("Failed to send shutdown signal: {}", e);
         }
-        
+
         // Clean up all resources with timeout
         let cleanup_tasks: Vec<_> = connection_ids.into_iter().map(|connection_id| {
             let resources = Arc::clone(&self.resources);
             let usage = Arc::clone(&self.usage);
             let connection_manager = Arc::clone(&self.connection_manager);
-            
+
             async move {
                 let result = timeout(
                     Duration::from_secs(5),
                     Self::cleanup_resource_internal(&resources, &usage, &connection_manager, connection_id)
                 ).await;
-                
+
                 match result {
                     Ok(Ok(())) => {
                         debug!(connection_id = %connection_id, "Resource cleaned up during shutdown");
@@ -535,10 +556,10 @@ impl ResourceManager for StreamResourceManager {
                 }
             }
         }).collect();
-        
+
         // Wait for all cleanup tasks to complete
         futures::future::join_all(cleanup_tasks).await;
-        
+
         // Final verification
         let final_usage = self.get_resource_usage().await?;
         if final_usage.active_connections > 0 || final_usage.active_streams > 0 {
@@ -548,19 +569,19 @@ impl ResourceManager for StreamResourceManager {
                 "Some resources were not cleaned up during shutdown"
             );
         }
-        
+
         info!("Resource manager graceful shutdown completed");
         Ok(())
     }
 
     async fn check_resource_limits(&self) -> StreamResult<bool> {
         let usage = self.get_resource_usage().await?;
-        
+
         let limits_exceeded = usage.active_connections > self.config.max_connections
             || usage.active_streams > self.config.max_streams
             || usage.memory_usage_bytes > self.config.max_memory_bytes
             || usage.file_descriptors > self.config.max_file_descriptors;
-        
+
         if limits_exceeded {
             warn!(
                 connections = usage.active_connections,
@@ -574,7 +595,7 @@ impl ResourceManager for StreamResourceManager {
                 "Resource limits exceeded"
             );
         }
-        
+
         Ok(limits_exceeded)
     }
 }
@@ -602,7 +623,7 @@ mod tests {
         let config = create_test_config();
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config.clone(), connection_manager);
-        
+
         let usage = resource_manager.get_resource_usage().await.unwrap();
         assert_eq!(usage.active_connections, 0);
         assert_eq!(usage.active_streams, 0);
@@ -615,32 +636,44 @@ mod tests {
         let config = create_test_config();
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config, connection_manager);
-        
+
         let connection_id = ConnectionId::new_v4();
-        
+
         // Track a connection
-        resource_manager.track_resource(connection_id, ResourceType::Connection).await.unwrap();
-        
+        resource_manager
+            .track_resource(connection_id, ResourceType::Connection)
+            .await
+            .unwrap();
+
         let usage = resource_manager.get_resource_usage().await.unwrap();
         assert_eq!(usage.active_connections, 1);
         assert_eq!(usage.active_streams, 0);
-        
+
         // Track a stream
-        resource_manager.track_resource(connection_id, ResourceType::Stream).await.unwrap();
-        
+        resource_manager
+            .track_resource(connection_id, ResourceType::Stream)
+            .await
+            .unwrap();
+
         let usage = resource_manager.get_resource_usage().await.unwrap();
         assert_eq!(usage.active_connections, 1);
         assert_eq!(usage.active_streams, 1);
-        
+
         // Track memory
-        resource_manager.track_resource(connection_id, ResourceType::Memory(1024)).await.unwrap();
-        
+        resource_manager
+            .track_resource(connection_id, ResourceType::Memory(1024))
+            .await
+            .unwrap();
+
         let usage = resource_manager.get_resource_usage().await.unwrap();
         assert_eq!(usage.memory_usage_bytes, 1024);
-        
+
         // Track file descriptor
-        resource_manager.track_resource(connection_id, ResourceType::FileDescriptor).await.unwrap();
-        
+        resource_manager
+            .track_resource(connection_id, ResourceType::FileDescriptor)
+            .await
+            .unwrap();
+
         let usage = resource_manager.get_resource_usage().await.unwrap();
         assert_eq!(usage.file_descriptors, 1);
     }
@@ -650,20 +683,25 @@ mod tests {
         let config = create_test_config();
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config, connection_manager);
-        
+
         // Track connections up to the limit
         for _i in 0..5 {
             let connection_id = ConnectionId::new_v4();
-            resource_manager.track_resource(connection_id, ResourceType::Connection).await.unwrap();
+            resource_manager
+                .track_resource(connection_id, ResourceType::Connection)
+                .await
+                .unwrap();
         }
-        
+
         // Try to exceed the limit
         let connection_id = ConnectionId::new_v4();
-        let result = resource_manager.track_resource(connection_id, ResourceType::Connection).await;
+        let result = resource_manager
+            .track_resource(connection_id, ResourceType::Connection)
+            .await;
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
-            StreamError::ResourceExhausted { .. } => {}, // Expected
+            StreamError::ResourceExhausted { .. } => {} // Expected
             other => panic!("Expected ResourceExhausted error, got: {:?}", other),
         }
     }
@@ -673,18 +711,23 @@ mod tests {
         let config = create_test_config();
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config, connection_manager);
-        
+
         let connection_id = ConnectionId::new_v4();
-        
+
         // Track memory up to the limit
-        resource_manager.track_resource(connection_id, ResourceType::Memory(1024 * 1024)).await.unwrap();
-        
+        resource_manager
+            .track_resource(connection_id, ResourceType::Memory(1024 * 1024))
+            .await
+            .unwrap();
+
         // Try to exceed the limit
-        let result = resource_manager.track_resource(connection_id, ResourceType::Memory(1)).await;
+        let result = resource_manager
+            .track_resource(connection_id, ResourceType::Memory(1))
+            .await;
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
-            StreamError::ResourceExhausted { .. } => {}, // Expected
+            StreamError::ResourceExhausted { .. } => {} // Expected
             other => panic!("Expected ResourceExhausted error, got: {:?}", other),
         }
     }
@@ -694,25 +737,37 @@ mod tests {
         let config = create_test_config();
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config, connection_manager);
-        
+
         let connection_id = ConnectionId::new_v4();
-        
+
         // Track resources
-        resource_manager.track_resource(connection_id, ResourceType::Connection).await.unwrap();
-        resource_manager.track_resource(connection_id, ResourceType::Stream).await.unwrap();
-        resource_manager.track_resource(connection_id, ResourceType::Memory(1024)).await.unwrap();
-        
+        resource_manager
+            .track_resource(connection_id, ResourceType::Connection)
+            .await
+            .unwrap();
+        resource_manager
+            .track_resource(connection_id, ResourceType::Stream)
+            .await
+            .unwrap();
+        resource_manager
+            .track_resource(connection_id, ResourceType::Memory(1024))
+            .await
+            .unwrap();
+
         let usage = resource_manager.get_resource_usage().await.unwrap();
         assert_eq!(usage.active_connections, 1);
         assert_eq!(usage.active_streams, 1);
         assert_eq!(usage.memory_usage_bytes, 1024);
-        
+
         // Release the resource
-        resource_manager.release_resource(connection_id).await.unwrap();
-        
+        resource_manager
+            .release_resource(connection_id)
+            .await
+            .unwrap();
+
         // Give some time for cleanup to process
         sleep(Duration::from_millis(10)).await;
-        
+
         // Note: The actual cleanup happens asynchronously, so we can't immediately
         // verify the usage has decreased. In a real scenario, the cleanup task
         // would process this and update the usage.
@@ -723,27 +778,30 @@ mod tests {
         let config = create_test_config();
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config, connection_manager);
-        
+
         // Initially no limits exceeded
         let exceeded = resource_manager.check_resource_limits().await.unwrap();
         assert!(!exceeded);
-        
+
         // Track resources up to the limit
         for _i in 0..5 {
             let connection_id = ConnectionId::new_v4();
-            resource_manager.track_resource(connection_id, ResourceType::Connection).await.unwrap();
+            resource_manager
+                .track_resource(connection_id, ResourceType::Connection)
+                .await
+                .unwrap();
         }
-        
+
         // Still within limits
         let exceeded = resource_manager.check_resource_limits().await.unwrap();
         assert!(!exceeded);
-        
+
         // Manually update usage to exceed limits (simulating a scenario where limits are exceeded)
         {
             let mut usage = resource_manager.usage.write().await;
             usage.active_connections = 10; // Exceeds max_connections (5)
         }
-        
+
         let exceeded = resource_manager.check_resource_limits().await.unwrap();
         assert!(exceeded);
     }
@@ -753,15 +811,21 @@ mod tests {
         let config = create_test_config();
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config, connection_manager);
-        
+
         let connection_id = ConnectionId::new_v4();
-        
+
         // Track a resource
-        resource_manager.track_resource(connection_id, ResourceType::Connection).await.unwrap();
-        
+        resource_manager
+            .track_resource(connection_id, ResourceType::Connection)
+            .await
+            .unwrap();
+
         // Update activity should succeed
-        resource_manager.update_activity(&connection_id).await.unwrap();
-        
+        resource_manager
+            .update_activity(&connection_id)
+            .await
+            .unwrap();
+
         // Update activity for non-existent resource should still succeed (no-op)
         let fake_id = ConnectionId::new_v4();
         resource_manager.update_activity(&fake_id).await.unwrap();
@@ -772,19 +836,22 @@ mod tests {
         let config = create_test_config();
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config, connection_manager);
-        
+
         // Track some resources
         for _i in 0..3 {
             let connection_id = ConnectionId::new_v4();
-            resource_manager.track_resource(connection_id, ResourceType::Connection).await.unwrap();
+            resource_manager
+                .track_resource(connection_id, ResourceType::Connection)
+                .await
+                .unwrap();
         }
-        
+
         let usage_before = resource_manager.get_resource_usage().await.unwrap();
         assert_eq!(usage_before.active_connections, 3);
-        
+
         // Perform graceful shutdown
         resource_manager.graceful_shutdown().await.unwrap();
-        
+
         // Verify shutdown signal was sent
         let mut shutdown_rx = resource_manager.get_shutdown_receiver();
         let result = timeout(Duration::from_millis(10), shutdown_rx.recv()).await;
@@ -797,16 +864,16 @@ mod tests {
         let config = create_test_config();
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config, connection_manager);
-        
+
         let mut shutdown_rx = resource_manager.get_shutdown_receiver();
-        
+
         // Should not receive anything initially
         let result = timeout(Duration::from_millis(10), shutdown_rx.recv()).await;
         assert!(result.is_err()); // Timeout expected
-        
+
         // Trigger shutdown
         resource_manager.graceful_shutdown().await.unwrap();
-        
+
         // Now should receive shutdown signal
         let result = timeout(Duration::from_millis(10), shutdown_rx.recv()).await;
         assert!(result.is_ok());
@@ -817,15 +884,24 @@ mod tests {
         let config = create_test_config();
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config, connection_manager);
-        
+
         let connection_id = ConnectionId::new_v4();
-        
+
         // Schedule cleanup should succeed
-        resource_manager.schedule_cleanup(connection_id).await.unwrap();
-        
+        resource_manager
+            .schedule_cleanup(connection_id)
+            .await
+            .unwrap();
+
         // Multiple schedules should work
-        resource_manager.schedule_cleanup(connection_id).await.unwrap();
-        resource_manager.schedule_cleanup(ConnectionId::new_v4()).await.unwrap();
+        resource_manager
+            .schedule_cleanup(connection_id)
+            .await
+            .unwrap();
+        resource_manager
+            .schedule_cleanup(ConnectionId::new_v4())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -833,18 +909,18 @@ mod tests {
         let connection_id = ConnectionId::new_v4();
         let resource_type = ResourceType::Connection;
         let mut resource_info = ResourceInfo::new(connection_id, resource_type.clone());
-        
+
         assert_eq!(resource_info.resource_type, resource_type);
-        
+
         // Test activity update
         let original_activity = resource_info.last_activity;
         sleep(Duration::from_millis(1)).await;
         resource_info.update_activity();
         assert!(resource_info.last_activity > original_activity);
-        
+
         // Test idle check
         assert!(!resource_info.is_idle(Duration::from_millis(1000)));
-        
+
         // Test timeout check
         assert!(!resource_info.is_timed_out(Duration::from_millis(1000)));
     }
@@ -852,7 +928,7 @@ mod tests {
     #[tokio::test]
     async fn test_resource_config_default() {
         let config = ResourceConfig::default();
-        
+
         assert_eq!(config.max_connections, 2000);
         assert_eq!(config.max_streams, 4000);
         assert_eq!(config.max_memory_bytes, 256 * 1024 * 1024);
@@ -867,13 +943,13 @@ mod tests {
         let config = create_test_config();
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config, connection_manager);
-        
+
         // Start background tasks
         resource_manager.start().await.unwrap();
-        
+
         // Give tasks time to start
         sleep(Duration::from_millis(10)).await;
-        
+
         // Shutdown to clean up tasks
         resource_manager.graceful_shutdown().await.unwrap();
     }
@@ -883,25 +959,28 @@ mod tests {
         let mut config = create_test_config();
         config.connection_timeout = Duration::from_millis(50);
         config.idle_timeout = Duration::from_millis(50);
-        
+
         let connection_manager = Arc::new(MockConnectionManager::new());
         let resource_manager = StreamResourceManager::new(config, connection_manager);
-        
+
         let connection_id = ConnectionId::new_v4();
-        
+
         // Track a resource
-        resource_manager.track_resource(connection_id, ResourceType::Connection).await.unwrap();
-        
+        resource_manager
+            .track_resource(connection_id, ResourceType::Connection)
+            .await
+            .unwrap();
+
         // Start background tasks
         resource_manager.start().await.unwrap();
-        
+
         // Wait for timeout to trigger
         sleep(Duration::from_millis(150)).await;
-        
+
         // The timeout monitor should have detected the timeout and scheduled cleanup
         // We can't easily verify this without more complex mocking, but the test
         // ensures the code doesn't panic and runs correctly
-        
+
         // Shutdown
         resource_manager.graceful_shutdown().await.unwrap();
     }

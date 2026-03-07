@@ -1,8 +1,8 @@
 //! Error recovery mechanisms for streaming operations
 
 use crate::streaming::{
-    ConnectionId, StreamError, StreamResult, RetryStrategy, ErrorWithContext,
-    MetricsCollector, ConnectionManager, StreamManager,
+    ConnectionId, ConnectionManager, ErrorWithContext, MetricsCollector, RetryStrategy,
+    StreamError, StreamManager, StreamResult,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,7 +50,7 @@ impl ErrorRecoveryCoordinator {
         connection_id: Option<ConnectionId>,
     ) -> StreamResult<bool> {
         let error = error_context.error();
-        
+
         info!(
             "Attempting recovery for error: {} (category: {}, recoverable: {})",
             error,
@@ -74,16 +74,17 @@ impl ErrorRecoveryCoordinator {
         };
 
         // Attempt recovery with retry strategy
-        let recovery_result = self.execute_recovery_with_retry(
-            error_context,
-            connection_id,
-            retry_strategy,
-        ).await;
+        let recovery_result = self
+            .execute_recovery_with_retry(error_context, connection_id, retry_strategy)
+            .await;
 
         // Record recovery attempt in metrics
         if let Some(conn_id) = connection_id {
             self.metrics_collector
-                .record_error_recovery(conn_id, recovery_result.is_ok() && recovery_result.as_ref().unwrap_or(&false) == &true)
+                .record_error_recovery(
+                    conn_id,
+                    recovery_result.is_ok() && recovery_result.as_ref().unwrap_or(&false) == &true,
+                )
                 .await;
         }
 
@@ -102,14 +103,25 @@ impl ErrorRecoveryCoordinator {
         while retry_strategy.should_retry(attempt) {
             if let Some(delay) = retry_strategy.calculate_delay(attempt) {
                 if attempt > 0 {
-                    debug!("Waiting {}ms before retry attempt {}", delay.as_millis(), attempt + 1);
+                    debug!(
+                        "Waiting {}ms before retry attempt {}",
+                        delay.as_millis(),
+                        attempt + 1
+                    );
                     sleep(delay).await;
                 }
             }
 
-            debug!("Recovery attempt {} for error: {}", attempt + 1, error_context.error());
+            debug!(
+                "Recovery attempt {} for error: {}",
+                attempt + 1,
+                error_context.error()
+            );
 
-            match self.execute_single_recovery_attempt(&error_context, connection_id).await {
+            match self
+                .execute_single_recovery_attempt(&error_context, connection_id)
+                .await
+            {
                 Ok(true) => {
                     info!("Recovery successful after {} attempts", attempt + 1);
                     return Ok(true);
@@ -119,7 +131,7 @@ impl ErrorRecoveryCoordinator {
                 }
                 Err(e) => {
                     warn!("Recovery attempt {} encountered error: {}", attempt + 1, e);
-                    
+
                     // If we get a non-recoverable error during recovery, stop trying
                     if !e.is_recoverable() {
                         error!("Non-recoverable error during recovery, stopping attempts");
@@ -150,24 +162,16 @@ impl ErrorRecoveryCoordinator {
             StreamError::StreamBroken { connection_id, .. } => {
                 self.recover_stream_failure(*connection_id).await
             }
-            StreamError::ResourceExhausted { .. } => {
-                self.recover_resource_exhaustion().await
-            }
-            StreamError::Timeout { .. } => {
-                self.recover_timeout(connection_id).await
-            }
-            StreamError::Io(_) => {
-                self.recover_io_error(connection_id).await
-            }
+            StreamError::ResourceExhausted { .. } => self.recover_resource_exhaustion().await,
+            StreamError::Timeout { .. } => self.recover_timeout(connection_id).await,
+            StreamError::Io(_) => self.recover_io_error(connection_id).await,
             StreamError::ChannelSend(_) | StreamError::ChannelReceive(_) => {
                 self.recover_channel_error(connection_id).await
             }
             StreamError::ServiceUnavailable(_) => {
                 self.recover_service_unavailable(connection_id).await
             }
-            StreamError::RateLimitExceeded(_) => {
-                self.recover_rate_limit().await
-            }
+            StreamError::RateLimitExceeded(_) => self.recover_rate_limit().await,
             _ => {
                 debug!("No specific recovery strategy for error type: {:?}", error);
                 Ok(false)
@@ -176,7 +180,10 @@ impl ErrorRecoveryCoordinator {
     }
 
     /// Recover from connection failure
-    async fn recover_connection_failure(&self, connection_id: Option<ConnectionId>) -> StreamResult<bool> {
+    async fn recover_connection_failure(
+        &self,
+        connection_id: Option<ConnectionId>,
+    ) -> StreamResult<bool> {
         debug!("Attempting to recover from connection failure");
 
         if let Some(conn_id) = connection_id {
@@ -185,17 +192,20 @@ impl ErrorRecoveryCoordinator {
                 Ok(Some(_)) => {
                     // Connection exists, try to reset its state
                     debug!("Connection {} exists, attempting to reset state", conn_id);
-                    
+
                     // Clean up and let the system recreate the connection
                     if let Err(e) = self.connection_manager.cleanup_connection(&conn_id).await {
                         warn!("Failed to cleanup connection during recovery: {}", e);
                         return Ok(false);
                     }
-                    
+
                     Ok(true)
                 }
                 Ok(None) => {
-                    debug!("Connection {} no longer exists, recovery not needed", conn_id);
+                    debug!(
+                        "Connection {} no longer exists, recovery not needed",
+                        conn_id
+                    );
                     Ok(true)
                 }
                 Err(e) => {
@@ -212,19 +222,32 @@ impl ErrorRecoveryCoordinator {
 
     /// Recover from stream failure
     async fn recover_stream_failure(&self, connection_id: ConnectionId) -> StreamResult<bool> {
-        debug!("Attempting to recover from stream failure for connection {}", connection_id);
+        debug!(
+            "Attempting to recover from stream failure for connection {}",
+            connection_id
+        );
 
         // Terminate the broken stream
         match self.stream_manager.terminate_stream(connection_id).await {
             Ok(()) => {
-                debug!("Successfully terminated broken stream for connection {}", connection_id);
-                
+                debug!(
+                    "Successfully terminated broken stream for connection {}",
+                    connection_id
+                );
+
                 // Clean up the connection
-                if let Err(e) = self.connection_manager.cleanup_connection(&connection_id).await {
-                    warn!("Failed to cleanup connection after stream termination: {}", e);
+                if let Err(e) = self
+                    .connection_manager
+                    .cleanup_connection(&connection_id)
+                    .await
+                {
+                    warn!(
+                        "Failed to cleanup connection after stream termination: {}",
+                        e
+                    );
                     return Ok(false);
                 }
-                
+
                 Ok(true)
             }
             Err(e) => {
@@ -259,7 +282,10 @@ impl ErrorRecoveryCoordinator {
             // Check if the connection is still valid
             match self.connection_manager.get_connection_state(&conn_id).await {
                 Ok(Some(state)) => {
-                    debug!("Connection {} still exists after timeout, state: {:?}", conn_id, state.status);
+                    debug!(
+                        "Connection {} still exists after timeout, state: {:?}",
+                        conn_id, state.status
+                    );
                     // Connection exists, timeout might have been transient
                     Ok(true)
                 }
@@ -289,7 +315,7 @@ impl ErrorRecoveryCoordinator {
                 warn!("Failed to cleanup connection after I/O error: {}", e);
                 return Ok(false);
             }
-            
+
             debug!("Cleaned up connection {} after I/O error", conn_id);
             Ok(true)
         } else {
@@ -300,7 +326,10 @@ impl ErrorRecoveryCoordinator {
     }
 
     /// Recover from channel error
-    async fn recover_channel_error(&self, connection_id: Option<ConnectionId>) -> StreamResult<bool> {
+    async fn recover_channel_error(
+        &self,
+        connection_id: Option<ConnectionId>,
+    ) -> StreamResult<bool> {
         debug!("Attempting to recover from channel error");
 
         // Channel errors might be transient, wait a bit and let the system retry
@@ -314,11 +343,17 @@ impl ErrorRecoveryCoordinator {
                     Ok(true)
                 }
                 Ok(None) => {
-                    debug!("Connection {} no longer exists after channel error", conn_id);
+                    debug!(
+                        "Connection {} no longer exists after channel error",
+                        conn_id
+                    );
                     Ok(true)
                 }
                 Err(e) => {
-                    warn!("Failed to check connection state after channel error: {}", e);
+                    warn!(
+                        "Failed to check connection state after channel error: {}",
+                        e
+                    );
                     Ok(false)
                 }
             }
@@ -329,7 +364,10 @@ impl ErrorRecoveryCoordinator {
     }
 
     /// Recover from service unavailable
-    async fn recover_service_unavailable(&self, connection_id: Option<ConnectionId>) -> StreamResult<bool> {
+    async fn recover_service_unavailable(
+        &self,
+        connection_id: Option<ConnectionId>,
+    ) -> StreamResult<bool> {
         debug!("Attempting to recover from service unavailable");
 
         // Wait longer for service to become available
@@ -339,11 +377,17 @@ impl ErrorRecoveryCoordinator {
             // Service unavailable usually means we should clean up the connection
             // and let the client retry
             if let Err(e) = self.connection_manager.cleanup_connection(&conn_id).await {
-                warn!("Failed to cleanup connection after service unavailable: {}", e);
+                warn!(
+                    "Failed to cleanup connection after service unavailable: {}",
+                    e
+                );
                 return Ok(false);
             }
-            
-            debug!("Cleaned up connection {} after service unavailable", conn_id);
+
+            debug!(
+                "Cleaned up connection {} after service unavailable",
+                conn_id
+            );
         }
 
         Ok(true)
@@ -369,41 +413,51 @@ impl ErrorRecoveryCoordinator {
 
         // Check for high error rates
         if metrics.errors.error_rate > 5.0 {
-            warn!("High error rate detected: {}/min, performing proactive recovery", metrics.errors.error_rate);
-            
+            warn!(
+                "High error rate detected: {}/min, performing proactive recovery",
+                metrics.errors.error_rate
+            );
+
             // Implement proactive measures:
             // 1. Reduce connection limits temporarily
             // 2. Increase timeouts
             // 3. Clear error-prone connections
-            
+
             // For now, just log the action
             info!("Proactive recovery measures applied for high error rate");
         }
 
         // Check for resource exhaustion trends
-        if metrics.performance.memory_usage_bytes > 400 * 1024 * 1024 { // 400MB
-            warn!("High memory usage detected: {}MB, performing proactive recovery", 
-                  metrics.performance.memory_usage_bytes / (1024 * 1024));
-            
+        if metrics.performance.memory_usage_bytes > 400 * 1024 * 1024 {
+            // 400MB
+            warn!(
+                "High memory usage detected: {}MB, performing proactive recovery",
+                metrics.performance.memory_usage_bytes / (1024 * 1024)
+            );
+
             // Implement memory pressure relief:
             // 1. Force cleanup of idle connections
             // 2. Reduce buffer sizes
             // 3. Trigger garbage collection
-            
+
             info!("Proactive memory recovery measures applied");
         }
 
         // Check for connection health issues
         if metrics.connections.failed_connections > 0 {
-            let failure_rate = metrics.connections.failed_connections as f64 / metrics.connections.total_connections as f64;
+            let failure_rate = metrics.connections.failed_connections as f64
+                / metrics.connections.total_connections as f64;
             if failure_rate > 0.1 {
-                warn!("High connection failure rate: {:.1}%, performing proactive recovery", failure_rate * 100.0);
-                
+                warn!(
+                    "High connection failure rate: {:.1}%, performing proactive recovery",
+                    failure_rate * 100.0
+                );
+
                 // Implement connection health measures:
                 // 1. Adjust connection timeouts
                 // 2. Implement circuit breaker patterns
                 // 3. Add connection health checks
-                
+
                 info!("Proactive connection recovery measures applied");
             }
         }
@@ -424,13 +478,10 @@ mod tests {
         let connection_manager = Arc::new(MockConnectionManager::new());
         let stream_manager = Arc::new(MockStreamManager::new());
         let metrics_collector = Arc::new(MetricsCollector::new());
-        
-        let coordinator = ErrorRecoveryCoordinator::new(
-            connection_manager,
-            stream_manager,
-            metrics_collector,
-        );
-        
+
+        let coordinator =
+            ErrorRecoveryCoordinator::new(connection_manager, stream_manager, metrics_collector);
+
         // Test that coordinator was created successfully
         assert!(std::ptr::addr_of!(coordinator).is_aligned());
     }
@@ -440,16 +491,13 @@ mod tests {
         let connection_manager = Arc::new(MockConnectionManager::new());
         let stream_manager = Arc::new(MockStreamManager::new());
         let metrics_collector = Arc::new(MetricsCollector::new());
-        
-        let coordinator = ErrorRecoveryCoordinator::new(
-            connection_manager,
-            stream_manager,
-            metrics_collector,
-        );
-        
+
+        let coordinator =
+            ErrorRecoveryCoordinator::new(connection_manager, stream_manager, metrics_collector);
+
         let error = StreamError::protocol_error("Test protocol error");
         let error_context = error.with_context("Test context");
-        
+
         let result = coordinator.attempt_recovery(error_context, None).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), false); // Should not attempt recovery for non-recoverable error
@@ -460,18 +508,17 @@ mod tests {
         let connection_manager = Arc::new(MockConnectionManager::new());
         let stream_manager = Arc::new(MockStreamManager::new());
         let metrics_collector = Arc::new(MetricsCollector::new());
-        
-        let coordinator = ErrorRecoveryCoordinator::new(
-            connection_manager,
-            stream_manager,
-            metrics_collector,
-        );
-        
+
+        let coordinator =
+            ErrorRecoveryCoordinator::new(connection_manager, stream_manager, metrics_collector);
+
         let connection_id = Uuid::new_v4();
         let error = StreamError::connection_failed("Test connection failure");
         let error_context = error.with_connection_context(connection_id, "test_operation");
-        
-        let result = coordinator.attempt_recovery(error_context, Some(connection_id)).await;
+
+        let result = coordinator
+            .attempt_recovery(error_context, Some(connection_id))
+            .await;
         assert!(result.is_ok());
         // Result depends on mock implementation, but should not error
     }
@@ -481,18 +528,17 @@ mod tests {
         let connection_manager = Arc::new(MockConnectionManager::new());
         let stream_manager = Arc::new(MockStreamManager::new());
         let metrics_collector = Arc::new(MetricsCollector::new());
-        
-        let coordinator = ErrorRecoveryCoordinator::new(
-            connection_manager,
-            stream_manager,
-            metrics_collector,
-        );
-        
+
+        let coordinator =
+            ErrorRecoveryCoordinator::new(connection_manager, stream_manager, metrics_collector);
+
         let connection_id = Uuid::new_v4();
         let error = StreamError::stream_broken(connection_id, "Test stream broken");
         let error_context = error.with_connection_context(connection_id, "data_transfer");
-        
-        let result = coordinator.attempt_recovery(error_context, Some(connection_id)).await;
+
+        let result = coordinator
+            .attempt_recovery(error_context, Some(connection_id))
+            .await;
         assert!(result.is_ok());
     }
 
@@ -501,16 +547,13 @@ mod tests {
         let connection_manager = Arc::new(MockConnectionManager::new());
         let stream_manager = Arc::new(MockStreamManager::new());
         let metrics_collector = Arc::new(MetricsCollector::new());
-        
-        let coordinator = ErrorRecoveryCoordinator::new(
-            connection_manager,
-            stream_manager,
-            metrics_collector,
-        );
-        
+
+        let coordinator =
+            ErrorRecoveryCoordinator::new(connection_manager, stream_manager, metrics_collector);
+
         let error = StreamError::resource_exhausted("memory");
         let error_context = error.with_context("Resource exhaustion test");
-        
+
         let result = coordinator.attempt_recovery(error_context, None).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), true); // Should successfully recover from resource exhaustion
@@ -521,13 +564,10 @@ mod tests {
         let connection_manager = Arc::new(MockConnectionManager::new());
         let stream_manager = Arc::new(MockStreamManager::new());
         let metrics_collector = Arc::new(MetricsCollector::new());
-        
-        let coordinator = ErrorRecoveryCoordinator::new(
-            connection_manager,
-            stream_manager,
-            metrics_collector,
-        );
-        
+
+        let coordinator =
+            ErrorRecoveryCoordinator::new(connection_manager, stream_manager, metrics_collector);
+
         let result = coordinator.perform_proactive_recovery().await;
         assert!(result.is_ok());
     }

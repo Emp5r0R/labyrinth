@@ -1,7 +1,7 @@
 //! Metrics collection and health monitoring for streaming operations
 
+use crate::streaming::errors::{ErrorSeverity, StreamError};
 use crate::streaming::{ConnectionId, ConnectionStatus};
-use crate::streaming::errors::{StreamError, ErrorSeverity};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -226,25 +226,30 @@ impl MetricsCollector {
 
         metrics.connections.total_connections += 1;
         metrics.connections.active_connections += 1;
-        
+
         // Update peak concurrent connections
-        if metrics.connections.active_connections > metrics.connections.peak_concurrent_connections {
-            metrics.connections.peak_concurrent_connections = metrics.connections.active_connections;
+        if metrics.connections.active_connections > metrics.connections.peak_concurrent_connections
+        {
+            metrics.connections.peak_concurrent_connections =
+                metrics.connections.active_connections;
         }
 
         // Track connection for duration calculation
-        tracking.insert(connection_id, ConnectionTrackingInfo {
-            start_time: Instant::now(),
-            status: ConnectionStatus::Establishing,
-            bytes_sent: 0,
-            bytes_received: 0,
-        });
+        tracking.insert(
+            connection_id,
+            ConnectionTrackingInfo {
+                start_time: Instant::now(),
+                status: ConnectionStatus::Establishing,
+                bytes_sent: 0,
+                bytes_received: 0,
+            },
+        );
 
         // Update connection rate (simple moving average)
         self.update_connection_rate().await;
-        
+
         metrics.last_updated = SystemTime::now();
-        
+
         debug!("Recorded new connection: {}", connection_id);
     }
 
@@ -261,13 +266,21 @@ impl MetricsCollector {
         // Update status counts
         let old_status_key = format!("{:?}", old_status).to_lowercase();
         let new_status_key = format!("{:?}", new_status).to_lowercase();
-        
-        if let Some(count) = metrics.connections.connections_by_status.get_mut(&old_status_key) {
+
+        if let Some(count) = metrics
+            .connections
+            .connections_by_status
+            .get_mut(&old_status_key)
+        {
             if *count > 0 {
                 *count -= 1;
             }
         }
-        *metrics.connections.connections_by_status.entry(new_status_key).or_insert(0) += 1;
+        *metrics
+            .connections
+            .connections_by_status
+            .entry(new_status_key)
+            .or_insert(0) += 1;
 
         // Update tracking info
         if let Some(info) = tracking.get_mut(&connection_id) {
@@ -279,15 +292,15 @@ impl MetricsCollector {
             (ConnectionStatus::Establishing, ConnectionStatus::Active) => {
                 // Connection became active - already counted in active_connections
             }
-            (ConnectionStatus::Active, ConnectionStatus::Closing) |
-            (ConnectionStatus::Active, ConnectionStatus::Closed) |
-            (ConnectionStatus::Active, ConnectionStatus::Error(_)) => {
+            (ConnectionStatus::Active, ConnectionStatus::Closing)
+            | (ConnectionStatus::Active, ConnectionStatus::Closed)
+            | (ConnectionStatus::Active, ConnectionStatus::Error(_)) => {
                 if metrics.connections.active_connections > 0 {
                     metrics.connections.active_connections -= 1;
                 }
             }
-            (ConnectionStatus::Establishing, ConnectionStatus::Error(_)) |
-            (ConnectionStatus::Establishing, ConnectionStatus::Closed) => {
+            (ConnectionStatus::Establishing, ConnectionStatus::Error(_))
+            | (ConnectionStatus::Establishing, ConnectionStatus::Closed) => {
                 metrics.connections.failed_connections += 1;
                 if metrics.connections.active_connections > 0 {
                     metrics.connections.active_connections -= 1;
@@ -297,8 +310,11 @@ impl MetricsCollector {
         }
 
         metrics.last_updated = SystemTime::now();
-        
-        debug!("Connection {} status changed: {:?} -> {:?}", connection_id, old_status, new_status);
+
+        debug!(
+            "Connection {} status changed: {:?} -> {:?}",
+            connection_id, old_status, new_status
+        );
     }
 
     /// Record connection cleanup
@@ -308,19 +324,20 @@ impl MetricsCollector {
 
         if let Some(info) = tracking.remove(&connection_id) {
             let duration = info.start_time.elapsed();
-            
+
             // Decrease active connections first
             if metrics.connections.active_connections > 0 {
                 metrics.connections.active_connections -= 1;
             }
-            
+
             // Update average connection duration
             let current_avg = metrics.connections.avg_connection_duration_ms;
-            let completed_connections = metrics.connections.total_connections - metrics.connections.active_connections;
-            
+            let completed_connections =
+                metrics.connections.total_connections - metrics.connections.active_connections;
+
             if completed_connections > 0 {
                 let total_duration = current_avg * completed_connections;
-                metrics.connections.avg_connection_duration_ms = 
+                metrics.connections.avg_connection_duration_ms =
                     (total_duration + duration.as_millis() as u64) / (completed_connections + 1);
             } else {
                 // First completed connection
@@ -329,12 +346,17 @@ impl MetricsCollector {
         }
 
         metrics.last_updated = SystemTime::now();
-        
+
         debug!("Recorded connection cleanup: {}", connection_id);
     }
 
     /// Record data transfer
-    pub async fn record_data_transfer(&self, connection_id: ConnectionId, bytes: u64, direction: &str) {
+    pub async fn record_data_transfer(
+        &self,
+        connection_id: ConnectionId,
+        bytes: u64,
+        direction: &str,
+    ) {
         let mut metrics = self.metrics.write().await;
         let mut tracking = self.connection_tracking.write().await;
         let mut transfer_tracking = self.transfer_tracking.write().await;
@@ -345,8 +367,8 @@ impl MetricsCollector {
 
         // Update average packet size
         if metrics.data_transfer.packets_processed > 0 {
-            metrics.data_transfer.avg_packet_size = 
-                metrics.data_transfer.total_bytes_transferred / metrics.data_transfer.packets_processed;
+            metrics.data_transfer.avg_packet_size = metrics.data_transfer.total_bytes_transferred
+                / metrics.data_transfer.packets_processed;
         }
 
         // Update connection-specific tracking
@@ -361,28 +383,40 @@ impl MetricsCollector {
         // Update throughput tracking
         let now = Instant::now();
         transfer_tracking.last_minute_bytes.push((now, bytes));
-        
+
         // Remove entries older than 1 minute
-        transfer_tracking.last_minute_bytes.retain(|(timestamp, _)| {
-            now.duration_since(*timestamp) <= Duration::from_secs(60)
-        });
+        transfer_tracking
+            .last_minute_bytes
+            .retain(|(timestamp, _)| now.duration_since(*timestamp) <= Duration::from_secs(60));
 
         // Calculate current throughput if enough time has passed
-        if now.duration_since(transfer_tracking.last_throughput_calculation) >= Duration::from_secs(1) {
-            let bytes_last_minute: u64 = transfer_tracking.last_minute_bytes.iter().map(|(_, b)| b).sum();
+        if now.duration_since(transfer_tracking.last_throughput_calculation)
+            >= Duration::from_secs(1)
+        {
+            let bytes_last_minute: u64 = transfer_tracking
+                .last_minute_bytes
+                .iter()
+                .map(|(_, b)| b)
+                .sum();
             metrics.data_transfer.bytes_per_minute = bytes_last_minute;
             metrics.data_transfer.current_throughput_bps = bytes_last_minute / 60;
-            
-            if metrics.data_transfer.current_throughput_bps > metrics.data_transfer.peak_throughput_bps {
-                metrics.data_transfer.peak_throughput_bps = metrics.data_transfer.current_throughput_bps;
+
+            if metrics.data_transfer.current_throughput_bps
+                > metrics.data_transfer.peak_throughput_bps
+            {
+                metrics.data_transfer.peak_throughput_bps =
+                    metrics.data_transfer.current_throughput_bps;
             }
-            
+
             transfer_tracking.last_throughput_calculation = now;
         }
 
         metrics.last_updated = SystemTime::now();
-        
-        debug!("Recorded data transfer: {} bytes {} for connection {}", bytes, direction, connection_id);
+
+        debug!(
+            "Recorded data transfer: {} bytes {} for connection {}",
+            bytes, direction, connection_id
+        );
     }
 
     /// Record an error
@@ -390,15 +424,23 @@ impl MetricsCollector {
         let mut metrics = self.metrics.write().await;
 
         metrics.errors.total_errors += 1;
-        
+
         // Update error category counts
         let category = error.category();
-        *metrics.errors.errors_by_category.entry(category.to_string()).or_insert(0) += 1;
-        
+        *metrics
+            .errors
+            .errors_by_category
+            .entry(category.to_string())
+            .or_insert(0) += 1;
+
         // Update error severity counts
         let severity = error.severity();
         let severity_key = format!("{:?}", severity).to_lowercase();
-        *metrics.errors.errors_by_severity.entry(severity_key).or_insert(0) += 1;
+        *metrics
+            .errors
+            .errors_by_severity
+            .entry(severity_key)
+            .or_insert(0) += 1;
 
         // Create error record
         let error_record = ErrorRecord {
@@ -421,14 +463,20 @@ impl MetricsCollector {
 
         // Update error rate (simple calculation based on last minute)
         let one_minute_ago = SystemTime::now() - Duration::from_secs(60);
-        let recent_error_count = metrics.errors.recent_errors.iter()
+        let recent_error_count = metrics
+            .errors
+            .recent_errors
+            .iter()
             .filter(|e| e.timestamp > one_minute_ago)
             .count();
         metrics.errors.error_rate = recent_error_count as f64;
 
         metrics.last_updated = SystemTime::now();
-        
-        warn!("Recorded error: {} (category: {}, severity: {:?})", error, category, severity);
+
+        warn!(
+            "Recorded error: {} (category: {}, severity: {:?})",
+            error, category, severity
+        );
     }
 
     /// Record error recovery attempt
@@ -436,7 +484,10 @@ impl MetricsCollector {
         let mut metrics = self.metrics.write().await;
 
         // Find the most recent error for this connection and update it
-        if let Some(error_record) = metrics.errors.recent_errors.iter_mut()
+        if let Some(error_record) = metrics
+            .errors
+            .recent_errors
+            .iter_mut()
             .rev()
             .find(|e| e.connection_id == Some(connection_id) && !e.recovery_attempted)
         {
@@ -445,21 +496,32 @@ impl MetricsCollector {
         }
 
         // Update recovery success rate
-        let recovery_attempts = metrics.errors.recent_errors.iter()
+        let recovery_attempts = metrics
+            .errors
+            .recent_errors
+            .iter()
             .filter(|e| e.recovery_attempted)
             .count();
-        
+
         if recovery_attempts > 0 {
-            let successful_recoveries = metrics.errors.recent_errors.iter()
+            let successful_recoveries = metrics
+                .errors
+                .recent_errors
+                .iter()
                 .filter(|e| e.recovery_successful == Some(true))
                 .count();
-            
-            metrics.errors.recovery_success_rate = (successful_recoveries as f64 / recovery_attempts as f64) * 100.0;
+
+            metrics.errors.recovery_success_rate =
+                (successful_recoveries as f64 / recovery_attempts as f64) * 100.0;
         }
 
         metrics.last_updated = SystemTime::now();
-        
-        info!("Recorded error recovery for connection {}: {}", connection_id, if successful { "successful" } else { "failed" });
+
+        info!(
+            "Recorded error recovery for connection {}: {}",
+            connection_id,
+            if successful { "successful" } else { "failed" }
+        );
     }
 
     /// Update performance metrics
@@ -478,16 +540,20 @@ impl MetricsCollector {
         metrics.performance.queue_depths = queue_depths;
 
         metrics.last_updated = SystemTime::now();
-        
-        debug!("Updated performance metrics: memory={}MB, cpu={}%, fds={}", 
-               memory_usage / (1024 * 1024), cpu_usage, file_descriptors);
+
+        debug!(
+            "Updated performance metrics: memory={}MB, cpu={}%, fds={}",
+            memory_usage / (1024 * 1024),
+            cpu_usage,
+            file_descriptors
+        );
     }
 
     /// Perform health check and update health status
     pub async fn perform_health_check(&self) -> HealthStatus {
         let mut metrics = self.metrics.write().await;
         let now = SystemTime::now();
-        
+
         let mut health_checks = HashMap::new();
         let mut health_score = 100u8;
 
@@ -538,8 +604,11 @@ impl MetricsCollector {
         metrics.health = health_status.clone();
         metrics.last_updated = now;
 
-        info!("Health check completed: score={}, status={:?}", health_score, health_status.status);
-        
+        info!(
+            "Health check completed: score={}, status={:?}",
+            health_score, health_status.status
+        );
+
         health_status
     }
 
@@ -552,13 +621,13 @@ impl MetricsCollector {
     pub async fn reset_metrics(&self) {
         let mut metrics = self.metrics.write().await;
         *metrics = StreamingMetrics::default();
-        
+
         let mut tracking = self.connection_tracking.write().await;
         tracking.clear();
-        
+
         let mut transfer_tracking = self.transfer_tracking.write().await;
         *transfer_tracking = TransferTrackingInfo::default();
-        
+
         info!("Metrics reset");
     }
 
@@ -568,13 +637,13 @@ impl MetricsCollector {
     async fn update_connection_rate(&self) {
         // Simple implementation - in production, this would use a more sophisticated algorithm
         let uptime_seconds = self.start_time.elapsed().as_secs();
-        
+
         if uptime_seconds > 0 {
             let total_connections = {
                 let metrics = self.metrics.read().await;
                 metrics.connections.total_connections
             };
-            
+
             let mut metrics = self.metrics.write().await;
             metrics.connections.connection_rate = total_connections as f64 / uptime_seconds as f64;
         }
@@ -582,15 +651,28 @@ impl MetricsCollector {
 
     async fn check_connection_health(&self, metrics: &StreamingMetrics) -> HealthCheck {
         let start = Instant::now();
-        
+
         let (status, message) = if metrics.connections.failed_connections > 0 {
-            let failure_rate = metrics.connections.failed_connections as f64 / metrics.connections.total_connections as f64;
+            let failure_rate = metrics.connections.failed_connections as f64
+                / metrics.connections.total_connections as f64;
             if failure_rate > 0.1 {
-                (HealthState::Unhealthy, format!("High connection failure rate: {:.1}%", failure_rate * 100.0))
+                (
+                    HealthState::Unhealthy,
+                    format!("High connection failure rate: {:.1}%", failure_rate * 100.0),
+                )
             } else if failure_rate > 0.05 {
-                (HealthState::Degraded, format!("Elevated connection failure rate: {:.1}%", failure_rate * 100.0))
+                (
+                    HealthState::Degraded,
+                    format!(
+                        "Elevated connection failure rate: {:.1}%",
+                        failure_rate * 100.0
+                    ),
+                )
             } else {
-                (HealthState::Healthy, "Connection health is good".to_string())
+                (
+                    HealthState::Healthy,
+                    "Connection health is good".to_string(),
+                )
             }
         } else {
             (HealthState::Healthy, "No connection failures".to_string())
@@ -607,13 +689,22 @@ impl MetricsCollector {
 
     async fn check_error_health(&self, metrics: &StreamingMetrics) -> HealthCheck {
         let start = Instant::now();
-        
+
         let (status, message) = if metrics.errors.error_rate > 10.0 {
-            (HealthState::Critical, format!("Critical error rate: {:.1}/min", metrics.errors.error_rate))
+            (
+                HealthState::Critical,
+                format!("Critical error rate: {:.1}/min", metrics.errors.error_rate),
+            )
         } else if metrics.errors.error_rate > 5.0 {
-            (HealthState::Unhealthy, format!("High error rate: {:.1}/min", metrics.errors.error_rate))
+            (
+                HealthState::Unhealthy,
+                format!("High error rate: {:.1}/min", metrics.errors.error_rate),
+            )
         } else if metrics.errors.error_rate > 1.0 {
-            (HealthState::Degraded, format!("Elevated error rate: {:.1}/min", metrics.errors.error_rate))
+            (
+                HealthState::Degraded,
+                format!("Elevated error rate: {:.1}/min", metrics.errors.error_rate),
+            )
         } else {
             (HealthState::Healthy, "Error rate is acceptable".to_string())
         };
@@ -629,13 +720,31 @@ impl MetricsCollector {
 
     async fn check_performance_health(&self, metrics: &StreamingMetrics) -> HealthCheck {
         let start = Instant::now();
-        
+
         let (status, message) = if metrics.performance.cpu_usage_percent > 90.0 {
-            (HealthState::Critical, format!("Critical CPU usage: {:.1}%", metrics.performance.cpu_usage_percent))
+            (
+                HealthState::Critical,
+                format!(
+                    "Critical CPU usage: {:.1}%",
+                    metrics.performance.cpu_usage_percent
+                ),
+            )
         } else if metrics.performance.cpu_usage_percent > 80.0 {
-            (HealthState::Unhealthy, format!("High CPU usage: {:.1}%", metrics.performance.cpu_usage_percent))
+            (
+                HealthState::Unhealthy,
+                format!(
+                    "High CPU usage: {:.1}%",
+                    metrics.performance.cpu_usage_percent
+                ),
+            )
         } else if metrics.performance.cpu_usage_percent > 70.0 {
-            (HealthState::Degraded, format!("Elevated CPU usage: {:.1}%", metrics.performance.cpu_usage_percent))
+            (
+                HealthState::Degraded,
+                format!(
+                    "Elevated CPU usage: {:.1}%",
+                    metrics.performance.cpu_usage_percent
+                ),
+            )
         } else {
             (HealthState::Healthy, "Performance is good".to_string())
         };
@@ -651,16 +760,28 @@ impl MetricsCollector {
 
     async fn check_resource_health(&self, metrics: &StreamingMetrics) -> HealthCheck {
         let start = Instant::now();
-        
+
         let memory_mb = metrics.performance.memory_usage_bytes / (1024 * 1024);
         let (status, message) = if memory_mb > 1024 {
-            (HealthState::Critical, format!("Critical memory usage: {}MB", memory_mb))
+            (
+                HealthState::Critical,
+                format!("Critical memory usage: {}MB", memory_mb),
+            )
         } else if memory_mb > 512 {
-            (HealthState::Unhealthy, format!("High memory usage: {}MB", memory_mb))
+            (
+                HealthState::Unhealthy,
+                format!("High memory usage: {}MB", memory_mb),
+            )
         } else if memory_mb > 256 {
-            (HealthState::Degraded, format!("Elevated memory usage: {}MB", memory_mb))
+            (
+                HealthState::Degraded,
+                format!("Elevated memory usage: {}MB", memory_mb),
+            )
         } else {
-            (HealthState::Healthy, "Resource usage is acceptable".to_string())
+            (
+                HealthState::Healthy,
+                "Resource usage is acceptable".to_string(),
+            )
         };
 
         HealthCheck {
@@ -688,7 +809,7 @@ mod tests {
     async fn test_metrics_collector_creation() {
         let collector = MetricsCollector::new();
         let metrics = collector.get_metrics().await;
-        
+
         assert_eq!(metrics.connections.total_connections, 0);
         assert_eq!(metrics.connections.active_connections, 0);
         assert_eq!(metrics.data_transfer.total_bytes_transferred, 0);
@@ -699,30 +820,32 @@ mod tests {
     async fn test_connection_tracking() {
         let collector = MetricsCollector::new();
         let connection_id = Uuid::new_v4();
-        
+
         // Record connection creation
         collector.record_connection_created(connection_id).await;
-        
+
         let metrics = collector.get_metrics().await;
         assert_eq!(metrics.connections.total_connections, 1);
         assert_eq!(metrics.connections.active_connections, 1);
-        
+
         // Record status change
-        collector.record_connection_status_change(
-            connection_id,
-            ConnectionStatus::Establishing,
-            ConnectionStatus::Active,
-        ).await;
-        
+        collector
+            .record_connection_status_change(
+                connection_id,
+                ConnectionStatus::Establishing,
+                ConnectionStatus::Active,
+            )
+            .await;
+
         let metrics = collector.get_metrics().await;
         assert_eq!(metrics.connections.active_connections, 1);
-        
+
         // Add a small delay to ensure measurable duration
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        
+
         // Record cleanup
         collector.record_connection_cleanup(connection_id).await;
-        
+
         let metrics = collector.get_metrics().await;
         assert!(metrics.connections.avg_connection_duration_ms > 0);
     }
@@ -731,10 +854,14 @@ mod tests {
     async fn test_data_transfer_tracking() {
         let collector = MetricsCollector::new();
         let connection_id = Uuid::new_v4();
-        
-        collector.record_data_transfer(connection_id, 1024, "sent").await;
-        collector.record_data_transfer(connection_id, 512, "received").await;
-        
+
+        collector
+            .record_data_transfer(connection_id, 1024, "sent")
+            .await;
+        collector
+            .record_data_transfer(connection_id, 512, "received")
+            .await;
+
         let metrics = collector.get_metrics().await;
         assert_eq!(metrics.data_transfer.total_bytes_transferred, 1536);
         assert_eq!(metrics.data_transfer.packets_processed, 2);
@@ -746,17 +873,20 @@ mod tests {
         let collector = MetricsCollector::new();
         let connection_id = Uuid::new_v4();
         let error = StreamError::connection_failed("Test error");
-        
+
         collector.record_error(&error, Some(connection_id)).await;
-        
+
         let metrics = collector.get_metrics().await;
         assert_eq!(metrics.errors.total_errors, 1);
-        assert_eq!(metrics.errors.errors_by_category.get("connection"), Some(&1));
+        assert_eq!(
+            metrics.errors.errors_by_category.get("connection"),
+            Some(&1)
+        );
         assert_eq!(metrics.errors.recent_errors.len(), 1);
-        
+
         // Test recovery tracking
         collector.record_error_recovery(connection_id, true).await;
-        
+
         let metrics = collector.get_metrics().await;
         assert!(metrics.errors.recovery_success_rate > 0.0);
     }
@@ -764,7 +894,7 @@ mod tests {
     #[tokio::test]
     async fn test_health_check() {
         let collector = MetricsCollector::new();
-        
+
         let health = collector.perform_health_check().await;
         assert_eq!(health.status, HealthState::Healthy);
         assert_eq!(health.health_score, 100);
@@ -778,18 +908,20 @@ mod tests {
     async fn test_metrics_reset() {
         let collector = MetricsCollector::new();
         let connection_id = Uuid::new_v4();
-        
+
         // Add some data
         collector.record_connection_created(connection_id).await;
-        collector.record_data_transfer(connection_id, 1024, "sent").await;
-        
+        collector
+            .record_data_transfer(connection_id, 1024, "sent")
+            .await;
+
         let metrics_before = collector.get_metrics().await;
         assert_eq!(metrics_before.connections.total_connections, 1);
         assert_eq!(metrics_before.data_transfer.total_bytes_transferred, 1024);
-        
+
         // Reset metrics
         collector.reset_metrics().await;
-        
+
         let metrics_after = collector.get_metrics().await;
         assert_eq!(metrics_after.connections.total_connections, 0);
         assert_eq!(metrics_after.data_transfer.total_bytes_transferred, 0);

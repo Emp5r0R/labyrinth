@@ -1,14 +1,18 @@
 use crate::error::{LabyrinthError, Result};
 // Message import already present above
+use crate::protocol::Message;
 use crate::server::core::LabyrinthServer;
+#[cfg(target_os = "linux")]
+use crate::server::netstack_bridge::NetstackBridge;
+#[cfg(target_os = "windows")]
+use crate::server::netstack_bridge_windows::WindowsNetstackBridge;
+#[cfg(target_os = "linux")]
 use crate::server::privileges::PrivilegeManager;
 use crate::styling;
 use colored::Colorize;
 use dialoguer::Input;
 use std::process::Command;
 use tracing::{error, info};
-use crate::protocol::Message;
-use crate::server::netstack_bridge::NetstackBridge;
 
 // Server-only TUN; userland stack handled by NetstackBridge
 
@@ -20,8 +24,18 @@ impl TunnelManager {
         let current_id = server.current_agent().read().await.clone();
         if let Some(agent_id) = current_id {
             // Display Fullhouse Mode header
-            println!("\n{}", "Fullhouse Mode (IP Tunneling)".cyan().bold());
+            println!(
+                "\n{}",
+                styling::format_section_title(
+                    "Fullhouse Mode",
+                    "IP tunneling and ligolo-style pivoting"
+                )
+            );
             println!("{}", "──────────────────────────".bright_black());
+            println!("{}", styling::format_hint("The selected agent stays untouched until local preflight and route setup succeed."));
+            println!();
+
+            Self::run_fullhouse_preflight()?;
             println!();
 
             // Get tunnel configuration from user with validation
@@ -84,8 +98,10 @@ impl TunnelManager {
                 ))
             );
 
-            // Create TUN interface and setup routing
+            #[cfg(target_os = "linux")]
             let tun = Self::setup_tunnel(&tun_name, &subnet).await?;
+            #[cfg(target_os = "windows")]
+            Self::setup_tunnel_windows(&tun_name, &subnet).await?;
 
             // Send tunnel start message to agent
             let mut agents = server.agents().write().await;
@@ -96,12 +112,25 @@ impl TunnelManager {
                 };
 
                 if let Err(e) = agent.sender.send(start_msg).await {
-                    error!("Failed to send tunnel start request to agent {}: {}", agent.id, e);
-                    return Err(LabyrinthError::Message(format!("Failed to send tunnel start request: {}", e)));
+                    error!(
+                        "Failed to send tunnel start request to agent {}: {}",
+                        agent.id, e
+                    );
+                    return Err(LabyrinthError::Message(format!(
+                        "Failed to send tunnel start request: {}",
+                        e
+                    )));
                 }
 
                 // Start server-side bridge to drive ligolo-like behavior
+                #[cfg(target_os = "linux")]
                 NetstackBridge::start(tun, agent.sender.clone());
+                #[cfg(target_os = "windows")]
+                {
+                    WindowsNetstackBridge::start(&tun_name, agent.sender.clone()).map_err(|e| {
+                        LabyrinthError::Message(format!("Failed to start Wintun bridge: {}", e))
+                    })?;
+                }
 
                 // Update agent status
                 agent.tunnel_active = true;
@@ -125,8 +154,7 @@ impl TunnelManager {
                     "Selected agent not found".to_string(),
                 ));
             }
-        }
-        else {
+        } else {
             println!(
                 "{}",
                 styling::format_warning_msg(
@@ -136,6 +164,154 @@ impl TunnelManager {
             );
         }
         Ok(())
+    }
+
+    fn run_fullhouse_preflight() -> Result<()> {
+        println!(
+            "{}",
+            styling::format_section_title("Fullhouse Preflight", "host capability checks")
+        );
+        println!("{}", "──────────────────".bright_black());
+
+        #[cfg(target_os = "linux")]
+        {
+            let root = PrivilegeManager::has_sudo_privileges();
+            if root {
+                println!("{}", styling::format_check_item("Root privileges detected"));
+            } else {
+                println!("{}", styling::format_cross_item("Root privileges missing"));
+                println!(
+                    "{}",
+                    styling::format_hint(
+                        "Re-run the server with sudo to create TUN devices and routing rules."
+                    )
+                );
+                return Err(LabyrinthError::Message(
+                    PrivilegeManager::create_sudo_error("Fullhouse mode"),
+                ));
+            }
+
+            for bin in ["ip", "iptables", "sysctl"] {
+                if Self::command_exists(bin) {
+                    println!(
+                        "{}",
+                        styling::format_check_item(&format!("Found '{}'", bin))
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        styling::format_cross_item(&format!("Missing '{}'", bin))
+                    );
+                    println!(
+                        "{}",
+                        styling::format_hint(
+                            "Install the missing networking utility before enabling Fullhouse."
+                        )
+                    );
+                    return Err(LabyrinthError::Message(format!(
+                        "Required system tool '{}' is missing",
+                        bin
+                    )));
+                }
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let admin = Self::windows_is_admin()?;
+            if admin {
+                println!(
+                    "{}",
+                    styling::format_check_item("Administrator privileges detected")
+                );
+            } else {
+                println!(
+                    "{}",
+                    styling::format_cross_item("Administrator privileges missing")
+                );
+                println!(
+                    "{}",
+                    styling::format_hint(
+                        "Launch Labyrinth from an elevated PowerShell or Command Prompt."
+                    )
+                );
+                return Err(LabyrinthError::Message(
+                    "Fullhouse mode on Windows requires running as Administrator".to_string(),
+                ));
+            }
+
+            let wintun_ok = unsafe { wintun::load().is_ok() };
+            if wintun_ok {
+                println!("{}", styling::format_check_item("Loaded wintun.dll"));
+            } else {
+                println!("{}", styling::format_cross_item("wintun.dll not found"));
+                println!(
+                    "{}",
+                    styling::format_hint(
+                        "Place wintun.dll beside labyrinth.exe or add it to PATH."
+                    )
+                );
+                return Err(LabyrinthError::Message(
+                    "wintun.dll is required for Windows Fullhouse mode. Place it next to labyrinth.exe or in PATH."
+                        .to_string(),
+                ));
+            }
+
+            if Self::command_exists("powershell") {
+                println!("{}", styling::format_check_item("PowerShell available"));
+            } else {
+                println!("{}", styling::format_cross_item("PowerShell not available"));
+                println!(
+                    "{}",
+                    styling::format_hint(
+                        "PowerShell is used to assign IPs and routes to the Wintun adapter."
+                    )
+                );
+                return Err(LabyrinthError::Message(
+                    "PowerShell is required for Windows Fullhouse route setup".to_string(),
+                ));
+            }
+        }
+
+        println!("{}", styling::format_check_item("Preflight checks passed"));
+        Ok(())
+    }
+
+    fn command_exists(cmd: &str) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("where")
+                .arg(cmd)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            Command::new("sh")
+                .args(["-c", &format!("command -v {}", cmd)])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn windows_is_admin() -> Result<bool> {
+        let cmd = "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)";
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-Command", cmd])
+            .output()?;
+        if !out.status.success() {
+            return Err(LabyrinthError::Message(format!(
+                "Failed to check Windows admin privileges: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .to_ascii_lowercase()
+            .contains("true"))
     }
 
     pub async fn stop_tunnel(server: &LabyrinthServer) -> Result<()> {
@@ -208,22 +384,30 @@ impl TunnelManager {
                             "{}",
                             styling::format_warning_msg(
                                 styling::WARNING_INDICATOR,
-                                &format!("Failed to send stop tunnel request to agent {}: {}", agent.id, e)
+                                &format!(
+                                    "Failed to send stop tunnel request to agent {}: {}",
+                                    agent.id, e
+                                )
                             )
                         );
                     }
 
                     // Cleanup local tunnel
                     if let Some(ref tun_name) = agent.tun_name {
-                        if let Err(e) = Self::cleanup_tunnel(
+                        #[cfg(target_os = "linux")]
+                        let cleanup_result = Self::cleanup_tunnel(
                             tun_name,
                             agent
                                 .tunnel_subnet
                                 .as_ref()
                                 .unwrap_or(&"unknown".to_string()),
                         )
-                        .await
-                        {
+                        .await;
+
+                        #[cfg(target_os = "windows")]
+                        let cleanup_result = Self::cleanup_tunnel_windows(tun_name).await;
+
+                        if let Err(e) = cleanup_result {
                             println!(
                                 "{}",
                                 styling::format_warning_msg(
@@ -260,11 +444,12 @@ impl TunnelManager {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     async fn setup_tunnel(tun_name: &str, subnet: &str) -> Result<tokio_tun::Tun> {
         // Check for sudo privileges before attempting tunnel operations
         if !PrivilegeManager::has_sudo_privileges() {
             return Err(LabyrinthError::Message(
-                PrivilegeManager::create_sudo_error("Fullhouse mode")
+                PrivilegeManager::create_sudo_error("Fullhouse mode"),
             ));
         }
 
@@ -313,6 +498,37 @@ impl TunnelManager {
         Ok(tun)
     }
 
+    #[cfg(target_os = "windows")]
+    async fn setup_tunnel_windows(tun_name: &str, subnet: &str) -> Result<()> {
+        info!(
+            "[+] Preparing Wintun interface {} for subnet {}",
+            tun_name, subnet
+        );
+
+        let ps = format!(
+            "$name='{}'; \
+            $a=Get-NetAdapter -Name $name -ErrorAction SilentlyContinue; \
+            if (-not $a) {{ exit 0 }}; \
+            $idx=$a.ifIndex; \
+            New-NetIPAddress -InterfaceIndex $idx -IPAddress 10.0.0.1 -PrefixLength 24 -AddressFamily IPv4 -ErrorAction SilentlyContinue | Out-Null; \
+            New-NetRoute -DestinationPrefix '{}' -InterfaceIndex $idx -NextHop 0.0.0.0 -ErrorAction SilentlyContinue | Out-Null;",
+            tun_name, subnet
+        );
+
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .output()?;
+        if !output.status.success() {
+            return Err(LabyrinthError::Message(format!(
+                "Failed to configure Wintun routes: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
     async fn cleanup_tunnel(tun_name: &str, subnet: &str) -> Result<()> {
         info!(
             "[+] Cleaning up tunnel interface {} for subnet {}",
@@ -347,6 +563,20 @@ impl TunnelManager {
         Ok(())
     }
 
+    #[cfg(target_os = "windows")]
+    async fn cleanup_tunnel_windows(tun_name: &str) -> Result<()> {
+        let ps = format!(
+            "$name='{}'; $a=Get-NetAdapter -Name $name -ErrorAction SilentlyContinue; \
+            if ($a) {{ Remove-NetIPAddress -InterfaceIndex $a.ifIndex -Confirm:$false -ErrorAction SilentlyContinue | Out-Null }}",
+            tun_name
+        );
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .output();
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
     fn run_command(cmd: &str, args: &[&str]) -> Result<()> {
         let output = Command::new(cmd).args(args).output()?;
         if !output.status.success() {
