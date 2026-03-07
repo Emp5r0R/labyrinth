@@ -470,15 +470,14 @@ impl TunnelManager {
 
         // Setup routing
         Self::run_command("sysctl", &["-w", "net.ipv4.ip_forward=1"])?;
-        Self::run_command("ip", &["route", "add", subnet, "dev", tun_name])?;
+        Self::run_command("ip", &["route", "replace", subnet, "dev", tun_name])?;
 
         // Setup iptables for NAT
-        Self::run_command(
+        Self::ensure_iptables_rule(
             "iptables",
             &[
                 "-t",
                 "nat",
-                "-A",
                 "POSTROUTING",
                 "-s",
                 "10.0.0.0/24",
@@ -486,16 +485,37 @@ impl TunnelManager {
                 "MASQUERADE",
             ],
         )?;
-        Self::run_command(
-            "iptables",
-            &["-A", "FORWARD", "-i", tun_name, "-j", "ACCEPT"],
-        )?;
-        Self::run_command(
-            "iptables",
-            &["-A", "FORWARD", "-o", tun_name, "-j", "ACCEPT"],
-        )?;
+        Self::ensure_iptables_rule("iptables", &["FORWARD", "-i", tun_name, "-j", "ACCEPT"])?;
+        Self::ensure_iptables_rule("iptables", &["FORWARD", "-o", tun_name, "-j", "ACCEPT"])?;
 
         Ok(tun)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn ensure_iptables_rule(cmd: &str, rule_args: &[&str]) -> Result<()> {
+        let mut check_args = Vec::with_capacity(rule_args.len() + 1);
+        if rule_args.starts_with(&["-t", "nat"]) {
+            check_args.extend(["-t", "nat", "-C"]);
+            check_args.extend(rule_args.iter().skip(2).copied());
+        } else {
+            check_args.push("-C");
+            check_args.extend(rule_args.iter().copied());
+        }
+
+        if Self::command_succeeds(cmd, &check_args)? {
+            return Ok(());
+        }
+
+        let mut add_args = Vec::with_capacity(rule_args.len() + 1);
+        if rule_args.starts_with(&["-t", "nat"]) {
+            add_args.extend(["-t", "nat", "-A"]);
+            add_args.extend(rule_args.iter().skip(2).copied());
+        } else {
+            add_args.push("-A");
+            add_args.extend(rule_args.iter().copied());
+        }
+
+        Self::run_command(cmd, &add_args)
     }
 
     #[cfg(target_os = "windows")]
@@ -590,6 +610,11 @@ impl TunnelManager {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    fn command_succeeds(cmd: &str, args: &[&str]) -> Result<bool> {
+        Ok(Command::new(cmd).args(args).output()?.status.success())
+    }
+
     fn validate_cidr(input: &str) -> bool {
         // Check if input contains CIDR notation (has a slash)
         if !input.contains('/') {
@@ -622,5 +647,20 @@ impl TunnelManager {
         }
 
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TunnelManager;
+
+    #[test]
+    fn validate_cidr_accepts_ipv4_networks() {
+        assert!(TunnelManager::validate_cidr("192.168.100.0/24"));
+    }
+
+    #[test]
+    fn validate_cidr_rejects_invalid_prefix() {
+        assert!(!TunnelManager::validate_cidr("192.168.100.0/99"));
     }
 }
