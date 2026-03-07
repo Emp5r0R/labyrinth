@@ -12,7 +12,7 @@ use crate::styling;
 use colored::Colorize;
 use dialoguer::Input;
 use std::process::Command;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 // Server-only TUN; userland stack handled by NetstackBridge
 
@@ -460,13 +460,18 @@ impl TunnelManager {
 
         // Create TUN interface
         let tun_ip = "10.0.0.1"; // Default server IP for tunnel
-        let tun = tokio_tun::Tun::builder()
-            .name(tun_name)
-            .tap(false)
-            .packet_info(false)
-            .up()
-            .address(tun_ip.parse().unwrap())
-            .try_build()?;
+        let tun = match Self::build_linux_tun(tun_name, tun_ip) {
+            Ok(tun) => tun,
+            Err(err) if Self::should_recover_existing_tun(&err) => {
+                warn!(
+                    "Detected stale tunnel interface {}. Removing it before retrying setup.",
+                    tun_name
+                );
+                let _ = Self::run_command("ip", &["link", "del", tun_name]);
+                Self::build_linux_tun(tun_name, tun_ip)?
+            }
+            Err(err) => return Err(err),
+        };
 
         // Setup routing
         Self::run_command("sysctl", &["-w", "net.ipv4.ip_forward=1"])?;
@@ -489,6 +494,25 @@ impl TunnelManager {
         Self::ensure_iptables_rule("iptables", &["FORWARD", "-o", tun_name, "-j", "ACCEPT"])?;
 
         Ok(tun)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn build_linux_tun(tun_name: &str, tun_ip: &str) -> Result<tokio_tun::Tun> {
+        Ok(tokio_tun::Tun::builder()
+            .name(tun_name)
+            .tap(false)
+            .packet_info(false)
+            .up()
+            .address(tun_ip.parse().unwrap())
+            .try_build()?)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn should_recover_existing_tun(err: &LabyrinthError) -> bool {
+        let message = err.to_string().to_ascii_lowercase();
+        message.contains("exists")
+            || message.contains("already in use")
+            || message.contains("device or resource busy")
     }
 
     #[cfg(target_os = "linux")]
@@ -653,6 +677,7 @@ impl TunnelManager {
 #[cfg(test)]
 mod tests {
     use super::TunnelManager;
+    use crate::error::LabyrinthError;
 
     #[test]
     fn validate_cidr_accepts_ipv4_networks() {
@@ -662,5 +687,12 @@ mod tests {
     #[test]
     fn validate_cidr_rejects_invalid_prefix() {
         assert!(!TunnelManager::validate_cidr("192.168.100.0/99"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stale_tun_detection_matches_existing_device_errors() {
+        let err = LabyrinthError::Message("device or resource busy: interface exists".to_string());
+        assert!(TunnelManager::should_recover_existing_tun(&err));
     }
 }
