@@ -56,6 +56,7 @@ impl AgentManager {
                 tun_name: None,
                 last_seen: Arc::new(tokio::sync::Mutex::new(std::time::Instant::now())),
                 command_response: Arc::new(tokio::sync::Mutex::new(None)),
+                shell_events: Arc::new(tokio::sync::Mutex::new(None)),
             };
 
             // Spawn the reader and writer tasks.
@@ -140,7 +141,8 @@ mod tests {
         let server = LabyrinthServer::new(false, None);
         let agent = make_agent(None);
 
-        let result = AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap());
+        let result =
+            AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap());
         assert!(result.is_ok());
     }
 
@@ -149,7 +151,8 @@ mod tests {
         let server = LabyrinthServer::new(true, Some("secret".into()));
         let agent = make_agent(None);
 
-        let result = AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap());
+        let result =
+            AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap());
         assert!(matches!(result, Err(LabyrinthError::Message(_))));
     }
 
@@ -158,7 +161,8 @@ mod tests {
         let server = LabyrinthServer::new(true, Some("secret".into()));
         let agent = make_agent(Some("bad"));
 
-        let result = AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap());
+        let result =
+            AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap());
         assert!(matches!(result, Err(LabyrinthError::Message(_))));
     }
 
@@ -167,7 +171,8 @@ mod tests {
         let server = LabyrinthServer::new(true, Some("secret".into()));
         let agent = make_agent(Some("secret"));
 
-        let result = AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap());
+        let result =
+            AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap());
         assert!(result.is_ok());
     }
 }

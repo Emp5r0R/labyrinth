@@ -9,13 +9,13 @@ impl SystemInfoCollector {
             .unwrap_or_else(|_| "unknown".into())
             .to_string_lossy()
             .to_string();
-        
+
         let os = std::env::consts::OS.to_string();
         let arch = std::env::consts::ARCH.to_string();
-        
+
         // Get network interfaces
         let interfaces = Self::get_network_interfaces();
-        
+
         AgentInfo {
             name: format!("{}@{}", whoami::username(), hostname),
             hostname,
@@ -28,18 +28,18 @@ impl SystemInfoCollector {
 
     fn get_network_interfaces() -> Vec<NetworkInterface> {
         let mut interfaces = Vec::new();
-        
+
         // Use a simple approach to get network interfaces
         if let Ok(output) = std::process::Command::new("ip")
             .args(["addr", "show"])
-            .output() 
+            .output()
         {
             let output_str = String::from_utf8_lossy(&output.stdout);
             let mut current_interface: Option<NetworkInterface> = None;
-            
+
             for line in output_str.lines() {
                 let line = line.trim();
-                
+
                 // Parse interface line (e.g., "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500")
                 if let Some(colon_pos) = line.find(':') {
                     if let Some(second_colon) = line[colon_pos + 1..].find(':') {
@@ -49,7 +49,7 @@ impl SystemInfoCollector {
                             if let Some(iface) = current_interface.take() {
                                 interfaces.push(iface);
                             }
-                            
+
                             // Extract flags and MTU
                             let flags_start = line.find('<').unwrap_or(0);
                             let flags_end = line.find('>').unwrap_or(line.len());
@@ -58,16 +58,19 @@ impl SystemInfoCollector {
                             } else {
                                 ""
                             };
-                            let flags: Vec<String> = flags_str.split(',').map(|s| s.to_string()).collect();
-                            
+                            let flags: Vec<String> =
+                                flags_str.split(',').map(|s| s.to_string()).collect();
+
                             let mtu = if let Some(mtu_pos) = line.find("mtu ") {
-                                line[mtu_pos + 4..].split_whitespace().next()
+                                line[mtu_pos + 4..]
+                                    .split_whitespace()
+                                    .next()
                                     .and_then(|s| s.parse().ok())
                                     .unwrap_or(1500)
                             } else {
                                 1500
                             };
-                            
+
                             current_interface = Some(NetworkInterface {
                                 name: iface_name.to_string(),
                                 addresses: Vec::new(),
@@ -78,7 +81,7 @@ impl SystemInfoCollector {
                         }
                     }
                 }
-                
+
                 // Parse inet line (e.g., "inet 192.168.1.100/24 brd 192.168.1.255 scope global eth0")
                 if line.starts_with("inet ") {
                     if let Some(ref mut iface) = current_interface {
@@ -87,7 +90,7 @@ impl SystemInfoCollector {
                         }
                     }
                 }
-                
+
                 // Parse link/ether line (e.g., "link/ether 00:11:22:33:44:55 brd ff:ff:ff:ff:ff:ff")
                 if line.starts_with("link/ether ") {
                     if let Some(ref mut iface) = current_interface {
@@ -97,13 +100,13 @@ impl SystemInfoCollector {
                     }
                 }
             }
-            
+
             // Don't forget the last interface
             if let Some(iface) = current_interface {
                 interfaces.push(iface);
             }
         }
-        
+
         // Fallback if ip command fails
         if interfaces.is_empty() {
             interfaces.push(NetworkInterface {
@@ -114,7 +117,7 @@ impl SystemInfoCollector {
                 flags: vec!["UP".to_string()],
             });
         }
-        
+
         interfaces
     }
 }

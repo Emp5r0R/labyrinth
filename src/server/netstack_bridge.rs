@@ -16,9 +16,9 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::sync::{Mutex as StdMutex, OnceLock};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, Mutex};
-use std::sync::{Mutex as StdMutex, OnceLock};
 use tracing::{debug, info, warn};
 
 // Global inbound hook so server agent reader can deliver Stream messages to the bridge
@@ -77,9 +77,11 @@ impl NetstackBridge {
     pub async fn try_handle_agent_stream(msg: &StreamMessage) -> bool {
         if let Ok(guard) = inbound_sender_slot().lock() {
             if let Some(tx) = guard.as_ref() {
-            // Only handle stream messages relevant to Fullhouse data path
+                // Only handle stream messages relevant to Fullhouse data path
                 match msg {
-                    StreamMessage::Data { .. } | StreamMessage::Close { .. } | StreamMessage::SetupAck { .. } => {
+                    StreamMessage::Data { .. }
+                    | StreamMessage::Close { .. }
+                    | StreamMessage::SetupAck { .. } => {
                         // best-effort enqueue without backpressure to avoid blocking the control path
                         let _ = tx.try_send(msg.clone());
                         return true;
@@ -109,7 +111,9 @@ impl NetstackBridge {
                             debug!(len = n, ?key, "TUN frame received");
 
                             let mut flows_lock = flows.lock().await;
-                            if let std::collections::hash_map::Entry::Vacant(e) = flows_lock.entry(key) {
+                            if let std::collections::hash_map::Entry::Vacant(e) =
+                                flows_lock.entry(key)
+                            {
                                 // New flow detected -> allocate connection_id and notify agent
                                 let connection_id = uuid::Uuid::new_v4();
                                 let mapping = PortMapping {
@@ -117,7 +121,10 @@ impl NetstackBridge {
                                     target_host: key.dst_ip.to_string(),
                                     target_port: key.dst_port,
                                 };
-                                let setup = StreamMessage::Setup { connection_id, mapping };
+                                let setup = StreamMessage::Setup {
+                                    connection_id,
+                                    mapping,
+                                };
                                 let _ = agent_tx.send(Message::Stream(setup)).await;
 
                                 e.insert(FlowEntry {
@@ -160,12 +167,18 @@ impl NetstackBridge {
         tokio::spawn(async move {
             while let Some(msg) = inbound_rx.recv().await {
                 match msg {
-                    StreamMessage::Data { connection_id, payload, direction } => {
+                    StreamMessage::Data {
+                        connection_id,
+                        payload,
+                        direction,
+                    } => {
                         if direction == DataDirection::TargetToClient {
                             // Lookup flow and write to stack/TUN
                             let key_opt = {
                                 let map = flows_for_agent.lock().await;
-                                map.values().find(|f| f.connection_id == connection_id).map(|f| f.key)
+                                map.values()
+                                    .find(|f| f.connection_id == connection_id)
+                                    .map(|f| f.key)
                             };
                             if let Some(_key) = key_opt {
                                 // For now, write raw payload handling is not implemented.
@@ -177,16 +190,27 @@ impl NetstackBridge {
                     }
                     StreamMessage::Close { connection_id, .. } => {
                         let mut map = flows_for_agent.lock().await;
-                        if let Some(k) = map.iter().find(|(_k, v)| v.connection_id == connection_id).map(|(k, _)| *k) {
+                        if let Some(k) = map
+                            .iter()
+                            .find(|(_k, v)| v.connection_id == connection_id)
+                            .map(|(k, _)| *k)
+                        {
                             map.remove(&k);
                         }
                     }
-                    StreamMessage::SetupAck { connection_id, success, error_message } => {
+                    StreamMessage::SetupAck {
+                        connection_id,
+                        success,
+                        error_message,
+                    } => {
                         if !success {
                             warn!(cid = %connection_id, err = ?error_message, "Agent failed to setup target socket");
                         } else {
                             let mut map = flows_for_agent.lock().await;
-                            if let Some((_k, entry)) = map.iter_mut().find(|(_k, v)| v.connection_id == connection_id) {
+                            if let Some((_k, entry)) = map
+                                .iter_mut()
+                                .find(|(_k, v)| v.connection_id == connection_id)
+                            {
                                 entry.established = true;
                             }
                         }
@@ -211,26 +235,47 @@ impl NetstackBridge {
 
 // Returns (flow_key, tcp_offset, ip_offset)
 fn parse_ipv4_tcp_offsets(pkt: &[u8]) -> Option<(FlowKey, usize, usize)> {
-    if pkt.len() < 20 { return None; }
+    if pkt.len() < 20 {
+        return None;
+    }
     let version = pkt[0] >> 4;
-    if version != 4 { return None; }
+    if version != 4 {
+        return None;
+    }
     let ihl = (pkt[0] & 0x0f) as usize * 4;
-    if pkt.len() < ihl + 20 { return None; }
+    if pkt.len() < ihl + 20 {
+        return None;
+    }
     let proto = pkt[9];
-    if proto != 6 { return None; }
+    if proto != 6 {
+        return None;
+    }
     let src_ip = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
     let dst_ip = Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]);
     let tcp_off = ihl;
     let tcp = &pkt[tcp_off..];
     let src_port = u16::from_be_bytes([tcp[0], tcp[1]]);
     let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
-    Some((FlowKey { src_ip, dst_ip, src_port, dst_port }, tcp_off, 0))
+    Some((
+        FlowKey {
+            src_ip,
+            dst_ip,
+            src_port,
+            dst_port,
+        },
+        tcp_off,
+        0,
+    ))
 }
 
 fn tcp_payload_slice(pkt: &[u8], tcp_off: usize) -> Option<&[u8]> {
-    if pkt.len() < tcp_off + 20 { return None; }
+    if pkt.len() < tcp_off + 20 {
+        return None;
+    }
     let data_offset = (pkt[tcp_off + 12] >> 4) as usize * 4; // upper 4 bits in offset/flags
     let start = tcp_off + data_offset;
-    if pkt.len() < start { return None; }
+    if pkt.len() < start {
+        return None;
+    }
     Some(&pkt[start..])
 }

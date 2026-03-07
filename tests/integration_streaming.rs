@@ -1,15 +1,15 @@
 //! Integration tests for end-to-end streaming functionality
-//! 
+//!
 //! This module tests the complete client-to-target data flow through the streaming tunnel,
 //! concurrent connection handling, resource management, error handling, and performance
 //! benchmarks comparing old vs new implementation.
 
-use labyrinth::streaming::{
-    ConnectionId, ConnectionManager, ConnectionStatus,
-    DataDirection, PortMapping, StreamManager, StreamMessage,
-};
-use labyrinth::streaming::stream_manager::BidirectionalStreamManager;
 use labyrinth::streaming::connection_manager::ServerConnectionManager;
+use labyrinth::streaming::stream_manager::BidirectionalStreamManager;
+use labyrinth::streaming::{
+    ConnectionId, ConnectionManager, ConnectionStatus, DataDirection, PortMapping, StreamManager,
+    StreamMessage,
+};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::Arc;
@@ -72,8 +72,9 @@ impl StreamingTestHarness {
         let config = TestConfig::default();
         let connection_manager = Arc::new(ServerConnectionManager::new());
         let buffer_size = config.buffer_size;
-        let (stream_manager, message_receiver) = BidirectionalStreamManager::with_buffer_size(buffer_size);
-        
+        let (stream_manager, message_receiver) =
+            BidirectionalStreamManager::with_buffer_size(buffer_size);
+
         Self {
             config,
             connection_manager,
@@ -100,13 +101,13 @@ impl StreamingTestHarness {
                         if n == 0 {
                             break;
                         }
-                        
+
                         // Store received data
                         {
                             let mut data = received_data.lock().await;
                             data.extend_from_slice(&buffer[..n]);
                         }
-                        
+
                         // Echo the data back
                         if stream.write_all(&buffer[..n]).await.is_err() {
                             break;
@@ -127,7 +128,7 @@ impl StreamingTestHarness {
         // Create a mock client connection
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let local_addr = listener.local_addr()?;
-        
+
         // Connect to ourselves to create a TcpStream pair
         let client_stream = TcpStream::connect(local_addr).await?;
         let (server_stream, _) = listener.accept().await?;
@@ -142,8 +143,7 @@ impl StreamingTestHarness {
         // Track using production flow semantics and hand the accepted socket to stream manager
         let connection_id = Uuid::new_v4();
         let client_addr = server_stream.peer_addr()?;
-        self
-            .connection_manager
+        self.connection_manager
             .track_existing_connection(connection_id, client_addr, mapping)
             .await
             .map_err(|e| std::io::Error::new(ErrorKind::Other, e.to_string()))?;
@@ -157,16 +157,20 @@ impl StreamingTestHarness {
     }
 
     /// Wait for and collect stream messages
-    async fn collect_stream_messages(&self, count: usize, timeout_duration: Duration) -> Vec<StreamMessage> {
+    async fn collect_stream_messages(
+        &self,
+        count: usize,
+        timeout_duration: Duration,
+    ) -> Vec<StreamMessage> {
         let mut messages = Vec::new();
         let mut receiver = self.message_receiver.lock().await;
-        
+
         let effective_timeout = std::cmp::min(timeout_duration, self.config.operation_timeout);
         let deadline = Instant::now() + effective_timeout;
-        
+
         while messages.len() < count && Instant::now() < deadline {
             let remaining_time = deadline.duration_since(Instant::now());
-            
+
             match tokio::time::timeout(remaining_time, receiver.recv()).await {
                 Ok(Some(message)) => {
                     messages.push(message);
@@ -175,7 +179,7 @@ impl StreamingTestHarness {
                 Err(_) => break,   // Timeout
             }
         }
-        
+
         messages
     }
 }
@@ -184,7 +188,7 @@ impl StreamingTestHarness {
 #[tokio::test]
 async fn test_end_to_end_data_flow() {
     let harness = StreamingTestHarness::new().await;
-    
+
     // Start target server
     let Some((target_port, _received_data)) =
         handle_io_result(harness.start_target_server().await, "start target server")
@@ -193,18 +197,16 @@ async fn test_end_to_end_data_flow() {
     };
 
     // Setup streaming connection
-    let Some((connection_id, mut client_stream)) =
-        handle_io_result(
-            harness.setup_streaming_connection(target_port).await,
-            "setup streaming connection",
-        )
-    else {
+    let Some((connection_id, mut client_stream)) = handle_io_result(
+        harness.setup_streaming_connection(target_port).await,
+        "setup streaming connection",
+    ) else {
         return;
     };
 
     // Test data to send
     let test_data = b"Hello, streaming world!";
-    
+
     // Send data from client
     client_stream
         .write_all(test_data)
@@ -218,9 +220,13 @@ async fn test_end_to_end_data_flow() {
 
     // Verify we received a data message
     assert!(!messages.is_empty(), "No stream messages received");
-    
+
     match &messages[0] {
-        StreamMessage::Data { connection_id: msg_conn_id, payload, direction } => {
+        StreamMessage::Data {
+            connection_id: msg_conn_id,
+            payload,
+            direction,
+        } => {
             assert_eq!(*msg_conn_id, connection_id);
             assert_eq!(payload.as_ref(), test_data);
             assert_eq!(*direction, DataDirection::ClientToTarget);
@@ -234,7 +240,7 @@ async fn test_end_to_end_data_flow() {
         .get_connection_stats()
         .await
         .expect("Failed to get connection stats");
-    
+
     assert!(stats.total_connections > 0);
     assert!(stats.total_connections >= 1);
 
@@ -246,11 +252,11 @@ async fn test_end_to_end_data_flow() {
 async fn test_concurrent_connections() {
     let harness = StreamingTestHarness::new().await;
     let concurrent_count = harness.config.concurrent_connections;
-    
+
     // Start multiple target servers
     let mut target_ports = Vec::new();
     let mut _received_data_handles = Vec::new();
-    
+
     for _ in 0..concurrent_count {
         let Some((port, data_handle)) =
             handle_io_result(harness.start_target_server().await, "start target server")
@@ -263,18 +269,16 @@ async fn test_concurrent_connections() {
 
     // Create concurrent connections
     let mut connection_handles = Vec::new();
-    
+
     for (i, &target_port) in target_ports.iter().enumerate() {
         let harness_clone = harness.clone();
         let handle = tokio::spawn(async move {
             let test_data = format!("Test data from connection {}", i);
-            
-            let Some((connection_id, mut client_stream)) =
-                handle_io_result(
-                    harness_clone.setup_streaming_connection(target_port).await,
-                    "setup streaming connection",
-                )
-            else {
+
+            let Some((connection_id, mut client_stream)) = handle_io_result(
+                harness_clone.setup_streaming_connection(target_port).await,
+                "setup streaming connection",
+            ) else {
                 return None;
             };
 
@@ -287,7 +291,7 @@ async fn test_concurrent_connections() {
 
             Some((connection_id, test_data))
         });
-        
+
         connection_handles.push(handle);
     }
 
@@ -308,7 +312,7 @@ async fn test_concurrent_connections() {
 
     // Verify all connections succeeded
     assert_eq!(results.len(), concurrent_count);
-    
+
     let stream_messages = harness
         .collect_stream_messages(concurrent_count * 3, Duration::from_secs(10))
         .await;
@@ -324,7 +328,10 @@ async fn test_concurrent_connections() {
             )
         });
         assert!(found, "Missing data message for connection {}", i);
-        info!("✅ Connection {} ({}) completed successfully", i, connection_id);
+        info!(
+            "✅ Connection {} ({}) completed successfully",
+            i, connection_id
+        );
     }
 
     // Verify resource management
@@ -333,16 +340,19 @@ async fn test_concurrent_connections() {
         .get_connection_stats()
         .await
         .expect("Failed to get connection stats");
-    
+
     assert_eq!(stats.total_connections, concurrent_count);
-    info!("✅ Concurrent connections test passed with {} connections", concurrent_count);
+    info!(
+        "✅ Concurrent connections test passed with {} connections",
+        concurrent_count
+    );
 }
 
 /// Test proper cleanup and error handling in various failure scenarios
 #[tokio::test]
 async fn test_error_handling_and_cleanup() {
     let harness = StreamingTestHarness::new().await;
-    
+
     // Test 1: Connection to non-existent target
     {
         let non_existent_port = 65534; // Unlikely to be in use
@@ -380,18 +390,21 @@ async fn test_error_handling_and_cleanup() {
             .connection_manager
             .handle_new_connection(server_stream, mapping)
             .await;
-        
+
         if let Ok(connection_id) = result {
             // Try to create bidirectional stream - this should handle the error
             let _stream_result = harness
                 .stream_manager
                 .create_bidirectional_stream(connection_id, client_stream)
                 .await;
-            
+
             // Cleanup the connection
-            let _ = harness.connection_manager.cleanup_connection(&connection_id).await;
+            let _ = harness
+                .connection_manager
+                .cleanup_connection(&connection_id)
+                .await;
         }
-        
+
         info!("✅ Non-existent target error handling test passed");
     }
 
@@ -403,12 +416,10 @@ async fn test_error_handling_and_cleanup() {
             return;
         };
 
-        let Some((connection_id, client_stream)) =
-            handle_io_result(
-                harness.setup_streaming_connection(target_port).await,
-                "setup streaming connection",
-            )
-        else {
+        let Some((connection_id, client_stream)) = handle_io_result(
+            harness.setup_streaming_connection(target_port).await,
+            "setup streaming connection",
+        ) else {
             return;
         };
 
@@ -438,7 +449,7 @@ async fn test_error_handling_and_cleanup() {
 
         // Drop client stream to simulate client disconnect
         drop(client_stream);
-        
+
         info!("✅ Stream termination and cleanup test passed");
     }
 
@@ -450,10 +461,10 @@ async fn test_error_handling_and_cleanup() {
 async fn test_performance_benchmark() {
     let harness = StreamingTestHarness::new().await;
     let data_size = harness.config.performance_data_size;
-    
+
     // Generate test data
     let test_data: Vec<u8> = (0..data_size).map(|i| (i % 256) as u8).collect();
-    
+
     // Start target server
     let Some((target_port, _received_data)) =
         handle_io_result(harness.start_target_server().await, "start target server")
@@ -463,7 +474,7 @@ async fn test_performance_benchmark() {
 
     // Benchmark streaming implementation
     let streaming_start = Instant::now();
-    
+
     {
         let Some((connection_id, mut client_stream)) = handle_io_result(
             harness.setup_streaming_connection(target_port).await,
@@ -489,9 +500,11 @@ async fn test_performance_benchmark() {
         let forwarded_bytes: usize = messages
             .iter()
             .filter_map(|msg| match msg {
-                StreamMessage::Data { connection_id: msg_id, payload, direction }
-                    if *msg_id == connection_id && *direction == DataDirection::ClientToTarget =>
-                {
+                StreamMessage::Data {
+                    connection_id: msg_id,
+                    payload,
+                    direction,
+                } if *msg_id == connection_id && *direction == DataDirection::ClientToTarget => {
                     Some(payload.len())
                 }
                 _ => None,
@@ -502,22 +515,30 @@ async fn test_performance_benchmark() {
         // Cleanup
         let _ = harness.stream_manager.terminate_stream(connection_id).await;
     }
-    
+
     let streaming_duration = streaming_start.elapsed();
-    
+
     // Calculate throughput
     let throughput_mbps = (data_size as f64 / (1024.0 * 1024.0)) / streaming_duration.as_secs_f64();
-    
+
     info!("🚀 Streaming Performance Results:");
-    info!("   Data size: {} bytes ({:.2} MB)", data_size, data_size as f64 / (1024.0 * 1024.0));
+    info!(
+        "   Data size: {} bytes ({:.2} MB)",
+        data_size,
+        data_size as f64 / (1024.0 * 1024.0)
+    );
     info!("   Duration: {:?}", streaming_duration);
     info!("   Throughput: {:.2} MB/s", throughput_mbps);
-    
+
     // Performance assertions
-    assert!(streaming_duration < Duration::from_secs(30), 
-           "Streaming should complete within 30 seconds");
-    assert!(throughput_mbps > 0.001,
-           "Throughput should be at least 0.001 MB/s");
+    assert!(
+        streaming_duration < Duration::from_secs(30),
+        "Streaming should complete within 30 seconds"
+    );
+    assert!(
+        throughput_mbps > 0.001,
+        "Throughput should be at least 0.001 MB/s"
+    );
 
     // Memory usage check (basic)
     let stats = harness
@@ -525,9 +546,9 @@ async fn test_performance_benchmark() {
         .get_connection_stats()
         .await
         .expect("Failed to get connection stats");
-    
+
     info!("   Final connection stats: {:?}", stats);
-    
+
     info!("✅ Performance benchmark completed successfully");
 }
 
@@ -535,7 +556,7 @@ async fn test_performance_benchmark() {
 #[tokio::test]
 async fn test_stream_message_protocol() {
     let harness = StreamingTestHarness::new().await;
-    
+
     // Start target server
     let Some((target_port, _received_data)) =
         handle_io_result(harness.start_target_server().await, "start target server")
@@ -543,12 +564,10 @@ async fn test_stream_message_protocol() {
         return;
     };
 
-    let Some((connection_id, mut client_stream)) =
-        handle_io_result(
-            harness.setup_streaming_connection(target_port).await,
-            "setup streaming connection",
-        )
-    else {
+    let Some((connection_id, mut client_stream)) = handle_io_result(
+        harness.setup_streaming_connection(target_port).await,
+        "setup streaming connection",
+    ) else {
         return;
     };
 
@@ -564,7 +583,7 @@ async fn test_stream_message_protocol() {
             .write_all(message)
             .await
             .expect(&format!("Failed to write message {}", i));
-        
+
         // Small delay to ensure message separation
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -575,18 +594,30 @@ async fn test_stream_message_protocol() {
         .await;
 
     // Verify we received the expected number of messages
-    assert_eq!(stream_messages.len(), messages.len(), 
-              "Expected {} messages, got {}", messages.len(), stream_messages.len());
+    assert_eq!(
+        stream_messages.len(),
+        messages.len(),
+        "Expected {} messages, got {}",
+        messages.len(),
+        stream_messages.len()
+    );
 
     // Verify message content and protocol
     for (i, stream_msg) in stream_messages.iter().enumerate() {
         match stream_msg {
-            StreamMessage::Data { connection_id: msg_conn_id, payload, direction } => {
+            StreamMessage::Data {
+                connection_id: msg_conn_id,
+                payload,
+                direction,
+            } => {
                 assert_eq!(*msg_conn_id, connection_id);
                 assert_eq!(payload.as_ref(), messages[i].as_slice());
                 assert_eq!(*direction, DataDirection::ClientToTarget);
             }
-            _ => panic!("Expected data message at index {}, got: {:?}", i, stream_msg),
+            _ => panic!(
+                "Expected data message at index {}, got: {:?}",
+                i, stream_msg
+            ),
         }
     }
 
@@ -597,7 +628,7 @@ async fn test_stream_message_protocol() {
 #[tokio::test]
 async fn test_connection_state_management() {
     let harness = StreamingTestHarness::new().await;
-    
+
     // Start target server
     let Some((target_port, _received_data)) =
         handle_io_result(harness.start_target_server().await, "start target server")
@@ -605,12 +636,10 @@ async fn test_connection_state_management() {
         return;
     };
 
-    let Some((connection_id, _client_stream)) =
-        handle_io_result(
-            harness.setup_streaming_connection(target_port).await,
-            "setup streaming connection",
-        )
-    else {
+    let Some((connection_id, _client_stream)) = handle_io_result(
+        harness.setup_streaming_connection(target_port).await,
+        "setup streaming connection",
+    ) else {
         return;
     };
 
@@ -658,7 +687,10 @@ async fn test_connection_state_management() {
 
     // Connection might be removed or marked as closed
     if let Some(state) = final_state {
-        assert!(matches!(state.status, ConnectionStatus::Closed | ConnectionStatus::Closing));
+        assert!(matches!(
+            state.status,
+            ConnectionStatus::Closed | ConnectionStatus::Closing
+        ));
     }
 
     info!("✅ Connection state management test passed");
@@ -668,10 +700,10 @@ async fn test_connection_state_management() {
 #[tokio::test]
 async fn test_graceful_shutdown() {
     let harness = StreamingTestHarness::new().await;
-    
+
     // Create multiple connections
     let mut connections = Vec::new();
-    
+
     for i in 0..3 {
         let Some((target_port, _)) =
             handle_io_result(harness.start_target_server().await, "start target server")
@@ -679,17 +711,15 @@ async fn test_graceful_shutdown() {
             return;
         };
 
-        let Some((connection_id, client_stream)) =
-            handle_io_result(
-                harness.setup_streaming_connection(target_port).await,
-                "setup streaming connection",
-            )
-        else {
+        let Some((connection_id, client_stream)) = handle_io_result(
+            harness.setup_streaming_connection(target_port).await,
+            "setup streaming connection",
+        ) else {
             return;
         };
 
         connections.push((connection_id, client_stream));
-        
+
         // Send some data to make connections active
         let _test_data = format!("Data from connection {}", i);
         // Note: We'll skip the data sending for now since try_clone is not available
@@ -702,17 +732,20 @@ async fn test_graceful_shutdown() {
         .get_connection_stats()
         .await
         .expect("Failed to get connection stats");
-    
+
     assert_eq!(stats_before.total_connections, connections.len());
 
     // Simulate graceful shutdown by cleaning up all connections
     for (connection_id, client_stream) in connections {
         // Terminate stream
         let _ = harness.stream_manager.terminate_stream(connection_id).await;
-        
+
         // Cleanup connection
-        let _ = harness.connection_manager.cleanup_connection(&connection_id).await;
-        
+        let _ = harness
+            .connection_manager
+            .cleanup_connection(&connection_id)
+            .await;
+
         // Close client stream
         drop(client_stream);
     }
@@ -723,7 +756,7 @@ async fn test_graceful_shutdown() {
         .get_connection_stats()
         .await
         .expect("Failed to get connection stats after cleanup");
-    
+
     // Total tracked connections stay cumulative, but no active streams should remain.
     assert_eq!(stats_after.active_connections, 0);
 

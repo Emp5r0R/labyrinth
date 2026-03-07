@@ -1,5 +1,5 @@
 //! Labyrinth - A secure tunneling and reverse port forwarding system
-//! 
+//!
 //! This crate provides secure tunneling capabilities with streaming architecture
 //! for high-performance reverse port forwarding.
 

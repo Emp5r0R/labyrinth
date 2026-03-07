@@ -1,7 +1,9 @@
 //! Core traits for the streaming architecture
 
-use crate::streaming::{ConnectionId, ConnectionState, ConnectionStats, PortMapping, StreamMessage};
 use crate::streaming::errors::StreamResult;
+use crate::streaming::{
+    ConnectionId, ConnectionState, ConnectionStats, PortMapping, StreamMessage,
+};
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::net::TcpStream;
@@ -25,7 +27,10 @@ pub trait ConnectionManager: Send + Sync {
     async fn get_connection_stats(&self) -> StreamResult<ConnectionStats>;
 
     /// Get the state of a specific connection
-    async fn get_connection_state(&self, connection_id: &ConnectionId) -> StreamResult<Option<ConnectionState>>;
+    async fn get_connection_state(
+        &self,
+        connection_id: &ConnectionId,
+    ) -> StreamResult<Option<ConnectionState>>;
 
     /// Track an existing connection that has already been accepted externally.
     async fn track_existing_connection(
@@ -83,11 +88,7 @@ pub trait TunnelProtocol: Send + Sync {
     ) -> StreamResult<()>;
 
     /// Send data through the tunnel
-    async fn send_stream_data(
-        &self,
-        connection_id: ConnectionId,
-        data: Bytes,
-    ) -> StreamResult<()>;
+    async fn send_stream_data(&self, connection_id: ConnectionId, data: Bytes) -> StreamResult<()>;
 
     /// Send stream close message
     async fn send_stream_close(
@@ -106,7 +107,11 @@ pub trait TunnelProtocol: Send + Sync {
 pub trait ResourceManager: Send + Sync {
     /// Track a new resource (connection, stream, etc.)
     #[allow(dead_code)]
-    async fn track_resource(&self, connection_id: ConnectionId, resource_type: ResourceType) -> StreamResult<()>;
+    async fn track_resource(
+        &self,
+        connection_id: ConnectionId,
+        resource_type: ResourceType,
+    ) -> StreamResult<()>;
 
     /// Release a tracked resource
     #[allow(dead_code)]

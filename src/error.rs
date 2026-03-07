@@ -23,6 +23,7 @@ pub enum LabyrinthError {
     #[error("Address parsing error: {0}")]
     AddrParse(#[from] std::net::AddrParseError),
 
+    #[cfg(target_os = "linux")]
     #[error("TUN error: {0}")]
     Tun(#[from] tokio_tun::Error),
 
@@ -34,7 +35,6 @@ pub enum LabyrinthError {
 
     #[error("SOCKS error: {0}")]
     Socks(#[from] tokio_socks::Error),
-
 
     #[error("Custom error: {0}")]
     Message(String),

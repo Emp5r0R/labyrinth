@@ -1,10 +1,10 @@
 //! Error types for the streaming architecture
 
 use crate::streaming::ConnectionId;
-use std::time::Duration;
-use thiserror::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
+use thiserror::Error;
 
 /// Result type alias for streaming operations
 pub type StreamResult<T> = std::result::Result<T, StreamError>;
@@ -282,15 +282,23 @@ impl StreamError {
     }
 
     /// Add connection context to the error
-    pub fn with_connection_context(self, connection_id: ConnectionId, operation: &str) -> ErrorWithContext {
+    pub fn with_connection_context(
+        self,
+        connection_id: ConnectionId,
+        operation: &str,
+    ) -> ErrorWithContext {
         let mut context = ErrorWithContext {
             error: self,
             context: format!("Connection {} during {}", connection_id, operation),
             timestamp: std::time::SystemTime::now(),
             additional_data: HashMap::new(),
         };
-        context.additional_data.insert("connection_id".to_string(), connection_id.to_string());
-        context.additional_data.insert("operation".to_string(), operation.to_string());
+        context
+            .additional_data
+            .insert("connection_id".to_string(), connection_id.to_string());
+        context
+            .additional_data
+            .insert("operation".to_string(), operation.to_string());
         context
     }
 }
@@ -315,10 +323,7 @@ pub enum RetryStrategy {
         max_attempts: u32,
     },
     /// Linear backoff with fixed delay
-    LinearBackoff {
-        delay: Duration,
-        max_attempts: u32,
-    },
+    LinearBackoff { delay: Duration, max_attempts: u32 },
     /// No retry
     None,
 }
@@ -327,22 +332,30 @@ impl RetryStrategy {
     /// Calculate the delay for the given attempt number
     pub fn calculate_delay(&self, attempt: u32) -> Option<Duration> {
         match self {
-            Self::ExponentialBackoff { initial_delay, max_delay, max_attempts } => {
+            Self::ExponentialBackoff {
+                initial_delay,
+                max_delay,
+                max_attempts,
+            } => {
                 if attempt >= *max_attempts {
                     return None;
                 }
-                
+
                 let delay = initial_delay.as_millis() as u64 * 2_u64.pow(attempt);
                 let delay = Duration::from_millis(delay);
-                
+
                 // Add jitter (±25%)
                 let jitter_range = (delay.as_millis() / 4) as u64;
                 let jitter = fastrand::u64(0..=jitter_range * 2) as i64 - jitter_range as i64;
-                let final_delay = Duration::from_millis((delay.as_millis() as i64 + jitter).max(0) as u64);
-                
+                let final_delay =
+                    Duration::from_millis((delay.as_millis() as i64 + jitter).max(0) as u64);
+
                 Some(final_delay.min(*max_delay))
             }
-            Self::LinearBackoff { delay, max_attempts } => {
+            Self::LinearBackoff {
+                delay,
+                max_attempts,
+            } => {
                 if attempt >= *max_attempts {
                     None
                 } else {

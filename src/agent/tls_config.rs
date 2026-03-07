@@ -2,8 +2,8 @@ use crate::error::{LabyrinthError, Result};
 use crate::styling;
 use base64::{engine::general_purpose, Engine as _};
 use ring::digest::{digest, SHA256};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::ClientConfig;
 use rustls_pemfile::certs;
 use std::sync::Arc;
@@ -19,15 +19,28 @@ impl TlsConfigManager {
     ) -> Result<ClientConfig> {
         // Easy certificate handling - prioritize fingerprint, then base64, then file
         let verifier = if let Some(fingerprint) = accept_fingerprint {
-            info!("{} Using certificate fingerprint verification", styling::INFO_INDICATOR);
+            info!(
+                "{} Using certificate fingerprint verification",
+                styling::INFO_INDICATOR
+            );
             SmartCertVerifier::from_fingerprint(&fingerprint)?
         } else if let Some(b64_cert) = server_cert_b64 {
-            info!("{} Using base64 certificate verification", styling::INFO_INDICATOR);
+            info!(
+                "{} Using base64 certificate verification",
+                styling::INFO_INDICATOR
+            );
             SmartCertVerifier::from_cert_b64(&b64_cert)?
         } else {
-            info!("{} Using cert.pem file verification", styling::INFO_INDICATOR);
-            let cert_pem = std::fs::read_to_string("cert.pem")
-                .map_err(|e| LabyrinthError::Message(format!("Failed to read cert.pem: {}. Run server first to generate certificate.", e)))?;
+            info!(
+                "{} Using cert.pem file verification",
+                styling::INFO_INDICATOR
+            );
+            let cert_pem = std::fs::read_to_string("cert.pem").map_err(|e| {
+                LabyrinthError::Message(format!(
+                    "Failed to read cert.pem: {}. Run server first to generate certificate.",
+                    e
+                ))
+            })?;
             SmartCertVerifier::from_cert_pem(&cert_pem)?
         };
 
@@ -38,8 +51,6 @@ impl TlsConfigManager {
         Ok(config)
     }
 }
-
-
 
 /// Easy-to-use certificate verifier that works with fingerprints or cert files
 #[derive(Debug)]
@@ -52,7 +63,9 @@ impl SmartCertVerifier {
     fn from_fingerprint(fingerprint_hex: &str) -> Result<Self> {
         let expected_fingerprint = hex::decode(fingerprint_hex)
             .map_err(|_| LabyrinthError::Message("Invalid fingerprint format".to_string()))?;
-        Ok(Self { expected_fingerprint })
+        Ok(Self {
+            expected_fingerprint,
+        })
     }
 
     /// Create verifier from certificate PEM string
@@ -61,22 +74,31 @@ impl SmartCertVerifier {
         let certs = certs(&mut cert_bytes)
             .collect::<std::result::Result<Vec<CertificateDer>, std::io::Error>>()
             .map_err(LabyrinthError::Io)?;
-        
+
         if certs.is_empty() {
-            return Err(LabyrinthError::Message("No certificates found in PEM".to_string()));
+            return Err(LabyrinthError::Message(
+                "No certificates found in PEM".to_string(),
+            ));
         }
 
         let cert_der = certs[0].as_ref();
         let hashed_cert = digest(&SHA256, cert_der);
         let expected_fingerprint = hashed_cert.as_ref().to_vec();
-        
-        info!("{} Using certificate fingerprint: {}", styling::SUCCESS_INDICATOR, hex::encode(&expected_fingerprint));
-        Ok(Self { expected_fingerprint })
+
+        info!(
+            "{} Using certificate fingerprint: {}",
+            styling::SUCCESS_INDICATOR,
+            hex::encode(&expected_fingerprint)
+        );
+        Ok(Self {
+            expected_fingerprint,
+        })
     }
 
     /// Create verifier from base64 encoded certificate
     fn from_cert_b64(cert_b64: &str) -> Result<Self> {
-        let cert_bytes = general_purpose::STANDARD.decode(cert_b64)
+        let cert_bytes = general_purpose::STANDARD
+            .decode(cert_b64)
             .map_err(LabyrinthError::Base64)?;
         let cert_pem = String::from_utf8(cert_bytes)
             .map_err(|_| LabyrinthError::Message("Invalid UTF-8 in certificate".to_string()))?;
@@ -98,15 +120,21 @@ impl ServerCertVerifier for SmartCertVerifier {
         let hashed_cert_bytes = hashed_cert.as_ref();
 
         if hashed_cert_bytes == self.expected_fingerprint.as_slice() {
-            info!("{} Certificate fingerprint matches - connection authorized", styling::SUCCESS_INDICATOR);
+            info!(
+                "{} Certificate fingerprint matches - connection authorized",
+                styling::SUCCESS_INDICATOR
+            );
             Ok(ServerCertVerified::assertion())
         } else {
-            error!("{} Certificate fingerprint mismatch. Expected: {}, Got: {}",
+            error!(
+                "{} Certificate fingerprint mismatch. Expected: {}, Got: {}",
                 styling::ERROR_INDICATOR,
                 hex::encode(&self.expected_fingerprint),
                 hex::encode(hashed_cert_bytes)
             );
-            Err(rustls::Error::General("Certificate fingerprint mismatch".to_string()))
+            Err(rustls::Error::General(
+                "Certificate fingerprint mismatch".to_string(),
+            ))
         }
     }
 

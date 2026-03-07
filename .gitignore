@@ -1,1 +1,22 @@
-/target
+/target/
+
+# Build artifacts
+**/*.rlib
+**/*.rmeta
+
+# Release bundles
+/releases/
+
+# Local runtime/output files
+*.log
+/server.log
+
+# Local secrets and machine-specific config
+.env
+.env.*
+*.pem
+*.key
+
+# Editor/OS noise
+.DS_Store
+Thumbs.db

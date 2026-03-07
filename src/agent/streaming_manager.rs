@@ -1,11 +1,11 @@
 //! Agent-side streaming manager for handling bidirectional data flow
 
-use crate::streaming::{
-    ConnectionId, PortMapping, StreamMessage, DataDirection, CloseReason,
-    ConnectionStatus, ConnectionState, ConnectionStats,
-};
 use crate::streaming::errors::{StreamError, StreamResult};
 use crate::streaming::traits::{ConnectionManager, StreamManager};
+use crate::streaming::{
+    CloseReason, ConnectionId, ConnectionState, ConnectionStats, ConnectionStatus, DataDirection,
+    PortMapping, StreamMessage,
+};
 use crate::styling;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, RwLock, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info, warn};
 
@@ -73,7 +73,7 @@ impl AgentStreamManager {
     // Removed unused method handle_stream_message - not used in current implementation
 
     // Removed unused method handle_setup_message - not used in current implementation
-    
+
     #[allow(dead_code)]
     async fn handle_setup_message(
         &self,
@@ -89,12 +89,11 @@ impl AgentStreamManager {
         );
 
         let target_addr = format!("{}:{}", mapping.target_host, mapping.target_port);
-        
+
         // Connect to target service with timeout
-        let target_stream = match timeout(
-            Duration::from_secs(10),
-            TcpStream::connect(&target_addr)
-        ).await {
+        let target_stream = match timeout(Duration::from_secs(10), TcpStream::connect(&target_addr))
+            .await
+        {
             Ok(Ok(stream)) => {
                 info!(
                     "{} Successfully connected to target {} for connection {}",
@@ -112,20 +111,23 @@ impl AgentStreamManager {
                     connection_id,
                     e
                 );
-                
+
                 // Update stats
                 {
                     let mut stats_lock = self.stats.write().await;
                     stats_lock.increment_failed();
                 }
-                
+
                 // Send setup acknowledgment with failure
                 let setup_ack = StreamMessage::SetupAck {
                     connection_id,
                     success: false,
-                    error_message: Some(format!("Failed to connect to target {}: {}", target_addr, e)),
+                    error_message: Some(format!(
+                        "Failed to connect to target {}: {}",
+                        target_addr, e
+                    )),
                 };
-                
+
                 if let Err(e) = self.tunnel_sender.send(setup_ack).await {
                     error!(
                         "{} Failed to send setup failure ack for connection {}: {}",
@@ -134,7 +136,7 @@ impl AgentStreamManager {
                         e
                     );
                 }
-                
+
                 return Err(StreamError::connection_failed(format!(
                     "Failed to connect to target {}: {}",
                     target_addr, e
@@ -147,20 +149,20 @@ impl AgentStreamManager {
                     target_addr,
                     connection_id
                 );
-                
+
                 // Update stats
                 {
                     let mut stats_lock = self.stats.write().await;
                     stats_lock.increment_failed();
                 }
-                
+
                 // Send setup acknowledgment with timeout failure
                 let setup_ack = StreamMessage::SetupAck {
                     connection_id,
                     success: false,
                     error_message: Some(format!("Timeout connecting to target {}", target_addr)),
                 };
-                
+
                 if let Err(e) = self.tunnel_sender.send(setup_ack).await {
                     error!(
                         "{} Failed to send timeout setup ack for connection {}: {}",
@@ -169,7 +171,7 @@ impl AgentStreamManager {
                         e
                     );
                 }
-                
+
                 return Err(StreamError::timeout(Duration::from_secs(10)));
             }
         };
@@ -201,7 +203,7 @@ impl AgentStreamManager {
             success: true,
             error_message: None,
         };
-        
+
         if let Err(e) = self.tunnel_sender.send(setup_ack).await {
             error!(
                 "{} Failed to send setup success ack for connection {}: {}",
@@ -212,13 +214,14 @@ impl AgentStreamManager {
         }
 
         // Start bidirectional data forwarding
-        self.start_bidirectional_forwarding(connection_state).await?;
+        self.start_bidirectional_forwarding(connection_state)
+            .await?;
 
         Ok(())
     }
 
     // Removed unused method start_bidirectional_forwarding - not used in current implementation
-    
+
     #[allow(dead_code)]
     async fn start_bidirectional_forwarding(
         &self,
@@ -242,13 +245,13 @@ impl AgentStreamManager {
                             styling::SUCCESS_INDICATOR,
                             connection_id
                         );
-                        
+
                         // Send close message to tunnel
                         let close_msg = StreamMessage::Close {
                             connection_id,
                             reason: CloseReason::ClientDisconnected,
                         };
-                        
+
                         if let Err(e) = tunnel_sender.send(close_msg).await {
                             error!(
                                 "{} Failed to send close message for connection {}: {}",
@@ -266,7 +269,7 @@ impl AgentStreamManager {
                             payload: Bytes::copy_from_slice(&buffer[..n]),
                             direction: DataDirection::TargetToClient,
                         };
-                        
+
                         if let Err(e) = tunnel_sender.send(data_msg).await {
                             error!(
                                 "{} Failed to send data from target for connection {}: {}",
@@ -276,7 +279,7 @@ impl AgentStreamManager {
                             );
                             break;
                         }
-                        
+
                         debug!(
                             "{} Forwarded {} bytes from target to tunnel for connection {}",
                             styling::SUCCESS_INDICATOR,
@@ -291,13 +294,13 @@ impl AgentStreamManager {
                             connection_id,
                             e
                         );
-                        
+
                         // Send close message to tunnel
                         let close_msg = StreamMessage::Close {
                             connection_id,
                             reason: CloseReason::ProtocolError(e.to_string()),
                         };
-                        
+
                         if let Err(e) = tunnel_sender.send(close_msg).await {
                             error!(
                                 "{} Failed to send error close message for connection {}: {}",
@@ -328,7 +331,7 @@ impl AgentStreamManager {
 
         if let Some(connection_state) = connection_state {
             let mut target_stream = connection_state.target_stream.lock().await;
-            
+
             match target_stream.write_all(&payload).await {
                 Ok(()) => {
                     debug!(
@@ -345,13 +348,13 @@ impl AgentStreamManager {
                         connection_id,
                         e
                     );
-                    
+
                     // Send close message to tunnel
                     let close_msg = StreamMessage::Close {
                         connection_id,
                         reason: CloseReason::ProtocolError(e.to_string()),
                     };
-                    
+
                     if let Err(e) = connection_state.tunnel_sender.send(close_msg).await {
                         error!(
                             "{} Failed to send error close message for connection {}: {}",
@@ -360,7 +363,7 @@ impl AgentStreamManager {
                             e
                         );
                     }
-                    
+
                     return Err(StreamError::stream_broken(connection_id, e.to_string()));
                 }
             }
@@ -402,7 +405,7 @@ impl AgentStreamManager {
             // Update stats
             let mut stats_lock = self.stats.write().await;
             stats_lock.decrement_active();
-            
+
             info!(
                 "{} Successfully cleaned up connection {}",
                 styling::SUCCESS_INDICATOR,
@@ -420,7 +423,7 @@ impl AgentStreamManager {
     }
 
     // Removed unused methods: get_stats, shutdown - not used in current implementation
-    
+
     #[allow(dead_code)]
     pub async fn get_stats(&self) -> ConnectionStats {
         self.stats.read().await.clone()
@@ -428,8 +431,11 @@ impl AgentStreamManager {
 
     #[allow(dead_code)]
     pub async fn shutdown(&self) -> StreamResult<()> {
-        info!("{} Shutting down agent stream manager", styling::SUCCESS_INDICATOR);
-        
+        info!(
+            "{} Shutting down agent stream manager",
+            styling::SUCCESS_INDICATOR
+        );
+
         let connections_to_close: Vec<ConnectionId> = {
             let connections_lock = self.connections.read().await;
             connections_lock.keys().cloned().collect()
@@ -440,7 +446,7 @@ impl AgentStreamManager {
                 connection_id,
                 reason: CloseReason::Shutdown,
             };
-            
+
             if let Err(e) = self.tunnel_sender.send(close_msg).await {
                 error!(
                     "{} Failed to send shutdown close message for connection {}: {}",
@@ -457,7 +463,10 @@ impl AgentStreamManager {
             connections_lock.clear();
         }
 
-        info!("{} Agent stream manager shutdown complete", styling::SUCCESS_INDICATOR);
+        info!(
+            "{} Agent stream manager shutdown complete",
+            styling::SUCCESS_INDICATOR
+        );
         Ok(())
     }
 }
@@ -471,19 +480,23 @@ impl ConnectionManager for AgentStreamManager {
     ) -> StreamResult<ConnectionId> {
         // Agent doesn't handle new connections directly - they come via tunnel messages
         Err(StreamError::protocol_error(
-            "Agent doesn't handle new connections directly".to_string()
+            "Agent doesn't handle new connections directly".to_string(),
         ))
     }
 
     async fn cleanup_connection(&self, connection_id: &ConnectionId) -> StreamResult<()> {
-        self.handle_close_message(*connection_id, CloseReason::UserRequested).await
+        self.handle_close_message(*connection_id, CloseReason::UserRequested)
+            .await
     }
 
     async fn get_connection_stats(&self) -> StreamResult<ConnectionStats> {
         Ok(self.stats.read().await.clone())
     }
 
-    async fn get_connection_state(&self, connection_id: &ConnectionId) -> StreamResult<Option<ConnectionState>> {
+    async fn get_connection_state(
+        &self,
+        connection_id: &ConnectionId,
+    ) -> StreamResult<Option<ConnectionState>> {
         let connections_lock = self.connections.read().await;
         if let Some(agent_state) = connections_lock.get(connection_id) {
             // Convert AgentConnectionState to ConnectionState
@@ -545,7 +558,7 @@ impl StreamManager for AgentStreamManager {
     ) -> StreamResult<()> {
         // Agent doesn't create bidirectional streams directly - they're created via setup messages
         Err(StreamError::protocol_error(
-            "Agent doesn't create bidirectional streams directly".to_string()
+            "Agent doesn't create bidirectional streams directly".to_string(),
         ))
     }
 
@@ -569,8 +582,10 @@ impl StreamManager for AgentStreamManager {
             payload: data,
             direction: DataDirection::TargetToClient,
         };
-        
-        self.tunnel_sender.send(data_msg).await
+
+        self.tunnel_sender
+            .send(data_msg)
+            .await
             .map_err(|e| StreamError::channel_send(format!("Failed to send to client: {}", e)))
     }
 
@@ -590,7 +605,7 @@ mod tests {
     async fn test_agent_stream_manager_creation() {
         let (sender, _receiver) = mpsc::channel(100);
         let manager = AgentStreamManager::new(sender);
-        
+
         let stats = manager.get_stats().await;
         assert_eq!(stats.active_connections, 0);
         assert_eq!(stats.total_connections, 0);
@@ -600,10 +615,12 @@ mod tests {
     async fn test_handle_close_message() {
         let (sender, _receiver) = mpsc::channel(100);
         let manager = AgentStreamManager::new(sender);
-        
+
         let connection_id = Uuid::new_v4();
-        let result = manager.handle_close_message(connection_id, CloseReason::UserRequested).await;
-        
+        let result = manager
+            .handle_close_message(connection_id, CloseReason::UserRequested)
+            .await;
+
         // Should succeed even if connection doesn't exist
         assert!(result.is_ok());
     }
@@ -612,7 +629,7 @@ mod tests {
     async fn test_connection_manager_trait() {
         let (sender, _receiver) = mpsc::channel(100);
         let manager = AgentStreamManager::new(sender);
-        
+
         // Test that agent doesn't handle new connections directly
         let dummy_stream = tokio::net::TcpStream::connect("127.0.0.1:1").await;
         if let Ok(stream) = dummy_stream {
@@ -621,7 +638,7 @@ mod tests {
                 target_host: "localhost".to_string(),
                 target_port: 3000,
             };
-            
+
             let result = manager.handle_new_connection(stream, mapping).await;
             assert!(result.is_err());
         }
