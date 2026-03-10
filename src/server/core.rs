@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::protocol::{AgentInfo, Message};
+use crate::server::dweller_registry::{DwellerRecord, DwellerRegistry};
 use crate::streaming::{
     traits::{ConnectionManager as StreamConnectionManager, StreamManager as StreamManagerTrait},
     ConnectionId,
@@ -68,6 +69,7 @@ pub struct LabyrinthServer {
     port_forward_listeners: Arc<RwLock<HashMap<u16, PortForwardListener>>>,
     connection_owners: Arc<RwLock<HashMap<ConnectionId, String>>>,
     fullhouse_listeners: Arc<RwLock<HashMap<String, FullhouseListener>>>,
+    dweller_registry: Arc<RwLock<DwellerRegistry>>,
 }
 
 impl LabyrinthServer {
@@ -82,6 +84,7 @@ impl LabyrinthServer {
             port_forward_listeners: Arc::new(RwLock::new(HashMap::new())),
             connection_owners: Arc::new(RwLock::new(HashMap::new())),
             fullhouse_listeners: Arc::new(RwLock::new(HashMap::new())),
+            dweller_registry: Arc::new(RwLock::new(DwellerRegistry::default())),
         }
     }
 
@@ -112,7 +115,29 @@ impl LabyrinthServer {
             port_forward_listeners: Arc::clone(&self.port_forward_listeners),
             connection_owners: Arc::clone(&self.connection_owners),
             fullhouse_listeners: Arc::clone(&self.fullhouse_listeners),
+            dweller_registry: Arc::clone(&self.dweller_registry),
         }
+    }
+
+    pub fn dweller_registry(&self) -> &Arc<RwLock<DwellerRegistry>> {
+        &self.dweller_registry
+    }
+
+    pub async fn set_dweller_registry(&self, registry: DwellerRegistry) {
+        *self.dweller_registry.write().await = registry;
+    }
+
+    pub async fn upsert_dweller_record(&self, record: DwellerRecord) -> Result<()> {
+        let mut registry = self.dweller_registry.write().await;
+        registry.upsert(record);
+        registry.save()
+    }
+
+    pub async fn forget_dweller_record(&self, dweller_id: &str) -> Result<Option<DwellerRecord>> {
+        let mut registry = self.dweller_registry.write().await;
+        let removed = registry.remove(dweller_id);
+        registry.save()?;
+        Ok(removed)
     }
 
     // Streaming manager accessors

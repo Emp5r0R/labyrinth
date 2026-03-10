@@ -1,4 +1,5 @@
 use crate::error::{LabyrinthError, Result};
+use crate::protocol::AgentKind;
 use crate::server::core::LabyrinthServer;
 
 use crate::styling;
@@ -56,6 +57,16 @@ impl ServerUI {
             );
             println!(
                 "{}",
+                styling::format_field(
+                    "Type:",
+                    match agent.info.kind {
+                        AgentKind::Dweller => "Dweller",
+                        AgentKind::Generic => "Agent",
+                    }
+                )
+            );
+            println!(
+                "{}",
                 styling::format_field("Status:", &styling::format_status_badge("Online", true))
             );
 
@@ -103,7 +114,18 @@ impl ServerUI {
         let agent_list: Vec<_> = agents.values().collect();
         let selections: Vec<String> = agent_list
             .iter()
-            .map(|a| format!("{} - {} ({})", a.id, a.info.name, a.info.hostname))
+            .map(|a| {
+                format!(
+                    "{} - {} ({}) [{}]",
+                    a.id,
+                    a.info.name,
+                    a.info.hostname,
+                    match a.info.kind {
+                        AgentKind::Dweller => "dweller",
+                        AgentKind::Generic => "agent",
+                    }
+                )
+            })
             .collect();
 
         println!(
@@ -176,6 +198,16 @@ impl ServerUI {
                             agent.info.os, agent.info.arch
                         ))
                         .to_string()
+                    )
+                );
+                println!(
+                    "{}",
+                    styling::format_field(
+                        "Type:",
+                        match agent.info.kind {
+                            AgentKind::Dweller => "Dweller",
+                            AgentKind::Generic => "Agent",
+                        }
                     )
                 );
 

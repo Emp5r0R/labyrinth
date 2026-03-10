@@ -64,6 +64,27 @@ enum Commands {
         #[clap(short, long)]
         retry: bool,
     },
+    /// Start a persistent inbound dweller listener
+    Dweller {
+        /// Listen address for inbound server connections
+        #[clap(short, long, default_value = "0.0.0.0:45454")]
+        listen: String,
+        /// TLS certificate PEM path
+        #[clap(long)]
+        cert_file: String,
+        /// TLS private key PEM path
+        #[clap(long)]
+        key_file: String,
+        /// Stable dweller identifier
+        #[clap(long)]
+        id: String,
+        /// Optional display name override
+        #[clap(long)]
+        name: Option<String>,
+        /// Shared dweller auth key used by the server to authenticate
+        #[clap(long)]
+        auth_key: String,
+    },
 }
 
 #[tokio::main]
@@ -144,6 +165,28 @@ async fn main() -> anyhow::Result<()> {
             .await
             {
                 eprintln!("Agent error: {}", e);
+            }
+        }
+        Commands::Dweller {
+            listen,
+            cert_file,
+            key_file,
+            id,
+            name,
+            auth_key,
+        } => {
+            info!("Starting dweller listener on {}", listen);
+            if let Err(e) = agent::run_dweller(
+                listen,
+                cert_file,
+                key_file,
+                id,
+                name.clone(),
+                auth_key.clone(),
+            )
+            .await
+            {
+                eprintln!("Dweller error: {}", e);
             }
         }
     }
