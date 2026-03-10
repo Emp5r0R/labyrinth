@@ -1,10 +1,20 @@
-use crate::protocol::{AgentInfo, NetworkInterface};
+use crate::protocol::{AgentInfo, AgentKind, NetworkInterface};
 
 /// Single Responsibility: System information gathering
 pub struct SystemInfoCollector;
 
 impl SystemInfoCollector {
     pub fn get_system_info() -> AgentInfo {
+        Self::build_agent_info(AgentKind::Generic, None, None, None, None)
+    }
+
+    pub fn build_agent_info(
+        kind: AgentKind,
+        stable_id: Option<String>,
+        listener_addr: Option<String>,
+        listener_port: Option<u16>,
+        name_override: Option<String>,
+    ) -> AgentInfo {
         let hostname = hostname::get()
             .unwrap_or_else(|_| "unknown".into())
             .to_string_lossy()
@@ -17,12 +27,16 @@ impl SystemInfoCollector {
         let interfaces = Self::get_network_interfaces();
 
         AgentInfo {
-            name: format!("{}@{}", whoami::username(), hostname),
+            name: name_override.unwrap_or_else(|| format!("{}@{}", whoami::username(), hostname)),
             hostname,
             os,
             arch,
             interfaces,
             auth_key: std::env::var("LABYRINTH_AUTH_KEY").ok(),
+            kind,
+            stable_id,
+            listener_addr,
+            listener_port,
         }
     }
 

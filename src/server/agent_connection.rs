@@ -6,18 +6,16 @@ use crate::server::netstack_bridge_windows::WindowsNetstackBridge;
 use crate::streaming::models::{ConnectionStatus, DataDirection, StreamMessage};
 
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
-use tokio_rustls::server::TlsStream;
 use tracing::{error, info, warn};
 
 /// Handles writing outgoing messages to the agent's stream from a queue.
 /// This runs in its own dedicated task for each agent.
-pub async fn handle_writer(
-    mut writer: tokio::io::WriteHalf<TlsStream<TcpStream>>,
-    mut rx: mpsc::Receiver<Message>,
-) {
+pub async fn handle_writer<W>(mut writer: tokio::io::WriteHalf<W>, mut rx: mpsc::Receiver<Message>)
+where
+    W: AsyncWrite + Unpin + Send + 'static,
+{
     while let Some(message) = rx.recv().await {
         match serde_json::to_string(&message) {
             Ok(msg_str) => {
@@ -39,11 +37,14 @@ pub async fn handle_writer(
 
 /// Handles reading incoming messages from the agent's stream.
 /// This runs in its own dedicated task for each agent.
-pub async fn handle_reader(
-    mut reader: tokio::io::BufReader<tokio::io::ReadHalf<TlsStream<TcpStream>>>,
+pub async fn handle_reader<R>(
+    mut reader: tokio::io::BufReader<tokio::io::ReadHalf<R>>,
     server: Arc<LabyrinthServer>,
     agent_id: String,
-) -> Result<()> {
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
     let mut buf = Vec::new();
     loop {
         match reader.read_until(b'\n', &mut buf).await {
@@ -124,6 +125,27 @@ async fn process_message(
                         .is_err()
                     {
                         error!("Failed to send file upload response to waiting UI task.");
+                    }
+                }
+            }
+        }
+        Message::DropDwellerResponse {
+            success,
+            message,
+            receipt,
+        } => {
+            if let Some(agent) = server.agents().read().await.get(agent_id) {
+                let mut command_response = agent.command_response.lock().await;
+                if let Some(sender) = command_response.take() {
+                    if sender
+                        .send(Message::DropDwellerResponse {
+                            success,
+                            message,
+                            receipt,
+                        })
+                        .is_err()
+                    {
+                        error!("Failed to send dweller response to waiting UI task.");
                     }
                 }
             }

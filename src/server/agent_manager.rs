@@ -1,15 +1,13 @@
 use crate::error::{LabyrinthError, Result};
-use crate::protocol::{AgentInfo, Message};
+use crate::protocol::{AgentInfo, AgentKind, Message};
 use crate::server::agent_connection::{handle_reader, handle_writer};
 use crate::server::core::{ConnectedAgent, LabyrinthServer};
 use crate::styling;
 use colored::Colorize;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
-use tokio_rustls::server::TlsStream;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -19,7 +17,7 @@ pub struct AgentManager;
 impl AgentManager {
     pub async fn register_agent(
         server: Arc<LabyrinthServer>,
-        mut stream: TlsStream<TcpStream>,
+        mut stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
         client_addr: SocketAddr,
     ) -> Result<()> {
         info!("New agent connection from {}", client_addr);
@@ -34,55 +32,7 @@ impl AgentManager {
         if let Message::AgentRegister(agent_info) = message {
             // Authenticate the agent if required.
             Self::authenticate_agent(&server, &agent_info, client_addr)?;
-
-            // Acknowledge the registration.
-            let ack_msg = serde_json::to_string(&Message::AgentAck)?;
-            stream.write_all(ack_msg.as_bytes()).await?;
-            stream.write_all(b"\n").await?;
-
-            // Split the stream into reader and writer halves.
-            let (reader, writer) = tokio::io::split(stream);
-
-            // Create a channel for sending messages to the agent.
-            let (tx, rx) = mpsc::channel(100);
-
-            let agent_id = Uuid::new_v4().to_string()[..8].to_string();
-            let agent = ConnectedAgent {
-                id: agent_id.clone(),
-                info: agent_info.clone(),
-                sender: tx,
-                tunnel_active: false,
-                tunnel_subnet: None,
-                tun_name: None,
-                last_seen: Arc::new(tokio::sync::Mutex::new(std::time::Instant::now())),
-                command_response: Arc::new(tokio::sync::Mutex::new(None)),
-                shell_events: Arc::new(tokio::sync::Mutex::new(None)),
-            };
-
-            // Spawn the reader and writer tasks.
-            tokio::spawn(handle_writer(writer, rx));
-            tokio::spawn(handle_reader(
-                tokio::io::BufReader::new(reader),
-                server.clone(),
-                agent_id.clone(),
-            ));
-
-            // Add the agent to the server's list.
-            server
-                .agents()
-                .write()
-                .await
-                .insert(agent_id.clone(), agent);
-
-            println!(
-                "{} Agent {} ({}) connected from {}",
-                styling::format_success_msg(styling::SUCCESS_INDICATOR, "").trim_start(),
-                styling::format_agent_name(&agent_info.name),
-                styling::format_agent_id(&agent_id),
-                client_addr.to_string().blue()
-            );
-
-            Ok(())
+            Self::register_live_agent(server, stream, agent_info, client_addr.to_string()).await
         } else {
             error!("Expected AgentRegister message, got {:?}", message);
             Err(LabyrinthError::Message(
@@ -111,6 +61,72 @@ impl AgentManager {
         }
         Ok(())
     }
+
+    pub async fn register_live_agent<S>(
+        server: Arc<LabyrinthServer>,
+        mut stream: S,
+        agent_info: AgentInfo,
+        remote_addr: String,
+    ) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let ack_msg = serde_json::to_string(&Message::AgentAck)?;
+        stream.write_all(ack_msg.as_bytes()).await?;
+        stream.write_all(b"\n").await?;
+
+        let (reader, writer) = tokio::io::split(stream);
+        let (tx, rx) = mpsc::channel(100);
+
+        let agent_id = match agent_info.kind {
+            AgentKind::Dweller => agent_info
+                .stable_id
+                .clone()
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            AgentKind::Generic => Uuid::new_v4().to_string()[..8].to_string(),
+        };
+
+        let agent = ConnectedAgent {
+            id: agent_id.clone(),
+            info: agent_info.clone(),
+            sender: tx,
+            tunnel_active: false,
+            tunnel_subnet: None,
+            tun_name: None,
+            last_seen: Arc::new(tokio::sync::Mutex::new(std::time::Instant::now())),
+            command_response: Arc::new(tokio::sync::Mutex::new(None)),
+            shell_events: Arc::new(tokio::sync::Mutex::new(None)),
+        };
+
+        tokio::spawn(handle_writer(writer, rx));
+        tokio::spawn(handle_reader(
+            tokio::io::BufReader::new(reader),
+            server.clone(),
+            agent_id.clone(),
+        ));
+
+        server
+            .agents()
+            .write()
+            .await
+            .insert(agent_id.clone(), agent);
+
+        let label = match agent_info.kind {
+            AgentKind::Dweller => "Dweller",
+            AgentKind::Generic => "Agent",
+        };
+
+        println!(
+            "{} {} {} ({}) connected from {}",
+            styling::format_success_msg(styling::SUCCESS_INDICATOR, "").trim_start(),
+            label,
+            styling::format_agent_name(&agent_info.name),
+            styling::format_agent_id(&agent_id),
+            remote_addr.blue()
+        );
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -133,6 +149,10 @@ mod tests {
                 flags: vec![],
             }],
             auth_key: auth_key.map(str::to_string),
+            kind: AgentKind::Generic,
+            stable_id: None,
+            listener_addr: None,
+            listener_port: None,
         }
     }
 

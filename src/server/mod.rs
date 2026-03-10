@@ -2,6 +2,8 @@ pub mod agent_connection;
 pub mod agent_manager;
 pub mod certificate;
 pub mod core;
+pub mod dweller_manager;
+pub mod dweller_registry;
 #[cfg(target_os = "windows")]
 pub mod netstack_bridge_windows;
 pub mod privileges;
@@ -14,6 +16,7 @@ use crate::protocol::Message;
 use crate::server::agent_manager::AgentManager;
 use crate::server::certificate::CertificateManager;
 use crate::server::core::LabyrinthServer;
+use crate::server::dweller_manager::DwellerManager;
 use crate::server::privileges::PrivilegeManager;
 
 use crate::server::tunnel_manager::TunnelManager;
@@ -81,9 +84,13 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
     rl.set_helper(Some(CommandHelper::new(vec![
         "help",
         "agents",
+        "dwellers",
         "list",
         "ls",
         "select",
+        "connect-dweller",
+        "drop-dweller",
+        "forget-dweller",
         "info",
         "show",
         "tunnel",
@@ -135,7 +142,17 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                         println!("\n{}", styling::format_header("Available Commands"));
                         println!("{}", styling::format_separator(styling::SECTION_SEPARATOR));
                         println!("  {}  List connected agents", "agents".cyan());
+                        println!("  {}  List remembered dwellers", "dwellers".cyan());
                         println!("  {}  Select an agent for operations", "select".cyan());
+                        println!(
+                            "  {}  Connect to a remembered dweller",
+                            "connect-dweller".cyan()
+                        );
+                        println!(
+                            "  {}  Drop and persist a dweller via the selected agent",
+                            "drop-dweller".cyan()
+                        );
+                        println!("  {}  Forget a remembered dweller", "forget-dweller".cyan());
                         println!("  {}  Show detailed agent information", "info".cyan());
                         println!("  {}  Start Tunnel", "Fullhouse".cyan());
                         println!("  {}  Port Forwarding", "Room".cyan());
@@ -152,6 +169,9 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                     "agents" | "list" | "ls" => {
                         ServerUI::list_agents(&server).await;
                     }
+                    "dwellers" => {
+                        DwellerManager::list_dwellers(&server).await;
+                    }
                     "select" => {
                         if let Err(e) = ServerUI::select_agent(&server).await {
                             println!(
@@ -159,6 +179,39 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                                 styling::format_error_msg(
                                     styling::ERROR_INDICATOR,
                                     &format!("Selection failed: {}", e)
+                                )
+                            );
+                        }
+                    }
+                    "connect-dweller" => {
+                        if let Err(e) = DwellerManager::connect_dweller(server.clone()).await {
+                            println!(
+                                "{}",
+                                styling::format_error_msg(
+                                    styling::ERROR_INDICATOR,
+                                    &format!("Dweller connection failed: {}", e)
+                                )
+                            );
+                        }
+                    }
+                    "drop-dweller" => {
+                        if let Err(e) = DwellerManager::drop_dweller(server.clone()).await {
+                            println!(
+                                "{}",
+                                styling::format_error_msg(
+                                    styling::ERROR_INDICATOR,
+                                    &format!("Drop Dweller failed: {}", e)
+                                )
+                            );
+                        }
+                    }
+                    "forget-dweller" => {
+                        if let Err(e) = DwellerManager::forget_dweller(&server).await {
+                            println!(
+                                "{}",
+                                styling::format_error_msg(
+                                    styling::ERROR_INDICATOR,
+                                    &format!("Forget Dweller failed: {}", e)
                                 )
                             );
                         }
@@ -2045,7 +2098,7 @@ async fn execute_remote_message(
                     )
                 );
             }
-            return Some(raw_log);
+            Some(raw_log)
         }
         Ok(Ok(Message::FileUploadResponse { success, message })) => {
             let output = format!(
@@ -2073,7 +2126,7 @@ async fn execute_remote_message(
                     )
                 );
             }
-            return Some(output);
+            Some(output)
         }
         Ok(Ok(_)) => {
             println!(
@@ -2083,7 +2136,7 @@ async fn execute_remote_message(
                     "Received unexpected response type"
                 )
             );
-            return Some("Received unexpected response type".to_string());
+            Some("Received unexpected response type".to_string())
         }
         Ok(Err(e)) => {
             println!(
@@ -2093,7 +2146,7 @@ async fn execute_remote_message(
                     &format!("Failed to receive command response: {}", e)
                 )
             );
-            return Some(format!("Failed to receive command response: {}", e));
+            Some(format!("Failed to receive command response: {}", e))
         }
         Err(_) => {
             println!(
@@ -2103,7 +2156,7 @@ async fn execute_remote_message(
                     "Timed out waiting for command response"
                 )
             );
-            return Some("Timed out waiting for command response".to_string());
+            Some("Timed out waiting for command response".to_string())
         }
     }
 }
@@ -2335,6 +2388,7 @@ pub async fn run_interactive_server(
 
     // Create server instance
     let server = Arc::new(LabyrinthServer::new(!no_auth, auth_key));
+    DwellerManager::load_registry(&server).await?;
 
     // Start listening for connections
     let listener = TcpListener::bind(listen_addr).await?;
@@ -2428,6 +2482,7 @@ pub async fn run_headless_server(
 
     // Create server instance
     let server = Arc::new(LabyrinthServer::new(!no_auth, auth_key));
+    DwellerManager::load_registry(&server).await?;
 
     // Start listening for connections
     let listener = TcpListener::bind(listen_addr).await?;

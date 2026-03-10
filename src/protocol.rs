@@ -11,6 +11,12 @@ pub struct NetworkInterface {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum AgentKind {
+    Generic,
+    Dweller,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AgentInfo {
     pub name: String,
     pub hostname: String,
@@ -18,6 +24,39 @@ pub struct AgentInfo {
     pub arch: String,
     pub interfaces: Vec<NetworkInterface>,
     pub auth_key: Option<String>,
+    pub kind: AgentKind,
+    pub stable_id: Option<String>,
+    pub listener_addr: Option<String>,
+    pub listener_port: Option<u16>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DwellerInstallRequest {
+    pub dweller_id: String,
+    pub dweller_name: String,
+    pub listen_addr: String,
+    pub listen_port: u16,
+    pub auth_key: String,
+    pub cert_pem: String,
+    pub key_pem: String,
+    pub install_path: String,
+    pub config_dir: String,
+    pub service_name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DwellerInstallReceipt {
+    pub dweller_id: String,
+    pub dweller_name: String,
+    pub hostname: String,
+    pub os: String,
+    pub arch: String,
+    pub listen_addr: String,
+    pub listen_port: u16,
+    pub fingerprint: String,
+    pub install_path: String,
+    pub config_dir: String,
+    pub service_name: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -26,6 +65,10 @@ pub enum Message {
     AgentRegister(AgentInfo),
     /// Server acknowledges agent registration
     AgentAck,
+    /// Server initiates an authenticated dweller session
+    DwellerHello {
+        auth_key: String,
+    },
     /// Server requests to start tunnel for specific subnet
     StartTunnel {
         subnet: String,
@@ -79,6 +122,16 @@ pub enum Message {
     FileUploadResponse {
         success: bool,
         message: String,
+    },
+    /// Install and persist a dweller listener on the remote host
+    DropDweller {
+        request: DwellerInstallRequest,
+    },
+    /// Result of a dweller installation request
+    DropDwellerResponse {
+        success: bool,
+        message: String,
+        receipt: Option<DwellerInstallReceipt>,
     },
     /// Download a file from the agent host
     FileDownloadRequest {
