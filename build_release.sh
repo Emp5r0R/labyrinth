@@ -21,6 +21,13 @@ declare -A TARGETS=(
     ["i686-pc-windows-gnu"]="Windows x86 (GNU)"
 )
 
+BINS=(
+    "labyrinth"
+    "labyrinth-server"
+    "labyrinth-agent"
+    "labyrinth-dweller"
+)
+
 successful_targets=()
 failed_targets=()
 
@@ -65,20 +72,22 @@ ensure_target_installed() {
 }
 
 target_binary_name() {
-    local target="$1"
+    local bin="$1"
+    local target="$2"
     if [[ "${target}" == *"windows"* ]]; then
-        echo "labyrinth.exe"
+        echo "${bin}.exe"
     else
-        echo "labyrinth"
+        echo "${bin}"
     fi
 }
 
 output_name_for_target() {
-    local target="$1"
+    local bin="$1"
+    local target="$2"
     if [[ "${target}" == *"windows"* ]]; then
-        echo "labyrinth-v${VERSION}-${target}.exe"
+        echo "${bin}-v${VERSION}-${target}.exe"
     else
-        echo "labyrinth-v${VERSION}-${target}"
+        echo "${bin}-v${VERSION}-${target}"
     fi
 }
 
@@ -107,10 +116,9 @@ check_windows_toolchain() {
 for target in "${!TARGETS[@]}"; do
     echo "Building for ${TARGETS[$target]} (${target})..."
 
-    binary_name="$(output_name_for_target "${target}")"
-    output_path="${RELEASE_DIR}/${binary_name}"
-
-    rm -f "${output_path}"
+    for bin in "${BINS[@]}"; do
+        rm -f "${RELEASE_DIR}/$(output_name_for_target "${bin}" "${target}")"
+    done
 
     if ! ensure_target_installed "${target}"; then
         echo "✗ Failed to prepare target ${target}"
@@ -126,16 +134,33 @@ for target in "${!TARGETS[@]}"; do
         continue
     fi
 
-    if cargo build --release --target "${target}"; then
-        source_binary="target/${target}/release/$(target_binary_name "${target}")"
-        cp "${source_binary}" "${output_path}"
-        if [[ "${target}" != *"windows"* ]]; then
-            chmod +x "${output_path}"
-        fi
+    if cargo build --release --target "${target}" --bins; then
+        copy_failed=0
+        for bin in "${BINS[@]}"; do
+            source_binary="target/${target}/release/$(target_binary_name "${bin}" "${target}")"
+            binary_name="$(output_name_for_target "${bin}" "${target}")"
+            output_path="${RELEASE_DIR}/${binary_name}"
 
-        size=$(du -h "${output_path}" | cut -f1)
-        echo "✓ Built: ${binary_name} (${size})"
-        successful_targets+=("${target}")
+            if [ ! -f "${source_binary}" ]; then
+                echo "✗ Missing built binary: ${source_binary}"
+                copy_failed=1
+                continue
+            fi
+
+            cp "${source_binary}" "${output_path}"
+            if [[ "${target}" != *"windows"* ]]; then
+                chmod +x "${output_path}"
+            fi
+
+            size=$(du -h "${output_path}" | cut -f1)
+            echo "✓ Built: ${binary_name} (${size})"
+        done
+
+        if [ "${copy_failed}" -eq 0 ]; then
+            successful_targets+=("${target}")
+        else
+            failed_targets+=("${target}")
+        fi
     else
         echo "✗ Failed to build for ${target}"
         failed_targets+=("${target}")
@@ -152,8 +177,10 @@ echo "=== Build Summary ==="
 if [ ${#successful_targets[@]} -gt 0 ]; then
     echo "Successfully built binaries:"
     for target in "${successful_targets[@]}"; do
-        binary="${RELEASE_DIR}/$(output_name_for_target "${target}")"
-        echo "  - $(basename "${binary}")"
+        for bin in "${BINS[@]}"; do
+            binary="${RELEASE_DIR}/$(output_name_for_target "${bin}" "${target}")"
+            echo "  - $(basename "${binary}")"
+        done
     done
 else
     echo "No binaries were built successfully."
@@ -170,18 +197,24 @@ fi
 echo
 echo "=== Binary Information ==="
 for target in "${successful_targets[@]}"; do
-    binary="${RELEASE_DIR}/$(output_name_for_target "${target}")"
-    echo "$(basename "${binary}"):"
-    echo "  Size: $(du -h "${binary}" | cut -f1)"
-    echo "  Type: $(file "${binary}" | cut -d: -f2-)"
-    echo
+    for bin in "${BINS[@]}"; do
+        binary="${RELEASE_DIR}/$(output_name_for_target "${bin}" "${target}")"
+        echo "$(basename "${binary}"):"
+        echo "  Size: $(du -h "${binary}" | cut -f1)"
+        echo "  Type: $(file "${binary}" | cut -d: -f2-)"
+        echo
+    done
 done
 
 echo "=== Usage Notes ==="
-echo "• labyrinth-v${VERSION}-x86_64-unknown-linux-gnu: Standard Linux binary (requires glibc)"
-echo "• labyrinth-v${VERSION}-x86_64-unknown-linux-musl: Static binary (works on any Linux)"
-echo "• labyrinth-v${VERSION}-x86_64-pc-windows-gnu.exe: Windows x64 executable"
-echo "• labyrinth-v${VERSION}-i686-pc-windows-gnu.exe: Windows x86 executable"
+echo "• labyrinth-*: compatibility wrapper with server/agent/dweller subcommands"
+echo "• labyrinth-server-*: dedicated server binary"
+echo "• labyrinth-agent-*: dedicated outbound agent binary"
+echo "• labyrinth-dweller-*: dedicated persistent dweller listener binary"
+echo "• *-x86_64-unknown-linux-gnu: Standard Linux binary (requires glibc)"
+echo "• *-x86_64-unknown-linux-musl: Static Linux binary"
+echo "• *-x86_64-pc-windows-gnu.exe: Windows x64 executable"
+echo "• *-i686-pc-windows-gnu.exe: Windows x86 executable"
 echo "• Windows Fullhouse mode requires wintun.dll next to the executable"
 echo
 

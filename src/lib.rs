@@ -4,6 +4,7 @@
 //! for high-performance reverse port forwarding.
 
 pub mod agent;
+pub mod cli;
 pub mod config;
 pub mod error;
 pub mod protocol;

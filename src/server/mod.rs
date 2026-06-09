@@ -8,6 +8,7 @@ pub mod dweller_registry;
 pub mod netstack_bridge_windows;
 pub mod privileges;
 pub mod reverse_port_forward;
+pub mod topology;
 pub mod tunnel_manager;
 pub mod ui;
 
@@ -93,6 +94,8 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
         "forget-dweller",
         "info",
         "show",
+        "topology",
+        "routes",
         "tunnel",
         "fullhouse",
         "stop",
@@ -154,6 +157,10 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                         );
                         println!("  {}  Forget a remembered dweller", "forget-dweller".cyan());
                         println!("  {}  Show detailed agent information", "info".cyan());
+                        println!(
+                            "  {}  Show route topology and shared networks",
+                            "topology".cyan()
+                        );
                         println!("  {}  Start Tunnel", "Fullhouse".cyan());
                         println!("  {}  Port Forwarding", "Room".cyan());
                         println!("  {}  Stop active tunnel/forwarding", "stop".cyan());
@@ -226,6 +233,9 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                                 )
                             );
                         }
+                    }
+                    "topology" | "routes" => {
+                        ServerUI::show_topology(&server).await;
                     }
                     "tunnel" | "fullhouse" | "Fullhouse" => {
                         if let Err(e) = TunnelManager::start_tunnel(&server).await {

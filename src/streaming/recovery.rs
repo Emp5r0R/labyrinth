@@ -500,7 +500,7 @@ mod tests {
 
         let result = coordinator.attempt_recovery(error_context, None).await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), false); // Should not attempt recovery for non-recoverable error
+        assert!(!result.unwrap()); // Should not attempt recovery for non-recoverable error
     }
 
     #[tokio::test]
@@ -556,7 +556,7 @@ mod tests {
 
         let result = coordinator.attempt_recovery(error_context, None).await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true); // Should successfully recover from resource exhaustion
+        assert!(result.unwrap()); // Should successfully recover from resource exhaustion
     }
 
     #[tokio::test]

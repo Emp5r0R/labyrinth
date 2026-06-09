@@ -5,6 +5,7 @@ use crate::server::core::LabyrinthServer;
 use crate::server::netstack_bridge_windows::WindowsNetstackBridge;
 #[cfg(target_os = "linux")]
 use crate::server::privileges::PrivilegeManager;
+use crate::server::topology::{DetectedRoute, TopologyManager};
 #[cfg(target_os = "linux")]
 use crate::streaming::{models::PortMapping, ConnectionId, StreamMessage};
 use crate::styling;
@@ -47,10 +48,30 @@ impl TunnelManager {
             Self::run_fullhouse_preflight()?;
             println!();
 
-            // Get tunnel configuration from user with validation
+            let (agent_sender, route_candidates) = {
+                let agents = server.agents().read().await;
+                let Some(agent) = agents.get(&agent_id) else {
+                    return Err(LabyrinthError::Message(
+                        "Selected agent not found".to_string(),
+                    ));
+                };
+                (
+                    agent.sender.clone(),
+                    TopologyManager::detect_agent_routes(&agent.info.interfaces),
+                )
+            };
+
+            Self::print_detected_routes(&route_candidates);
+
+            // Get tunnel configuration from detected agent routes with manual override.
+            let default_subnet = route_candidates.first().map(|route| route.cidr.clone());
             let subnet: String = loop {
-                let input: String = Input::new()
-                    .with_prompt("Target subnet in CIDR notation")
+                let mut prompt = Input::new().with_prompt("Target subnet in CIDR notation");
+                if let Some(default) = &default_subnet {
+                    prompt = prompt.default(default.clone());
+                }
+
+                let input: String = prompt
                     .interact_text()
                     .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
 
@@ -106,16 +127,6 @@ impl TunnelManager {
                     styling::format_agent_name(&tun_name)
                 ))
             );
-
-            let agent_sender = {
-                let agents = server.agents().read().await;
-                let Some(agent) = agents.get(&agent_id) else {
-                    return Err(LabyrinthError::Message(
-                        "Selected agent not found".to_string(),
-                    ));
-                };
-                agent.sender.clone()
-            };
 
             #[cfg(target_os = "linux")]
             Self::setup_tunnel(server, &agent_id, &agent_sender, &tun_name, &subnet).await?;
@@ -882,6 +893,47 @@ impl TunnelManager {
         }
 
         false
+    }
+
+    fn print_detected_routes(routes: &[DetectedRoute]) {
+        println!(
+            "{}",
+            styling::format_section_title("Detected Agent Routes", "from client interfaces")
+        );
+        println!("{}", "─────────────────────".bright_black());
+
+        if routes.is_empty() {
+            println!(
+                "{}",
+                styling::format_warning_msg(
+                    styling::WARNING_INDICATOR,
+                    "No routable IPv4 CIDR was detected from the selected agent."
+                )
+            );
+            println!(
+                "{}",
+                styling::format_hint("Enter the target subnet manually.")
+            );
+            println!();
+            return;
+        }
+
+        for (index, route) in routes.iter().take(5).enumerate() {
+            let marker = if index == 0 { "auto" } else { "candidate" };
+            println!(
+                "{} {} {} via {} ({})",
+                styling::INDENT_LEVEL_1,
+                marker.cyan(),
+                styling::format_agent_name(&route.cidr),
+                route.interface_name.bright_white(),
+                route.source_address.bright_black()
+            );
+        }
+        println!(
+            "{}",
+            styling::format_hint("Press Enter to use the auto route, or type a different CIDR.")
+        );
+        println!();
     }
 }
 

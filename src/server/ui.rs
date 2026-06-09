@@ -1,6 +1,7 @@
 use crate::error::{LabyrinthError, Result};
 use crate::protocol::AgentKind;
 use crate::server::core::LabyrinthServer;
+use crate::server::topology::TopologyManager;
 
 use crate::styling;
 use colored::Colorize;
@@ -87,6 +88,10 @@ impl ServerUI {
                 "{}",
                 styling::format_field("Fullhouse (Tunnel):", &tunnel_status)
             );
+            let route_hint = TopologyManager::best_route_for_agent(&agent.info.interfaces)
+                .map(|route| route.cidr.clone())
+                .unwrap_or_else(|| "manual CIDR required".to_string());
+            println!("{}", styling::format_field("Auto route:", &route_hint));
 
             // Add visual separator between agents (except for the last one)
             if index < agent_list.len() - 1 {
@@ -261,6 +266,33 @@ impl ServerUI {
                     }
                 }
 
+                let detected_routes = TopologyManager::detect_agent_routes(&agent.info.interfaces);
+                println!(
+                    "\n{}",
+                    styling::format_section_title("Detected Routes", "Fullhouse auto candidates")
+                );
+                println!("{}", styling::format_separator(styling::SECTION_SEPARATOR));
+                if detected_routes.is_empty() {
+                    println!(
+                        "{}",
+                        styling::format_warning_msg(
+                            styling::WARNING_INDICATOR,
+                            "No routable IPv4 CIDR detected"
+                        )
+                    );
+                } else {
+                    for (i, route) in detected_routes.iter().take(5).enumerate() {
+                        println!(
+                            "{}",
+                            styling::format_numbered_item(
+                                i + 1,
+                                &route.cidr,
+                                &format!("{} from {}", route.interface_name, route.source_address)
+                            )
+                        );
+                    }
+                }
+
                 println!(); // Add final spacing
             } else {
                 println!(
@@ -328,6 +360,84 @@ impl ServerUI {
                     } else {
                         "Inactive".red()
                     }
+                );
+                let route_hint = TopologyManager::best_route_for_agent(&agent.info.interfaces)
+                    .map(|route| route.cidr.clone())
+                    .unwrap_or_else(|| "manual CIDR required".to_string());
+                println!("{:<20} {}", "Auto route:", route_hint.cyan());
+            }
+        }
+        println!();
+    }
+
+    pub async fn show_topology(server: &LabyrinthServer) {
+        let agents = server.agents().read().await;
+        let snapshot = TopologyManager::build_snapshot(&agents);
+
+        println!(
+            "\n{}",
+            styling::format_section_title("Route Topology", "multi-hop control plane")
+        );
+        println!("{}", styling::format_separator(styling::SECTION_SEPARATOR));
+
+        if snapshot.routes.is_empty() {
+            println!(
+                "{}",
+                styling::format_warning_msg(
+                    styling::WARNING_INDICATOR,
+                    "No routable agent CIDRs detected"
+                )
+            );
+            println!();
+            return;
+        }
+
+        println!("{}", "Advertised Routes".cyan().bold());
+        for route in &snapshot.routes {
+            println!(
+                "{} {} via {} ({}, score {})",
+                styling::INDENT_LEVEL_1,
+                styling::format_agent_name(&route.cidr),
+                route.agent_name.bright_white(),
+                route.interface_name.bright_black(),
+                route.score
+            );
+        }
+
+        println!();
+        println!("{}", "Shared Networks".cyan().bold());
+        if snapshot.shared_routes.is_empty() {
+            println!(
+                "{}",
+                styling::format_hint("No shared agent networks detected yet.")
+            );
+        } else {
+            for group in &snapshot.shared_routes {
+                println!(
+                    "{} {}",
+                    styling::INDENT_LEVEL_1,
+                    styling::format_agent_name(&group.cidr)
+                );
+                for agent in &group.agents {
+                    println!("{}{}", styling::INDENT_LEVEL_2, agent.bright_white());
+                }
+            }
+        }
+
+        println!();
+        println!("{}", "Route Conflicts".cyan().bold());
+        if snapshot.conflicts.is_empty() {
+            println!(
+                "{}",
+                styling::format_hint("No overlapping route ownership conflicts detected.")
+            );
+        } else {
+            for conflict in &snapshot.conflicts {
+                println!(
+                    "{} {} is advertised by {} agents",
+                    styling::INDENT_LEVEL_1,
+                    styling::format_agent_name(&conflict.cidr),
+                    conflict.agents.len().to_string().yellow()
                 );
             }
         }

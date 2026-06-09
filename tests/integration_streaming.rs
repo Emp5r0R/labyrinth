@@ -146,12 +146,12 @@ impl StreamingTestHarness {
         self.connection_manager
             .track_existing_connection(connection_id, client_addr, mapping)
             .await
-            .map_err(|e| std::io::Error::new(ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
 
         self.stream_manager
             .create_bidirectional_stream(connection_id, server_stream)
             .await
-            .map_err(|e| std::io::Error::new(ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
 
         Ok((connection_id, client_stream))
     }
@@ -275,12 +275,10 @@ async fn test_concurrent_connections() {
         let handle = tokio::spawn(async move {
             let test_data = format!("Test data from connection {}", i);
 
-            let Some((connection_id, mut client_stream)) = handle_io_result(
+            let (connection_id, mut client_stream) = handle_io_result(
                 harness_clone.setup_streaming_connection(target_port).await,
                 "setup streaming connection",
-            ) else {
-                return None;
-            };
+            )?;
 
             if client_stream.write_all(test_data.as_bytes()).await.is_err() {
                 return None;
@@ -572,7 +570,7 @@ async fn test_stream_message_protocol() {
     };
 
     // Send multiple messages and verify protocol
-    let messages = vec![
+    let messages = [
         b"Message 1".to_vec(),
         b"Message 2 with more data".to_vec(),
         vec![0u8; 1024], // Large message
@@ -582,7 +580,7 @@ async fn test_stream_message_protocol() {
         client_stream
             .write_all(message)
             .await
-            .expect(&format!("Failed to write message {}", i));
+            .unwrap_or_else(|_| panic!("Failed to write message {}", i));
 
         // Small delay to ensure message separation
         tokio::time::sleep(Duration::from_millis(10)).await;
