@@ -1,4 +1,4 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    labyrinth::cli::run_labyrinth_cli().await
+    labyrinth::cli::run_agent_cli().await
 }

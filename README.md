@@ -17,19 +17,25 @@ A powerful network tunneling tool that lets you access remote networks securely.
 ### 1. Download Labyrinth
 
 Choose the right version for your system:
-- **`labyrinth-v1.0.0-x86_64-unknown-linux-gnu`** - For most Linux systems
-- **`labyrinth-v1.0.0-x86_64-unknown-linux-musl`** - Works on any Linux (recommended)
+- **`labyrinth-server-v1.0.0-x86_64-unknown-linux-gnu`** - Server for most Linux systems
+- **`labyrinth-agent-v1.0.0-x86_64-unknown-linux-gnu`** - Outbound agent for most Linux systems
+- **`labyrinth-dweller-v1.0.0-x86_64-unknown-linux-gnu`** - Persistent dweller listener for most Linux systems
+- **`*-x86_64-unknown-linux-musl`** - Static Linux builds
+- **`labyrinth-v1.0.0-*`** - Compatibility wrapper with `server`, `agent`, and `dweller` subcommands
 
 ```bash
-# Make it executable
-chmod +x labyrinth-v1.0.0-x86_64-unknown-linux-musl
+# Make Linux binaries executable
+chmod +x labyrinth-server-v1.0.0-x86_64-unknown-linux-musl
+chmod +x labyrinth-agent-v1.0.0-x86_64-unknown-linux-musl
+chmod +x labyrinth-dweller-v1.0.0-x86_64-unknown-linux-musl
 ```
 
 ### 2. Start the Server (Your Control Center)
 
 ```bash
 # Start the server (you need root permissions)
-sudo ./labyrinth-v1.0.0-x86_64-unknown-linux-musl server
+sudo LABYRINTH_AUTH_KEY="change-this-secret" \
+    ./labyrinth-server-v1.0.0-x86_64-unknown-linux-musl
 ```
 
 You'll see:
@@ -58,7 +64,8 @@ labyrinth →
 
 ```bash
 # Connect to your server
-./labyrinth-v1.0.0-x86_64-unknown-linux-musl agent \
+LABYRINTH_AUTH_KEY="change-this-secret" \
+./labyrinth-agent-v1.0.0-x86_64-unknown-linux-musl \
     --server YOUR_SERVER_IP:44344 \
     --fingerprint a1b2c3d4e5f6789abcdef...
 ```
@@ -74,25 +81,30 @@ labyrinth → fullhouse       # Start Fullhouse Mode (IP Tunneling)
 labyrinth → room            # Start Room Mode (Port Forwarding)
 ```
 
+Fullhouse automatically detects likely target CIDRs from the selected agent's
+interface addresses. The `agents`, `info`, and `status` commands show the best
+auto route, and the `fullhouse` prompt uses it as the default. Type a different
+CIDR if you need to pivot through another client network.
+
 ## 📖 How to Use Every Feature
 
 ### 🖥️ Server Commands
 
 #### Start Server (Basic)
 ```bash
-sudo ./labyrinth server
+sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server
 ```
 **What it does:** Starts your control center on port 44344
 
 #### Start Server (Custom Port)
 ```bash
-sudo ./labyrinth server --listen-addr 0.0.0.0:8080
+sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server --listen-addr 0.0.0.0:8080
 ```
 **What it does:** Starts server on port 8080 instead
 
 #### Start Server (No Security - Testing Only)
 ```bash
-sudo ./labyrinth server --no-auth
+sudo ./labyrinth-server --no-auth
 ```
 **What it does:** Disables password protection (dangerous!)
 
@@ -101,13 +113,13 @@ sudo ./labyrinth server --no-auth
 
 #### Start Server (Headless Mode)
 ```bash
-sudo ./labyrinth server --headless
+sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server --headless
 ```
 **What it does:** Runs without interactive interface (for scripts)
 
 #### Start Server (Advanced Options)
 ```bash
-sudo ./labyrinth server \
+sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server \
     --interface labyrinth \
     --route 192.168.1.0/24 \
     --domain example.com
@@ -123,13 +135,13 @@ sudo ./labyrinth server \
 
 #### Basic Connection
 ```bash
-./labyrinth agent --server 192.168.1.100:44344
+LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent --server 192.168.1.100:44344
 ```
 **What it does:** Connects to server at IP 192.168.1.100
 
 #### Secure Connection (Recommended)
 ```bash
-./labyrinth agent \
+LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
     --server 192.168.1.100:44344 \
     --fingerprint a1b2c3d4e5f6789abcdef...
 ```
@@ -137,7 +149,7 @@ sudo ./labyrinth server \
 
 #### Connection with Auto-Retry
 ```bash
-./labyrinth agent \
+LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
     --server 192.168.1.100:44344 \
     --fingerprint a1b2c3d4e5f6789abcdef... \
     --retry
@@ -146,7 +158,7 @@ sudo ./labyrinth server \
 
 #### Connection Through Proxy
 ```bash
-./labyrinth agent \
+LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
     --server 192.168.1.100:44344 \
     --proxy socks5://127.0.0.1:1080 \
     --fingerprint a1b2c3d4e5f6789abcdef...
@@ -155,7 +167,7 @@ sudo ./labyrinth server \
 
 #### Connection with Custom Certificate
 ```bash
-./labyrinth agent \
+LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
     --server 192.168.1.100:44344 \
     --cert "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t..."
 ```
@@ -233,7 +245,7 @@ labyrinth → tunnel
 labyrinth → fullhouse
 ```
 **What it asks:**
-- Target subnet (like `192.168.1.0/24`)
+- Target subnet (auto-detected from the selected agent when possible)
 - Interface name (like `labyrinth`)
 
 **What it does:** Creates a tunnel so you can access the entire network
@@ -480,7 +492,7 @@ netstat -tlnp | grep 44344
 ### Agent keeps disconnecting
 ```bash
 # Use auto-retry
-./labyrinth agent --retry --server IP:44344
+LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent --retry --server IP:44344
 ```
 
 ---
@@ -506,20 +518,36 @@ netstat -tlnp | grep 44344
 | `--retry` | Auto-reconnect | `--retry` |
 | `--proxy` | Use proxy | `--proxy socks5://127.0.0.1:1080` |
 
+### Dweller Options
+| Option | Description | Example |
+|--------|-------------|---------|
+| `--listen` | Inbound listen address | `--listen 0.0.0.0:45454` |
+| `--cert-file` | TLS certificate PEM path | `--cert-file cert.pem` |
+| `--key-file` | TLS key PEM path | `--key-file key.pem` |
+| `--id` | Stable dweller identifier | `--id branch-01` |
+| `--name` | Optional display name | `--name branch-host` |
+| `--auth-key` | Server/dweller shared secret | `--auth-key <secret>` |
+
 ### Interactive Commands
 | Command | What it does |
 |---------|--------------|
 | `help` | Show all commands |
 | `agents` | List connected machines |
+| `dwellers` | List remembered dwellers |
 | `select` | Choose machine to control |
+| `connect-dweller` | Connect to a remembered dweller |
+| `drop-dweller` | Install a persistent dweller through the selected agent |
+| `forget-dweller` | Remove a remembered dweller |
 | `info` | Show machine details |
+| `topology` or `routes` | Show route ownership, shared networks, and conflicts |
 | `tunnel` or `fullhouse` | Start Fullhouse mode (IP tunneling) |
 | `forward` or `room` | Start Room mode (Port forwarding) |
 | `commands` or `cmd` | Execute system commands on agent |
+| `upload` | Upload file to selected agent |
+| `download` | Download file from selected agent |
 | `status` | Show current status |
 | `stop` | Stop active tunnel/forwarding |
 | `cert` | Show certificate |
-| `clear` | Clear screen |
 | `exit` | Quit server |
 
 ---
@@ -542,31 +570,47 @@ Labyrinth follows **SOLID principles** for clean, maintainable code:
 ### 📁 Project Structure
 ```
 labyrinth/src/
+├── main.rs                # Compatibility wrapper CLI
+├── cli.rs                 # Shared CLI args and role dispatch
+├── bin/
+│   ├── labyrinth-server.rs
+│   ├── labyrinth-agent.rs
+│   └── labyrinth-dweller.rs
 ├── agent/                    # Agent-side components
+│   ├── command_executor.rs  # OS-aware command workflows
 │   ├── connection.rs        # Connection management
-│   ├── core.rs             # Main agent logic
+│   ├── core.rs             # Agent and dweller runtime loops
+│   ├── pty_shell.rs        # Interactive PTY shell sessions
 │   ├── reverse_port_forward.rs # Agent-side port forwarding
+│   ├── streaming_manager.rs # Agent-side streaming support
 │   ├── system_info.rs      # System information collection
 │   └── tls_config.rs       # TLS configuration
 ├── server/                  # Server-side components
+│   ├── agent_connection.rs # Protocol routing for connected agents
 │   ├── agent_manager.rs    # Agent registration & management
 │   ├── certificate.rs      # Certificate management
 │   ├── core.rs            # Server state management
+│   ├── dweller_manager.rs # Dweller install/connect workflows
+│   ├── dweller_registry.rs # Persisted dweller registry
+│   ├── netstack_bridge_windows.rs # Windows Fullhouse bridge
 │   ├── privileges.rs      # Sudo privilege detection
-│   ├── reverse_port_forward.rs # Legacy port forwarding
-│   ├── streaming_reverse_port_forward.rs # High-performance streaming
+│   ├── reverse_port_forward.rs # Room port forwarding
 │   ├── tunnel_manager.rs  # Tunnel operations
 │   └── ui.rs              # User interface operations
-├── streaming/              # Streaming architecture (NEW)
+├── streaming/              # Streaming architecture
 │   ├── connection_manager.rs # Connection lifecycle management
-│   ├── stream_manager.rs   # Bidirectional stream handling
-│   ├── traits.rs          # Core streaming interfaces
+│   ├── errors.rs          # Streaming error types
+│   ├── metrics.rs         # Metrics and health checks
 │   ├── models.rs          # Data structures
-│   └── errors.rs          # Streaming error types
+│   ├── recovery.rs        # Error recovery coordinator
+│   ├── resource_manager.rs # Test-only resource management
+│   ├── stream_manager.rs   # Bidirectional stream handling
+│   ├── test_interfaces.rs # Test-only stream interfaces
+│   └── traits.rs          # Core streaming interfaces
 ├── config.rs               # Configuration structures
 ├── error.rs               # Error types and handling
-├── main.rs                # Application entry point
 ├── protocol.rs            # Network protocol definitions
+├── security.rs            # TLS/fingerprint helpers
 └── styling.rs             # UI styling and formatting
 ```
 
@@ -585,6 +629,7 @@ labyrinth/src/
 - **Enhanced Error Messages**: Actionable guidance for common issues
 - **Command Organization**: Primary (server/agent) vs secondary commands
 - **Smart Agent Management**: Automatic disconnection detection with grace periods for new connections
+- **Topology Awareness**: Route ownership and shared-network detection for multi-hop planning
 - **Improved Port Forwarding**: Enhanced reliability and proper traffic routing
 - **OS-Aware Commands**: Automatic detection of Linux/Windows systems with appropriate command sets
 - **Clean Terminology**: "Fullhouse" for tunneling, "Room" for port forwarding
@@ -609,10 +654,12 @@ labyrinth/src/
 
 Labyrinth’s Fullhouse mode is designed for L3 access without requiring root on the agent. To complete TCP handshakes and route arbitrary flows originating from the TUN, the server can run a small userland TCP/IP stack and bridge payloads to the agent over the streaming channel.
 
-- Implementation: `src/server/netstack_bridge.rs`
+- Implementation: `src/server/netstack_bridge_windows.rs` on Windows; Linux
+  Fullhouse remains in `src/server/tunnel_manager.rs`.
 - Build with smoltcp backend:
-  - Build: `cargo build --features netstack_smoltcp`
-  - Run: `cargo run --features netstack_smoltcp -- server`
+  - Build: `cargo build --features netstack_smoltcp --bins`
+  - Run wrapper: `cargo run --features netstack_smoltcp --bin labyrinth -- server`
+  - Run dedicated server: `cargo run --features netstack_smoltcp --bin labyrinth-server`
 - Behavior:
   - Server owns the TUN and userland stack.
   - New TCP flows from the TUN trigger `Stream.Setup {connection_id, mapping}` to the agent.

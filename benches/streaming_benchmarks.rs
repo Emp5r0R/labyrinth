@@ -4,10 +4,9 @@
 //! architecture against the old synchronous implementation.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use labyrinth::streaming::{
-    BidirectionalStreamManager, ConnectionManager, PortMapping, ServerConnectionManager,
-    StreamManager,
-};
+use labyrinth::streaming::connection_manager::ServerConnectionManager;
+use labyrinth::streaming::stream_manager::BidirectionalStreamManager;
+use labyrinth::streaming::{ConnectionManager, PortMapping, StreamManager};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -18,7 +17,6 @@ use tokio::runtime::Runtime;
 struct BenchmarkConfig {
     data_sizes: Vec<usize>,
     concurrent_connections: Vec<usize>,
-    iterations: usize,
 }
 
 impl Default for BenchmarkConfig {
@@ -26,7 +24,6 @@ impl Default for BenchmarkConfig {
         Self {
             data_sizes: vec![1024, 8192, 65536, 1024 * 1024], // 1KB to 1MB
             concurrent_connections: vec![1, 5, 10, 25, 50],
-            iterations: 100,
         }
     }
 }
