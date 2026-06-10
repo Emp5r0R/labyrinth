@@ -25,20 +25,24 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
   <style>
     :root {
       color-scheme: dark;
-      --bg: #111315;
-      --panel: #191c1f;
-      --panel-2: #202428;
-      --text: #eff3f6;
-      --muted: #9ca6af;
-      --line: #30363d;
-      --ok: #38d996;
-      --warn: #f2c14e;
-      --bad: #ff6b6b;
-      --accent: #59b9ff;
-      --agent: #50d890;
-      --dweller: #d28cff;
-      --network: #f2c14e;
-      --forward: #ff9868;
+      --bg: #0e1116;
+      --panel: #151a21;
+      --panel-2: #1b222c;
+      --panel-3: #202936;
+      --text: #eef4f8;
+      --muted: #99a6b3;
+      --faint: #667586;
+      --line: #2c3643;
+      --line-strong: #3b4858;
+      --ok: #1fe0a1;
+      --warn: #ffd05a;
+      --bad: #ff6673;
+      --accent: #46a6ff;
+      --agent: #23d18b;
+      --dweller: #d95cff;
+      --network: #f6c945;
+      --forward: #ff8b5c;
+      --shadow: rgba(0, 0, 0, .42);
     }
     * { box-sizing: border-box; }
     body {
@@ -46,7 +50,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       min-height: 100vh;
       background: var(--bg);
       color: var(--text);
-      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     .shell {
       min-height: 100vh;
@@ -57,23 +61,59 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 20px;
-      padding: 16px 22px;
+      gap: 18px;
+      padding: 14px 20px;
       border-bottom: 1px solid var(--line);
-      background: #151719;
+      background: rgba(17, 22, 29, .96);
+      box-shadow: 0 12px 28px rgba(0, 0, 0, .2);
+      position: relative;
+      z-index: 3;
     }
-    h1 {
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(145deg, rgba(70, 166, 255, .22), rgba(31, 224, 161, .14));
+      border: 1px solid var(--line-strong);
+      box-shadow: inset 0 0 18px rgba(70, 166, 255, .08);
+      flex: 0 0 auto;
+    }
+    .brand h1 {
       margin: 0;
-      font-size: 20px;
-      font-weight: 650;
+      font-size: 18px;
+      font-weight: 720;
       letter-spacing: 0;
+    }
+    .brand span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 1px;
     }
     .header-meta {
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 12px;
       color: var(--muted);
       white-space: nowrap;
+    }
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #10151b;
     }
     .status-dot {
       width: 9px;
@@ -81,26 +121,57 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       border-radius: 999px;
       background: var(--bad);
       display: inline-block;
-      margin-right: 7px;
+      box-shadow: 0 0 0 4px rgba(255, 102, 115, .12);
     }
-    .status-dot.online { background: var(--ok); }
+    .status-dot.online {
+      background: var(--ok);
+      box-shadow: 0 0 0 4px rgba(31, 224, 161, .12), 0 0 18px rgba(31, 224, 161, .34);
+    }
     main {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 360px;
+      grid-template-columns: minmax(0, 1fr) 380px;
       min-height: 0;
     }
     #map-wrap {
       position: relative;
-      min-height: calc(100vh - 66px);
+      min-height: calc(100vh - 64px);
       overflow: hidden;
+      background:
+        radial-gradient(circle at 34% 44%, rgba(70, 166, 255, .09), transparent 28%),
+        linear-gradient(rgba(255, 255, 255, .025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, .025) 1px, transparent 1px),
+        var(--bg);
+      background-size: auto, 34px 34px, 34px 34px, auto;
     }
     #map {
       width: 100%;
       height: 100%;
-      min-height: calc(100vh - 66px);
+      min-height: calc(100vh - 64px);
       display: block;
-      background: #111315;
     }
+    .map-toolbar {
+      position: absolute;
+      left: 18px;
+      top: 18px;
+      display: flex;
+      gap: 8px;
+      z-index: 2;
+    }
+    .tool {
+      min-height: 32px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 5px 9px;
+      color: var(--muted);
+      background: rgba(18, 23, 30, .9);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, .2);
+      font-size: 12px;
+    }
+    .tool svg { color: var(--accent); }
     .empty {
       position: absolute;
       inset: 0;
@@ -109,24 +180,38 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       justify-content: center;
       color: var(--muted);
       text-align: center;
-      padding: 140px 24px 24px;
+      padding: 132px 24px 24px;
       pointer-events: none;
+    }
+    .empty-panel {
+      width: min(430px, calc(100vw - 48px));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(20, 26, 34, .82);
+      box-shadow: 0 18px 44px var(--shadow);
+      padding: 18px;
+    }
+    .empty-title {
+      color: var(--text);
+      font-weight: 700;
+      font-size: 15px;
+      margin-bottom: 4px;
     }
     aside {
       min-height: 0;
       overflow: auto;
       border-left: 1px solid var(--line);
-      background: var(--panel);
+      background: linear-gradient(180deg, var(--panel), #12171d);
       padding: 18px;
     }
-    .section { margin-bottom: 22px; }
+    .section { margin-bottom: 20px; }
     .section h2 {
       margin: 0 0 10px;
-      font-size: 13px;
+      font-size: 12px;
       text-transform: uppercase;
       color: var(--muted);
-      font-weight: 700;
-      letter-spacing: .04em;
+      font-weight: 760;
+      letter-spacing: .06em;
     }
     .metrics {
       display: grid;
@@ -139,6 +224,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       border-radius: 8px;
       padding: 10px;
       min-width: 0;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .03);
     }
     .metric strong {
       display: block;
@@ -159,10 +245,11 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       min-width: 0;
     }
     .swatch {
-      width: 12px;
-      height: 12px;
-      border-radius: 3px;
+      width: 13px;
+      height: 13px;
+      border-radius: 4px;
       flex: 0 0 auto;
+      box-shadow: 0 0 14px currentColor;
     }
     .list {
       display: grid;
@@ -172,11 +259,19 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 10px;
-      background: #171a1d;
+      background: rgba(24, 30, 38, .9);
       min-width: 0;
+      transition: border-color .16s ease, transform .16s ease, background .16s ease;
+    }
+    .item[data-node-id] { cursor: pointer; }
+    .item[data-node-id]:hover,
+    .item.selected {
+      border-color: rgba(70, 166, 255, .68);
+      background: var(--panel-3);
+      transform: translateY(-1px);
     }
     .item-title {
-      font-weight: 650;
+      font-weight: 700;
       overflow-wrap: anywhere;
     }
     .item-meta {
@@ -191,41 +286,123 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       min-height: 22px;
       padding: 2px 7px;
       border-radius: 999px;
-      background: #23282d;
+      background: #222a34;
       border: 1px solid var(--line);
       color: var(--muted);
       font-size: 12px;
-      margin: 3px 5px 0 0;
+      margin: 7px 5px 0 0;
     }
-    .pill.ok { color: var(--ok); }
-    .pill.warn { color: var(--warn); }
-    .pill.bad { color: var(--bad); }
-    .node { cursor: default; }
-    .node circle {
-      stroke: #0b0c0e;
-      stroke-width: 3;
+    .pill.ok { color: var(--ok); border-color: rgba(31, 224, 161, .28); }
+    .pill.warn { color: var(--warn); border-color: rgba(255, 208, 90, .28); }
+    .pill.bad { color: var(--bad); border-color: rgba(255, 102, 115, .28); }
+    .node {
+      cursor: pointer;
+      outline: none;
+    }
+    .node-halo {
+      opacity: .16;
+      filter: blur(.2px);
+      transition: opacity .16s ease, r .16s ease;
+    }
+    .node-frame {
+      stroke: rgba(255, 255, 255, .18);
+      stroke-width: 1.5;
+      filter: drop-shadow(0 12px 18px rgba(0, 0, 0, .35));
+      transition: stroke .16s ease, stroke-width .16s ease, filter .16s ease;
+    }
+    .node-icon {
+      fill: none;
+      stroke: #071014;
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      opacity: .95;
+      pointer-events: none;
     }
     .node text {
       fill: var(--text);
       paint-order: stroke;
-      stroke: #111315;
-      stroke-width: 4;
+      stroke: #0d1117;
+      stroke-width: 5;
       stroke-linejoin: round;
       font-size: 12px;
-      font-weight: 650;
+      font-weight: 720;
+      pointer-events: none;
     }
-    .edge { stroke-width: 2.3; stroke: var(--line); }
-    .edge.enc { stroke: var(--ok); }
-    .edge.unenc { stroke: var(--warn); stroke-dasharray: 6 5; }
+    .node-subtext {
+      fill: var(--muted) !important;
+      font-size: 10px !important;
+      font-weight: 640 !important;
+      stroke-width: 4 !important;
+    }
+    .node:hover .node-halo,
+    .node.selected .node-halo {
+      opacity: .38;
+    }
+    .node:hover .node-frame,
+    .node.selected .node-frame {
+      stroke: rgba(255, 255, 255, .7);
+      stroke-width: 2.4;
+      filter: drop-shadow(0 0 18px rgba(70, 166, 255, .28));
+    }
+    .edge {
+      stroke-width: 2.5;
+      stroke: var(--line-strong);
+      stroke-linecap: round;
+      opacity: .82;
+      transition: opacity .16s ease, stroke-width .16s ease;
+    }
+    .edge.enc {
+      stroke: var(--ok);
+      filter: drop-shadow(0 0 5px rgba(31, 224, 161, .22));
+      stroke-dasharray: 10 7;
+      animation: flow 1.8s linear infinite;
+    }
+    .edge.unenc {
+      stroke: var(--warn);
+      stroke-dasharray: 5 6;
+      animation: flow 2.6s linear infinite;
+    }
+    .edge.room { stroke: var(--forward); }
+    .edge.faded,
+    .node.faded {
+      opacity: .22;
+    }
+    .edge.selected {
+      opacity: 1;
+      stroke-width: 4;
+    }
+    .edge-label-pill {
+      fill: rgba(14, 17, 22, .86);
+      stroke: var(--line);
+      stroke-width: 1;
+    }
     .edge-label {
       fill: var(--muted);
-      paint-order: stroke;
-      stroke: #111315;
-      stroke-width: 4;
-      stroke-linejoin: round;
-      font-size: 11px;
+      font-size: 10.5px;
+      font-weight: 700;
+      pointer-events: none;
     }
-    @media (max-width: 920px) {
+    .minimap-ring {
+      fill: none;
+      stroke: rgba(255, 255, 255, .07);
+      stroke-width: 1;
+    }
+    @keyframes flow {
+      to { stroke-dashoffset: -34; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .edge.enc,
+      .edge.unenc {
+        animation: none;
+      }
+      .item,
+      .node-frame,
+      .node-halo {
+        transition: none;
+      }
+    }
+    @media (max-width: 1020px) {
       main { grid-template-columns: 1fr; }
       aside {
         border-left: 0;
@@ -235,7 +412,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       header {
         align-items: flex-start;
         flex-direction: column;
-        gap: 8px;
+        gap: 10px;
       }
       .header-meta { flex-wrap: wrap; white-space: normal; }
     }
@@ -244,16 +421,39 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
 <body>
   <div class="shell">
     <header>
-      <h1>Labyrinth Network Map</h1>
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="21" height="21">
+            <path d="M4 8h5v5H4zM15 4h5v5h-5zM15 15h5v5h-5z" fill="none" stroke="#46a6ff" stroke-width="1.8" stroke-linejoin="round"/>
+            <path d="M9 10.5h3.5V6.5H15M9 10.5h3.5V17.5H15" fill="none" stroke="#1fe0a1" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div>
+          <h1>Labyrinth Network Map</h1>
+          <span>Read-only topology, tunnels, routes, dwellers, and forwards</span>
+        </div>
+      </div>
       <div class="header-meta">
-        <span><i id="status-dot" class="status-dot"></i><span id="status-text">Connecting</span></span>
+        <span class="status-chip"><i id="status-dot" class="status-dot"></i><span id="status-text">Connecting</span></span>
         <span id="updated">Waiting for snapshot</span>
       </div>
     </header>
     <main>
       <section id="map-wrap" aria-label="Network visualization">
+        <div class="map-toolbar">
+          <span class="tool">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 3v18M3 12h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Click nodes for details
+          </span>
+          <span class="tool" id="edge-count">0 links</span>
+        </div>
         <svg id="map" role="img" aria-label="Labyrinth network topology"></svg>
-        <div id="empty" class="empty">No connected agents yet. Start an agent or connect a dweller to populate the map.</div>
+        <div id="empty" class="empty">
+          <div class="empty-panel">
+            <div class="empty-title">No connected agents yet</div>
+            <div>Start an agent or connect a dweller to populate the live topology.</div>
+          </div>
+        </div>
       </section>
       <aside>
         <section class="section">
@@ -261,16 +461,28 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
           <div class="metrics" id="metrics"></div>
         </section>
         <section class="section">
+          <h2>Selected</h2>
+          <div class="list" id="selected"></div>
+        </section>
+        <section class="section">
           <h2>Legend</h2>
           <div class="legend">
-            <div class="legend-row"><span class="swatch" style="background:var(--accent)"></span>Server / proxy</div>
-            <div class="legend-row"><span class="swatch" style="background:var(--agent)"></span>Agent</div>
-            <div class="legend-row"><span class="swatch" style="background:var(--dweller)"></span>Dweller</div>
-            <div class="legend-row"><span class="swatch" style="background:var(--network)"></span>Detected network</div>
-            <div class="legend-row"><span class="swatch" style="background:var(--forward)"></span>Room port forward</div>
-            <div class="legend-row"><span class="swatch" style="background:var(--ok)"></span>Encrypted edge</div>
-            <div class="legend-row"><span class="swatch" style="background:var(--warn)"></span>Unencrypted/local edge</div>
+            <div class="legend-row"><span class="swatch" style="background:var(--accent); color:var(--accent)"></span>Server / proxy</div>
+            <div class="legend-row"><span class="swatch" style="background:var(--agent); color:var(--agent)"></span>Agent</div>
+            <div class="legend-row"><span class="swatch" style="background:var(--dweller); color:var(--dweller)"></span>Dweller</div>
+            <div class="legend-row"><span class="swatch" style="background:var(--network); color:var(--network)"></span>Detected network</div>
+            <div class="legend-row"><span class="swatch" style="background:var(--forward); color:var(--forward)"></span>Room port forward</div>
+            <div class="legend-row"><span class="swatch" style="background:var(--ok); color:var(--ok)"></span>Encrypted edge</div>
+            <div class="legend-row"><span class="swatch" style="background:var(--warn); color:var(--warn)"></span>Unencrypted/local edge</div>
           </div>
+        </section>
+        <section class="section">
+          <h2>Agents And Dwellers</h2>
+          <div class="list" id="agents"></div>
+        </section>
+        <section class="section">
+          <h2>Detected Networks</h2>
+          <div class="list" id="networks"></div>
         </section>
         <section class="section">
           <h2>Active Tunnels</h2>
@@ -295,13 +507,35 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
     const svg = document.getElementById('map');
     const empty = document.getElementById('empty');
     const colors = {
-      server: '#59b9ff',
-      agent: '#50d890',
-      dweller: '#d28cff',
-      network: '#f2c14e',
-      port_forward: '#ff9868'
+      server: '#46a6ff',
+      agent: '#23d18b',
+      dweller: '#d95cff',
+      network: '#f6c945',
+      port_forward: '#ff8b5c'
     };
-    let current = { nodes: [], edges: [] };
+    const icons = {
+      server: [
+        ['rect', { x: -13, y: -11, width: 26, height: 22, rx: 4 }],
+        ['path', { d: 'M-8 -4h16M-8 4h16M6 -4h.1M6 4h.1' }]
+      ],
+      agent: [
+        ['rect', { x: -13, y: -9, width: 26, height: 18, rx: 3 }],
+        ['path', { d: 'M-6 14h12M-2 9v5M-7 -3h14' }]
+      ],
+      dweller: [
+        ['path', { d: 'M-12 -3l12 -7 12 7v11l-12 7-12 -7z' }],
+        ['path', { d: 'M-5 -1h10M-5 5h10M0 -10v25' }]
+      ],
+      network: [
+        ['circle', { cx: 0, cy: 0, r: 11 }],
+        ['path', { d: 'M-11 0h22M0 -11c4 4 4 18 0 22M0 -11c-4 4-4 18 0 22' }]
+      ],
+      port_forward: [
+        ['path', { d: 'M-11 -7h10v14h-10zM1 -7h10v14H1zM-1 0h2M-7 0h2M5 0h2' }]
+      ]
+    };
+    let current = { nodes: [], edges: [], routes: [], port_forwards: [], fullhouse: [], shared_networks: [], conflicts: [] };
+    let selectedNodeId = '';
 
     function el(name, attrs = {}, parent = svg) {
       const node = document.createElementNS('http://www.w3.org/2000/svg', name);
@@ -310,27 +544,55 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       return node;
     }
 
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[char]));
+    }
+
     function layout(nodes, edges, width, height) {
-      const center = { x: width * 0.42, y: height * 0.5 };
-      const nodeMap = new Map(nodes.map((node, index) => {
-        const angle = (Math.PI * 2 * index) / Math.max(nodes.length, 1);
-        const radius = Math.min(width, height) * (node.kind === 'server' ? 0 : 0.32);
-        node.x = node.kind === 'server' ? center.x : center.x + Math.cos(angle) * radius;
-        node.y = node.kind === 'server' ? center.y : center.y + Math.sin(angle) * radius;
+      const center = { x: width * 0.44, y: height * 0.52 };
+      const nodeMap = new Map();
+      const byKind = {
+        server: nodes.filter(n => n.kind === 'server'),
+        agent: nodes.filter(n => n.kind === 'agent' || n.kind === 'dweller'),
+        network: nodes.filter(n => n.kind === 'network'),
+        port_forward: nodes.filter(n => n.kind === 'port_forward')
+      };
+
+      for (const node of nodes) {
         node.vx = 0;
         node.vy = 0;
-        return [node.id, node];
-      }));
-      for (let tick = 0; tick < 180; tick++) {
+      }
+      for (const node of byKind.server) {
+        node.x = center.x;
+        node.y = center.y;
+        nodeMap.set(node.id, node);
+      }
+      const rings = [
+        [byKind.agent, Math.min(width, height) * 0.26, -Math.PI / 2],
+        [byKind.network, Math.min(width, height) * 0.40, -Math.PI / 5],
+        [byKind.port_forward, Math.min(width, height) * 0.34, Math.PI / 2]
+      ];
+      for (const [group, radius, offset] of rings) {
+        group.forEach((node, index) => {
+          const angle = offset + (Math.PI * 2 * index) / Math.max(group.length, 1);
+          node.x = center.x + Math.cos(angle) * radius;
+          node.y = center.y + Math.sin(angle) * radius;
+          nodeMap.set(node.id, node);
+        });
+      }
+
+      for (let tick = 0; tick < 160; tick++) {
         for (let i = 0; i < nodes.length; i++) {
           for (let j = i + 1; j < nodes.length; j++) {
             const a = nodes[i], b = nodes[j];
             let dx = a.x - b.x, dy = a.y - b.y;
             let dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-            const force = 1800 / (dist * dist);
+            const force = 2300 / (dist * dist);
             dx /= dist; dy /= dist;
-            a.vx += dx * force; a.vy += dy * force;
-            b.vx -= dx * force; b.vy -= dy * force;
+            if (a.kind !== 'server') { a.vx += dx * force; a.vy += dy * force; }
+            if (b.kind !== 'server') { b.vx -= dx * force; b.vy -= dy * force; }
           }
         }
         for (const edge of edges) {
@@ -338,8 +600,8 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
           if (!a || !b) continue;
           let dx = b.x - a.x, dy = b.y - a.y;
           let dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-          const desired = edge.kind === 'route' ? 150 : 190;
-          const force = (dist - desired) * 0.012;
+          const desired = edge.kind === 'route' ? 156 : edge.kind === 'room' ? 130 : 190;
+          const force = (dist - desired) * 0.013;
           dx /= dist; dy /= dist;
           if (a.kind !== 'server') { a.vx += dx * force; a.vy += dy * force; }
           if (b.kind !== 'server') { b.vx -= dx * force; b.vy -= dy * force; }
@@ -349,66 +611,168 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
             node.x = center.x; node.y = center.y; node.vx = 0; node.vy = 0;
             continue;
           }
-          node.vx += (center.x - node.x) * 0.002;
-          node.vy += (center.y - node.y) * 0.002;
-          node.x = Math.max(56, Math.min(width - 56, node.x + node.vx));
-          node.y = Math.max(56, Math.min(height - 56, node.y + node.vy));
-          node.vx *= 0.86; node.vy *= 0.86;
+          node.vx += (center.x - node.x) * 0.0015;
+          node.vy += (center.y - node.y) * 0.0015;
+          node.x = Math.max(76, Math.min(width - 76, node.x + node.vx));
+          node.y = Math.max(76, Math.min(height - 76, node.y + node.vy));
+          node.vx *= 0.85; node.vy *= 0.85;
         }
       }
       return nodeMap;
     }
 
+    function nodeRadius(node) {
+      if (node.kind === 'server') return 30;
+      if (node.kind === 'network') return 23;
+      if (node.kind === 'port_forward') return 22;
+      return 25;
+    }
+
+    function edgeTouches(edge, nodeId) {
+      return edge.source === nodeId || edge.target === nodeId;
+    }
+
     function render(data) {
       current = data;
+      if (selectedNodeId && !data.nodes.some(node => node.id === selectedNodeId)) selectedNodeId = '';
       const bounds = svg.getBoundingClientRect();
-      const width = Math.max(bounds.width, 640);
-      const height = Math.max(bounds.height, 420);
+      const width = Math.max(bounds.width, 700);
+      const height = Math.max(bounds.height, 440);
       svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
       svg.innerHTML = '';
       empty.style.display = data.nodes.length <= 1 ? 'flex' : 'none';
+      document.getElementById('edge-count').textContent = `${data.edges.length} links`;
       const nodes = data.nodes.map(node => ({ ...node }));
       const edges = data.edges.map(edge => ({ ...edge }));
       const nodeMap = layout(nodes, edges, width, height);
 
+      const defs = el('defs');
+      const glow = el('filter', { id: 'soft-glow', x: '-40%', y: '-40%', width: '180%', height: '180%' }, defs);
+      el('feGaussianBlur', { stdDeviation: 4, result: 'blur' }, glow);
+      const merge = el('feMerge', {}, glow);
+      el('feMergeNode', { in: 'blur' }, merge);
+      el('feMergeNode', { in: 'SourceGraphic' }, merge);
+
+      const backgroundLayer = el('g');
       const edgeLayer = el('g');
       const labelLayer = el('g');
       const nodeLayer = el('g');
+      const center = nodeMap.get('server');
+      if (center) {
+        [110, 210, 320].forEach(radius => el('circle', {
+          cx: center.x,
+          cy: center.y,
+          r: radius,
+          class: 'minimap-ring'
+        }, backgroundLayer));
+      }
+
       for (const edge of edges) {
         const a = nodeMap.get(edge.source), b = nodeMap.get(edge.target);
         if (!a || !b) continue;
+        const isSelected = selectedNodeId && edgeTouches(edge, selectedNodeId);
+        const faded = selectedNodeId && !isSelected && selectedNodeId !== '';
+        const cls = `edge ${edge.encrypted ? 'enc' : 'unenc'} ${edge.kind} ${isSelected ? 'selected' : ''} ${faded ? 'faded' : ''}`;
         el('line', {
           x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-          class: `edge ${edge.encrypted ? 'enc' : 'unenc'}`
+          class: cls
         }, edgeLayer);
+        const labelT = edge.kind === 'route' ? 0.68 : 0.5;
+        const midX = a.x + (b.x - a.x) * labelT;
+        const midY = a.y + (b.y - a.y) * labelT;
+        const labelWidth = Math.min(Math.max(edge.label.length * 6.4 + 16, 54), 138);
+        el('rect', {
+          x: midX - labelWidth / 2,
+          y: midY - 19,
+          width: labelWidth,
+          height: 18,
+          rx: 6,
+          class: 'edge-label-pill'
+        }, labelLayer);
         el('text', {
-          x: (a.x + b.x) / 2,
-          y: (a.y + b.y) / 2 - 7,
+          x: midX,
+          y: midY - 6,
           'text-anchor': 'middle',
           class: 'edge-label'
         }, labelLayer).textContent = edge.label;
       }
       for (const node of nodes) {
-        const group = el('g', { class: 'node', transform: `translate(${node.x},${node.y})` }, nodeLayer);
-        const radius = node.kind === 'server' ? 28 : node.kind === 'network' ? 20 : 23;
-        el('circle', { r: radius, fill: colors[node.kind] || '#9ca6af' }, group);
-        el('text', { x: 0, y: radius + 18, 'text-anchor': 'middle' }, group).textContent = node.label;
+        const radius = nodeRadius(node);
+        const color = colors[node.kind] || '#99a6b3';
+        const connected = selectedNodeId && edges.some(edge => edgeTouches(edge, selectedNodeId) && edgeTouches(edge, node.id));
+        const selected = node.id === selectedNodeId;
+        const faded = selectedNodeId && !selected && !connected && selectedNodeId !== '';
+        const group = el('g', {
+          class: `node ${selected ? 'selected' : ''} ${faded ? 'faded' : ''}`,
+          transform: `translate(${node.x},${node.y})`,
+          tabindex: '0',
+          role: 'button',
+          'aria-label': `${node.label} ${node.status}`
+        }, nodeLayer);
+        group.addEventListener('click', () => selectNode(node.id));
+        group.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            selectNode(node.id);
+          }
+        });
+        el('circle', { r: radius + 11, fill: color, class: 'node-halo', filter: 'url(#soft-glow)' }, group);
+        el('circle', { r: radius, fill: color, class: 'node-frame' }, group);
+        for (const [name, attrs] of icons[node.kind] || icons.agent) {
+          el(name, { ...attrs, class: 'node-icon' }, group);
+        }
+        el('text', { x: 0, y: radius + 18, 'text-anchor': 'middle' }, group).textContent = shortLabel(node.label, 22);
+        el('text', { x: 0, y: radius + 32, 'text-anchor': 'middle', class: 'node-subtext' }, group).textContent = shortLabel(node.status, 26);
         const title = el('title', {}, group);
         title.textContent = `${node.label}\n${node.status}\n${node.detail || ''}`;
       }
       renderSide(data);
     }
 
-    function metric(label, value) {
-      return `<div class="metric"><strong>${value}</strong><span>${label}</span></div>`;
+    function shortLabel(value, max) {
+      const text = String(value || '');
+      return text.length > max ? `${text.slice(0, max - 1)}…` : text;
     }
 
-    function item(title, meta, pills = []) {
-      return `<div class="item"><div class="item-title">${title}</div><div class="item-meta">${meta || ''}</div>${pills.map(p => `<span class="pill ${p.tone || ''}">${p.text}</span>`).join('')}</div>`;
+    function metric(label, value) {
+      return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`;
+    }
+
+    function item(title, meta, pills = [], nodeId = '') {
+      const selected = nodeId && nodeId === selectedNodeId ? ' selected' : '';
+      const nodeAttr = nodeId ? ` data-node-id="${escapeHtml(nodeId)}"` : '';
+      return `<div class="item${selected}"${nodeAttr}><div class="item-title">${escapeHtml(title)}</div><div class="item-meta">${escapeHtml(meta || '')}</div>${pills.map(p => `<span class="pill ${escapeHtml(p.tone || '')}">${escapeHtml(p.text)}</span>`).join('')}</div>`;
     }
 
     function emptyText(text) {
-      return `<div class="item"><div class="item-meta">${text}</div></div>`;
+      return `<div class="item"><div class="item-meta">${escapeHtml(text)}</div></div>`;
+    }
+
+    function bindListSelection() {
+      document.querySelectorAll('[data-node-id]').forEach(node => {
+        node.addEventListener('click', () => selectNode(node.getAttribute('data-node-id')));
+      });
+    }
+
+    function selectNode(nodeId) {
+      selectedNodeId = nodeId || '';
+      render(current);
+    }
+
+    function selectedDetails(data) {
+      const selected = data.nodes.find(node => node.id === selectedNodeId) || data.nodes[0];
+      if (!selectedNodeId || !selected) return emptyText('Click a node or list item to inspect its links.');
+      const connectedEdges = data.edges.filter(edge => edgeTouches(edge, selected.id));
+      return item(
+        selected.label,
+        selected.detail || selected.status,
+        [
+          { text: selected.kind.replace('_', ' ') },
+          { text: selected.status, tone: selected.status.includes('offline') ? 'warn' : 'ok' },
+          { text: `${connectedEdges.length} links` }
+        ],
+        selected.id
+      );
     }
 
     function renderSide(data) {
@@ -417,19 +781,27 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
         metric('agents', s.agents_online) +
         metric('dwellers', `${s.dwellers_online}/${s.dwellers_total}`) +
         metric('networks', s.detected_networks) +
-        metric('active edges', s.active_tunnels + s.port_forwards);
+        metric('edges', data.edges.length);
+      document.getElementById('selected').innerHTML = selectedDetails(data);
+      document.getElementById('agents').innerHTML = data.nodes.filter(node => node.kind === 'agent' || node.kind === 'dweller')
+        .map(node => item(node.label, node.detail, [{ text: node.kind }, { text: node.status, tone: node.status.includes('offline') ? 'warn' : 'ok' }], node.id)).join('') ||
+        emptyText('No agents or dwellers connected.');
+      document.getElementById('networks').innerHTML = data.routes.length
+        ? data.routes.map(route => item(route.cidr, `${route.agent_name} via ${route.interface_name} (${route.source_address})`, [{ text: `score ${route.score}` }, { text: 'auto-detected', tone: 'ok' }], `network:${route.cidr}`)).join('')
+        : emptyText('No CIDRs detected from agent interfaces.');
       document.getElementById('tunnels').innerHTML = data.fullhouse.length
-        ? data.fullhouse.map(t => item(t.agent_name, `proxy:${t.proxy_port}`, [{ text: 'tun/tls/enc', tone: 'ok' }])).join('')
+        ? data.fullhouse.map(t => item(t.agent_name, `proxy:${t.proxy_port}`, [{ text: 'tun/tls/enc', tone: 'ok' }], `agent:${t.agent_id}`)).join('')
         : emptyText('No active Fullhouse tunnels.');
       document.getElementById('forwards').innerHTML = data.port_forwards.length
-        ? data.port_forwards.map(f => item(`localhost:${f.local_port}`, `${f.agent_name} -> ${f.target_host}:${f.target_port}`, [{ text: 'local/unenc', tone: 'warn' }, { text: 'stream/tls/enc', tone: 'ok' }])).join('')
+        ? data.port_forwards.map(f => item(`localhost:${f.local_port}`, `${f.agent_name} -> ${f.target_host}:${f.target_port}`, [{ text: 'local/unenc', tone: 'warn' }, { text: 'stream/tls/enc', tone: 'ok' }], `port-forward:${f.local_port}`)).join('')
         : emptyText('No active Room forwards.');
       document.getElementById('shared').innerHTML = data.shared_networks.length
-        ? data.shared_networks.map(g => item(g.cidr, g.agents.join(', '), [{ text: 'multi-hop candidate', tone: 'ok' }])).join('')
+        ? data.shared_networks.map(g => item(g.cidr, g.agents.join(', '), [{ text: 'multi-hop candidate', tone: 'ok' }], `network:${g.cidr}`)).join('')
         : emptyText('No shared agent networks detected.');
       document.getElementById('conflicts').innerHTML = data.conflicts.length
-        ? data.conflicts.map(c => item(c.cidr, c.agents.join(', '), [{ text: 'overlap', tone: 'bad' }])).join('')
+        ? data.conflicts.map(c => item(c.cidr, c.agents.join(', '), [{ text: 'overlap', tone: 'bad' }], `network:${c.cidr}`)).join('')
         : emptyText('No route ownership conflicts.');
+      bindListSelection();
     }
 
     async function refresh() {
@@ -448,6 +820,9 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
     }
 
     window.addEventListener('resize', () => render(current));
+    svg.addEventListener('click', (event) => {
+      if (event.target === svg) selectNode('');
+    });
     refresh();
     setInterval(refresh, 2000);
   </script>
