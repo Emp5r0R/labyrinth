@@ -29,6 +29,10 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
 - `src/server/tunnel_manager.rs` - Fullhouse/TUN setup and teardown.
 - `src/server/topology.rs` - agent route inference, route ownership snapshots,
   shared-network detection, and conflict detection for multi-hop planning.
+- `src/server/network_map.rs` - read-only terminal map renderer for agents,
+  dwellers, detected networks, tunnels, Room forwards, and shared routes.
+- `src/server/dashboard.rs` - read-only browser visualization server and JSON
+  snapshot API for the live network map.
 - `src/server/reverse_port_forward.rs` - Room reverse port-forwarding support.
 - `src/server/dweller_manager.rs` and `src/server/dweller_registry.rs` -
   dweller install, connect, forget, persistence, and `dwellers.json`.
@@ -63,6 +67,8 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
   `LABYRINTH_AUTH_KEY=<secret> cargo run --bin labyrinth-server -- --headless --listen-addr 0.0.0.0:44344`
 - Local unauthenticated server testing only:
   `cargo run --bin labyrinth-server -- --no-auth`
+- Browser visualization is enabled by default on `127.0.0.1:44777`. Move it
+  with `--web-ui-addr <ip:port>` or disable it with `--no-web-ui`.
 - Run agent:
   `cargo run --bin labyrinth-agent -- --server 127.0.0.1:44344 --fingerprint <sha256> [--retry]`
 - Run agent through SOCKS5:
@@ -88,8 +94,18 @@ relying on automatic tunnel startup from those flags.
 ## Runtime Behavior Notes
 - Interactive server commands include `help`, `agents`, `dwellers`, `select`,
   `connect-dweller`, `drop-dweller`, `forget-dweller`, `info`, `tunnel` /
-  `fullhouse`, `topology` / `routes`, `forward` / `room`, `commands` / `cmd`,
-  `upload`, `download`, `status`, `cert`, `stop`, and `exit`.
+  `fullhouse`, `topology` / `routes`, `map` / `network-map`, `forward` /
+  `room`, `commands` / `cmd`, `upload`, `download`, `status`, `cert`, `stop`,
+  and `exit`.
+- `map` is visualization-only. It reads current server snapshots and should not
+  mutate route ownership, active tunnels, dwellers, port forwards, or selected
+  agent state.
+- The browser dashboard is also visualization-only. Keep `GET /api/network-map`
+  typed, read-only, and derived from the same server snapshots as terminal
+  topology/map views. Do not add command execution or mutation endpoints there.
+- The Shell category inside `commands` offers a raw SSH/WinRM-style terminal
+  and a line-oriented control shell. The raw terminal forwards key presses to
+  the remote PTY and uses `Ctrl-]` as the local detach sequence.
 - `LABYRINTH_AUTH_KEY` is required by default for server-agent authentication.
   Agents read the same environment variable through collected system info.
 - Fullhouse auto-detects candidate IPv4 routes from the selected agent's

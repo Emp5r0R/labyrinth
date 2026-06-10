@@ -32,8 +32,9 @@ impl PtyShellManager {
             })
             .map_err(|e| LabyrinthError::Message(format!("Failed to create PTY: {}", e)))?;
 
-        let shell = default_shell();
-        let cmd = CommandBuilder::new(shell);
+        let mut cmd = default_shell_command();
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
         let child = pair
             .slave
             .spawn_command(cmd)
@@ -143,14 +144,47 @@ impl PtyShellManager {
     }
 }
 
-fn default_shell() -> String {
+fn default_shell_command() -> CommandBuilder {
     #[cfg(target_os = "windows")]
     {
-        std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".to_string())
+        if command_exists("pwsh.exe") {
+            let mut cmd = CommandBuilder::new("pwsh.exe");
+            cmd.args(["-NoLogo", "-NoProfile"]);
+            return cmd;
+        }
+
+        if command_exists("powershell.exe") {
+            let mut cmd = CommandBuilder::new("powershell.exe");
+            cmd.args(["-NoLogo", "-NoProfile"]);
+            return cmd;
+        }
+
+        CommandBuilder::new(std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()))
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+        CommandBuilder::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn command_exists(command: &str) -> bool {
+    std::process::Command::new("where")
+        .arg(command)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_shell_command_uses_shell_environment() {
+        std::env::set_var("SHELL", "/bin/sh");
+        let cmd = default_shell_command();
+        assert_eq!(cmd.get_argv()[0].to_string_lossy(), "/bin/sh");
     }
 }

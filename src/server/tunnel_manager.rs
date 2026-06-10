@@ -22,7 +22,9 @@ use std::process::Command;
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use tokio::net::TcpListener;
-use tracing::{error, info, warn};
+#[cfg(target_os = "linux")]
+use tracing::warn;
+use tracing::{error, info};
 
 // Server-only TUN; userland stack handled by NetstackBridge
 
@@ -940,6 +942,7 @@ impl TunnelManager {
 #[cfg(test)]
 mod tests {
     use super::TunnelManager;
+    #[cfg(target_os = "linux")]
     use crate::error::LabyrinthError;
 
     #[test]

@@ -26,14 +26,37 @@ pub struct ConnectedAgent {
     pub shell_events: Arc<Mutex<Option<mpsc::UnboundedSender<Message>>>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortForwardSnapshot {
+    pub local_port: u16,
+    pub agent_id: String,
+    pub target_host: String,
+    pub target_port: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FullhouseSnapshot {
+    pub agent_id: String,
+    pub proxy_port: u16,
+}
+
 struct PortForwardListener {
     agent_id: String,
+    mapping: crate::streaming::models::PortMapping,
     handle: JoinHandle<()>,
 }
 
 impl PortForwardListener {
-    fn new(agent_id: String, handle: JoinHandle<()>) -> Self {
-        Self { agent_id, handle }
+    fn new(
+        agent_id: String,
+        mapping: crate::streaming::models::PortMapping,
+        handle: JoinHandle<()>,
+    ) -> Self {
+        Self {
+            agent_id,
+            mapping,
+            handle,
+        }
     }
 
     fn stop(self) {
@@ -168,6 +191,7 @@ impl LabyrinthServer {
         &self,
         local_port: u16,
         agent_id: String,
+        mapping: crate::streaming::models::PortMapping,
         handle: JoinHandle<()>,
     ) -> Result<()> {
         let mut listeners = self.port_forward_listeners.write().await;
@@ -177,7 +201,10 @@ impl LabyrinthServer {
                 local_port
             )));
         }
-        listeners.insert(local_port, PortForwardListener::new(agent_id, handle));
+        listeners.insert(
+            local_port,
+            PortForwardListener::new(agent_id, mapping, handle),
+        );
         Ok(())
     }
 
@@ -237,6 +264,38 @@ impl LabyrinthServer {
         listeners.insert(agent_id, FullhouseListener::new(proxy_port, handle));
     }
 
+    pub async fn port_forward_snapshots(&self) -> Vec<PortForwardSnapshot> {
+        let listeners = self.port_forward_listeners.read().await;
+        let mut snapshots: Vec<_> = listeners
+            .values()
+            .map(|listener| PortForwardSnapshot {
+                local_port: listener.mapping.local_port,
+                agent_id: listener.agent_id.clone(),
+                target_host: listener.mapping.target_host.clone(),
+                target_port: listener.mapping.target_port,
+            })
+            .collect();
+        snapshots.sort_by(|left, right| {
+            left.agent_id
+                .cmp(&right.agent_id)
+                .then_with(|| left.local_port.cmp(&right.local_port))
+        });
+        snapshots
+    }
+
+    pub async fn fullhouse_snapshots(&self) -> Vec<FullhouseSnapshot> {
+        let listeners = self.fullhouse_listeners.read().await;
+        let mut snapshots: Vec<_> = listeners
+            .iter()
+            .map(|(agent_id, listener)| FullhouseSnapshot {
+                agent_id: agent_id.clone(),
+                proxy_port: listener.proxy_port,
+            })
+            .collect();
+        snapshots.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        snapshots
+    }
+
     pub async fn stop_fullhouse_listener(&self, agent_id: &str) -> Option<u16> {
         let mut listeners = self.fullhouse_listeners.write().await;
         listeners.remove(agent_id).map(FullhouseListener::stop)
@@ -285,7 +344,16 @@ mod tests {
     async fn register_and_stop_port_forwarding() {
         let server = LabyrinthServer::new(false, None);
         server
-            .register_port_forward_listener(8080, "agent".to_string(), dummy_handle())
+            .register_port_forward_listener(
+                8080,
+                "agent".to_string(),
+                crate::streaming::models::PortMapping {
+                    local_port: 8080,
+                    target_host: "127.0.0.1".to_string(),
+                    target_port: 80,
+                },
+                dummy_handle(),
+            )
             .await
             .unwrap();
         assert!(server.has_port_forwarding("agent").await);

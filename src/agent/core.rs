@@ -1049,6 +1049,7 @@ pub async fn run_dweller(
     AgentCore::run_dweller(listen_addr, cert_path, key_path, dweller_id, name, auth_key).await
 }
 
+#[cfg(target_os = "linux")]
 fn shell_escape(path: &Path) -> String {
     path.display().to_string().replace(' ', "\\ ")
 }

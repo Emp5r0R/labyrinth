@@ -61,6 +61,12 @@ pub struct ServerArgs {
     /// Domain for TLS certificate
     #[arg(long)]
     pub domain: Option<String>,
+    /// Disable the read-only browser visualization dashboard
+    #[arg(long)]
+    pub no_web_ui: bool,
+    /// Browser visualization dashboard listening address
+    #[arg(long, default_value = "127.0.0.1:44777")]
+    pub web_ui_addr: String,
 }
 
 #[derive(Args, Clone)]
@@ -158,6 +164,8 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
             args.interface,
             args.route,
             args.domain,
+            !args.no_web_ui,
+            &args.web_ui_addr,
         )
         .await?;
     } else {
@@ -168,7 +176,14 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
                 "Starting Labyrinth server in interactive mode"
             )
         );
-        server::run_interactive_server(&args.listen_addr, args.no_auth, args.domain).await?;
+        server::run_interactive_server(
+            &args.listen_addr,
+            args.no_auth,
+            args.domain,
+            !args.no_web_ui,
+            &args.web_ui_addr,
+        )
+        .await?;
     }
 
     Ok(())
