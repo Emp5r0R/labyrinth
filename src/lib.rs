@@ -12,6 +12,7 @@ pub mod security;
 pub mod server;
 pub mod streaming;
 pub mod styling;
+pub mod transport;
 
 // Re-export commonly used types
 pub use error::{LabyrinthError, Result};

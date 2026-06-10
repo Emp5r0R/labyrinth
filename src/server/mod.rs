@@ -9,6 +9,7 @@ pub mod dweller_registry;
 pub mod netstack_bridge_windows;
 pub mod network_map;
 pub mod privileges;
+pub mod quic_stream_bridge;
 pub mod reverse_port_forward;
 pub mod topology;
 pub mod tunnel_manager;
@@ -22,10 +23,12 @@ use crate::server::core::LabyrinthServer;
 use crate::server::dashboard::DashboardServer;
 use crate::server::dweller_manager::DwellerManager;
 use crate::server::privileges::PrivilegeManager;
+use crate::server::quic_stream_bridge::QuicStreamBridge;
 
 use crate::server::tunnel_manager::TunnelManager;
 use crate::server::ui::ServerUI;
 use crate::styling;
+use crate::transport::{parse_socket_addr, QuicBidiStream, TransportMode};
 use base64::{engine::general_purpose, Engine as _};
 use colored::Colorize;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -70,6 +73,120 @@ fn resolve_auth_key(no_auth: bool) -> Result<Option<String>> {
             "LABYRINTH_AUTH_KEY must be set when authentication is enabled".to_string(),
         )),
     }
+}
+
+async fn spawn_agent_listener(
+    server: Arc<LabyrinthServer>,
+    listen_addr: &str,
+    transport: TransportMode,
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<()> {
+    match transport {
+        TransportMode::Tcp => spawn_tcp_agent_listener(server, listen_addr, certs, key).await,
+        TransportMode::Quic => spawn_quic_agent_listener(server, listen_addr, certs, key).await,
+    }
+}
+
+async fn spawn_tcp_agent_listener(
+    server: Arc<LabyrinthServer>,
+    listen_addr: &str,
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<()> {
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)?;
+    let acceptor = TlsAcceptor::from(Arc::new(config));
+    let listener = TcpListener::bind(listen_addr).await?;
+    info!("TCP/TLS agent listener on {}", listen_addr);
+
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, addr)) => {
+                    let acceptor = acceptor.clone();
+                    let server = Arc::clone(&server);
+
+                    tokio::spawn(async move {
+                        match acceptor.accept(stream).await {
+                            Ok(tls_stream) => {
+                                if let Err(e) =
+                                    AgentManager::register_agent(server, tls_stream, addr).await
+                                {
+                                    error!("Agent registration failed: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                error!("TLS handshake failed: {}", e);
+                            }
+                        }
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to accept TCP agent connection: {}", e);
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+async fn spawn_quic_agent_listener(
+    server: Arc<LabyrinthServer>,
+    listen_addr: &str,
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<()> {
+    let mut crypto = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)?;
+    crypto.alpn_protocols = vec![b"labyrinth-control/1".to_vec()];
+    let quic_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(crypto)
+        .map_err(|e| LabyrinthError::Message(format!("Invalid QUIC server config: {}", e)))?;
+    let server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_crypto));
+    let listen_addr = parse_socket_addr(listen_addr)?;
+    let endpoint = quinn::Endpoint::server(server_config, listen_addr)?;
+    info!("QUIC agent listener on {}", listen_addr);
+
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                match incoming.await {
+                    Ok(connection) => {
+                        let remote_addr = connection.remote_address();
+                        match connection.accept_bi().await {
+                            Ok((send, recv)) => {
+                                let stream_connection = connection.clone();
+                                let stream =
+                                    QuicBidiStream::with_lifetime(send, recv, None, connection);
+                                if let Err(e) = AgentManager::register_quic_agent(
+                                    server,
+                                    stream,
+                                    remote_addr,
+                                    stream_connection,
+                                )
+                                .await
+                                {
+                                    error!("QUIC agent registration failed: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                error!("QUIC control stream accept failed: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("QUIC handshake failed: {}", e);
+                    }
+                }
+            });
+        }
+    });
+
+    Ok(())
 }
 
 fn stream_message_connection_id(msg: &StreamMessage) -> Option<ConnectionId> {
@@ -727,6 +844,34 @@ async fn run_streaming_port_forward_listener(
                 server
                     .register_connection_owner(connection_id, agent_id.clone())
                     .await;
+
+                let use_quic_stream = {
+                    let agents = server.agents().read().await;
+                    agents
+                        .get(&agent_id)
+                        .and_then(|agent| agent.quic_connection.as_ref())
+                        .is_some()
+                };
+
+                if use_quic_stream {
+                    if let Err(e) = QuicStreamBridge::create_bidirectional_stream(
+                        Arc::clone(&server),
+                        agent_id.clone(),
+                        connection_id,
+                        client_socket,
+                        mapping,
+                    )
+                    .await
+                    {
+                        error!(
+                            "Failed to create QUIC stream for {}:{} -> {}:{}: {}",
+                            addr, local_port, target_host, target_port, e
+                        );
+                        let _ = connection_manager.cleanup_connection(&connection_id).await;
+                        let _ = server.unregister_connection_owner(&connection_id).await;
+                    }
+                    continue;
+                }
 
                 if let Err(e) = stream_manager
                     .create_bidirectional_stream(connection_id, client_socket)
@@ -2742,17 +2887,12 @@ pub async fn run_interactive_server(
     listen_addr: &str,
     no_auth: bool,
     domain: Option<String>,
+    transport: TransportMode,
     web_ui_enabled: bool,
     web_ui_addr: &str,
 ) -> Result<()> {
     // Load or generate certificates
     let (certs, key, _cert_pem) = CertificateManager::load_or_generate_cert(domain)?;
-
-    // Create TLS acceptor
-    let config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-    let acceptor = TlsAcceptor::from(Arc::new(config));
 
     let auth_key = resolve_auth_key(no_auth)?;
 
@@ -2760,14 +2900,11 @@ pub async fn run_interactive_server(
     let server = Arc::new(LabyrinthServer::new(!no_auth, auth_key));
     DwellerManager::load_registry(&server).await?;
 
-    // Start listening for connections
-    let listener = TcpListener::bind(listen_addr).await?;
-    info!("Server listening on {}", listen_addr);
-
     println!(
-        "{} Server started on {}",
+        "{} Server started on {} ({})",
         styling::format_success_msg(styling::SUCCESS_INDICATOR, ""),
-        listen_addr.cyan()
+        listen_addr.cyan(),
+        transport.label().cyan()
     );
 
     if web_ui_enabled {
@@ -2801,43 +2938,7 @@ pub async fn run_interactive_server(
     // Check and warn about sudo privileges
     PrivilegeManager::check_and_warn_privileges();
 
-    // Clone server for the connection handler
-    let server_clone = Arc::clone(&server);
-    let acceptor_clone = acceptor.clone();
-
-    // Spawn connection handler
-    tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, addr)) => {
-                    let acceptor = acceptor_clone.clone();
-                    let server = Arc::clone(&server_clone);
-
-                    tokio::spawn(async move {
-                        match acceptor.accept(stream).await {
-                            Ok(tls_stream) => {
-                                if let Err(e) = AgentManager::register_agent(
-                                    Arc::clone(&server),
-                                    tls_stream,
-                                    addr,
-                                )
-                                .await
-                                {
-                                    error!("Agent registration failed: {}", e);
-                                }
-                            }
-                            Err(e) => {
-                                error!("TLS handshake failed: {}", e);
-                            }
-                        }
-                    });
-                }
-                Err(e) => {
-                    error!("Failed to accept connection: {}", e);
-                }
-            }
-        }
-    });
+    spawn_agent_listener(Arc::clone(&server), listen_addr, transport, certs, key).await?;
 
     // Run CLI
     run_cli(server).await
@@ -2847,20 +2948,13 @@ pub async fn run_interactive_server(
 pub async fn run_headless_server(
     listen_addr: &str,
     no_auth: bool,
-    _interface: Option<String>,
-    _route: Option<String>,
     domain: Option<String>,
+    transport: TransportMode,
     web_ui_enabled: bool,
     web_ui_addr: &str,
 ) -> Result<()> {
     // Load or generate certificates
     let (certs, key, _cert_pem) = CertificateManager::load_or_generate_cert(domain)?;
-
-    // Create TLS acceptor
-    let config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-    let acceptor = TlsAcceptor::from(Arc::new(config));
 
     let auth_key = resolve_auth_key(no_auth)?;
 
@@ -2874,35 +2968,13 @@ pub async fn run_headless_server(
         }
     }
 
-    // Start listening for connections
-    let listener = TcpListener::bind(listen_addr).await?;
-    info!("Headless server listening on {}", listen_addr);
+    spawn_agent_listener(Arc::clone(&server), listen_addr, transport, certs, key).await?;
+    info!(
+        "Headless server listening on {} ({})",
+        listen_addr,
+        transport.label()
+    );
 
-    loop {
-        match listener.accept().await {
-            Ok((stream, addr)) => {
-                let acceptor = acceptor.clone();
-                let server = Arc::clone(&server);
-
-                tokio::spawn(async move {
-                    match acceptor.accept(stream).await {
-                        Ok(tls_stream) => {
-                            if let Err(e) =
-                                AgentManager::register_agent(Arc::clone(&server), tls_stream, addr)
-                                    .await
-                            {
-                                error!("Agent registration failed: {}", e);
-                            }
-                        }
-                        Err(e) => {
-                            error!("TLS handshake failed: {}", e);
-                        }
-                    }
-                });
-            }
-            Err(e) => {
-                error!("Failed to accept connection: {}", e);
-            }
-        }
-    }
+    std::future::pending::<()>().await;
+    Ok(())
 }

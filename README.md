@@ -46,7 +46,7 @@ You'll see:
 
                  by Emp5r0R
 
-[+] Server started on 0.0.0.0:44344
+[+] Server started on 0.0.0.0:44344 (tcp/tls)
 [+] Web UI: http://127.0.0.1:44777
 
 [+] Labyrinth Control Interface
@@ -108,6 +108,17 @@ sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server --listen-addr 0.
 ```
 **What it does:** Starts server on port 8080 instead
 
+#### Start Server (QUIC Transport)
+```bash
+sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server \
+    --transport quic \
+    --listen-addr 0.0.0.0:44344
+```
+**What it does:** Listens for agents over QUIC/UDP instead of the default
+TCP/TLS transport. Use this with agents started with `--transport quic`. For
+QUIC agents, Room and Linux Fullhouse open a separate QUIC bidirectional stream
+for each proxied TCP connection.
+
 #### Start Server (Browser Map Address)
 ```bash
 sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server \
@@ -144,6 +155,8 @@ sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server \
 - `--interface`: Set custom TUN interface name for tunneling (headless mode only)
 - `--route`: Pre-configure target subnet to route (headless mode only)
 - `--domain`: Set custom domain for TLS certificate
+- `--transport`: Select `tcp` (default) or `quic` for server-agent control
+  connections
 - `--web-ui-addr`: Set the read-only browser map address
 - `--no-web-ui`: Disable the browser map
 
@@ -174,6 +187,17 @@ LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
 ```
 **What it does:** Automatically reconnects if connection drops
 
+#### QUIC Connection
+```bash
+LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
+    --transport quic \
+    --server 192.168.1.100:44344 \
+    --fingerprint a1b2c3d4e5f6789abcdef...
+```
+**What it does:** Connects to a QUIC-enabled server over UDP. This keeps the
+same certificate fingerprint verification model as TCP/TLS and enables native
+per-connection QUIC streams for Room and Linux Fullhouse traffic.
+
 #### Connection Through Proxy
 ```bash
 LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
@@ -182,6 +206,9 @@ LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
     --fingerprint a1b2c3d4e5f6789abcdef...
 ```
 **What it does:** Connects through a SOCKS5 proxy
+
+> [!NOTE]
+> SOCKS5 proxy mode is TCP/TLS-only. QUIC uses UDP and does not use `--proxy`.
 
 #### Connection with Custom Certificate
 ```bash
@@ -552,6 +579,9 @@ LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent --retry --server IP:44
 | `--interface` | Custom TUN interface name | `--interface labyrinth` |
 | `--route` | Pre-configure target subnet | `--route 192.168.1.0/24` |
 | `--domain` | Custom domain for TLS cert | `--domain example.com` |
+| `--transport` | Agent transport, `tcp` or `quic` | `--transport quic` |
+| `--web-ui-addr` | Browser map address | `--web-ui-addr 127.0.0.1:44777` |
+| `--no-web-ui` | Disable browser map | `--no-web-ui` |
 
 ### Agent Options
 | Option | Description | Example |
@@ -560,7 +590,8 @@ LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent --retry --server IP:44
 | `--fingerprint` | Verify certificate | `--fingerprint a1b2c3...` |
 | `--cert` | Use base64 certificate | `--cert "LS0tLS1..."` |
 | `--retry` | Auto-reconnect | `--retry` |
-| `--proxy` | Use proxy | `--proxy socks5://127.0.0.1:1080` |
+| `--proxy` | Use SOCKS5 proxy with TCP/TLS | `--proxy socks5://127.0.0.1:1080` |
+| `--transport` | Agent transport, `tcp` or `quic` | `--transport quic` |
 
 ### Dweller Options
 | Option | Description | Example |

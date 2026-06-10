@@ -156,6 +156,8 @@ impl DwellerManager {
             tls_stream,
             agent_info,
             record.socket_addr(),
+            "tcp/tls".to_string(),
+            None,
         )
         .await?;
         *server.current_agent().write().await = Some(record.dweller_id.clone());

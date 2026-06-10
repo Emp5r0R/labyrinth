@@ -1,6 +1,9 @@
 use crate::agent::tls_config::TlsConfigManager;
 use crate::error::{LabyrinthError, Result};
+use crate::security::SecurityManager;
 use crate::styling;
+use crate::transport::{parse_socket_addr, QuicBidiStream, TransportMode};
+use quinn::Endpoint;
 use rustls::pki_types::ServerName;
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -15,10 +18,56 @@ pub trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin +
 // Implement this trait for any type that implements all its supertraits
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 
+pub struct EstablishedControlConnection {
+    pub stream: Box<dyn AsyncReadWrite>,
+    pub quic_connection: Option<quinn::Connection>,
+}
+
 /// Single Responsibility: Connection establishment
 pub struct ConnectionManager;
 
 impl ConnectionManager {
+    pub async fn establish_control_connection(
+        server_addr: &str,
+        server_cert_b64: Option<String>,
+        accept_fingerprint: Option<String>,
+        proxy: Option<String>,
+        transport: TransportMode,
+    ) -> Result<EstablishedControlConnection> {
+        match transport {
+            TransportMode::Tcp => {
+                let stream = Self::establish_tls_connection(
+                    server_addr,
+                    server_cert_b64,
+                    accept_fingerprint,
+                    proxy,
+                )
+                .await?;
+                Ok(EstablishedControlConnection {
+                    stream: Box::new(stream),
+                    quic_connection: None,
+                })
+            }
+            TransportMode::Quic => {
+                if proxy.is_some() {
+                    return Err(LabyrinthError::Message(
+                        "QUIC transport does not support SOCKS5 proxy mode".to_string(),
+                    ));
+                }
+                let (stream, connection) = Self::establish_quic_connection(
+                    server_addr,
+                    server_cert_b64,
+                    accept_fingerprint,
+                )
+                .await?;
+                Ok(EstablishedControlConnection {
+                    stream: Box::new(stream),
+                    quic_connection: Some(connection),
+                })
+            }
+        }
+    }
+
     pub async fn establish_tls_connection(
         server_addr: &str,
         server_cert_b64: Option<String>,
@@ -66,19 +115,53 @@ impl ConnectionManager {
             .map_err(LabyrinthError::Io)
     }
 
-    pub async fn establish_tls_connection_with_retry(
+    async fn establish_quic_connection(
+        server_addr: &str,
+        server_cert_b64: Option<String>,
+        accept_fingerprint: Option<String>,
+    ) -> Result<(QuicBidiStream, quinn::Connection)> {
+        let mut crypto =
+            SecurityManager::create_tls_client_config(server_cert_b64, accept_fingerprint)?;
+        crypto.alpn_protocols = vec![b"labyrinth-control/1".to_vec()];
+        let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
+            .map_err(|e| LabyrinthError::Message(format!("Invalid QUIC client config: {}", e)))?;
+        let mut client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
+        client_config.transport_config(Arc::new(quinn::TransportConfig::default()));
+
+        let server_addr = parse_socket_addr(server_addr)?;
+        let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
+        endpoint.set_default_client_config(client_config);
+
+        info!("Connecting to server via QUIC: {}", server_addr);
+        let connection = endpoint
+            .connect(server_addr, "localhost")
+            .map_err(|e| LabyrinthError::Message(format!("QUIC connect failed: {}", e)))?
+            .await
+            .map_err(|e| LabyrinthError::Message(format!("QUIC handshake failed: {}", e)))?;
+        let (send, recv) = connection
+            .open_bi()
+            .await
+            .map_err(|e| LabyrinthError::Message(format!("QUIC stream open failed: {}", e)))?;
+
+        let stream = QuicBidiStream::with_lifetime(send, recv, Some(endpoint), connection.clone());
+        Ok((stream, connection))
+    }
+
+    pub async fn establish_control_connection_with_retry(
         server_addr: &str,
         server_cert_b64: Option<String>,
         accept_fingerprint: Option<String>,
         proxy: Option<String>,
+        transport: TransportMode,
         retry: bool,
-    ) -> Result<tokio_rustls::client::TlsStream<Box<dyn AsyncReadWrite>>> {
+    ) -> Result<EstablishedControlConnection> {
         loop {
-            match Self::establish_tls_connection(
+            match Self::establish_control_connection(
                 server_addr,
                 server_cert_b64.clone(),
                 accept_fingerprint.clone(),
                 proxy.clone(),
+                transport,
             )
             .await
             {

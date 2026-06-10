@@ -15,11 +15,39 @@ use uuid::Uuid;
 pub struct AgentManager;
 
 impl AgentManager {
-    pub async fn register_agent(
+    pub async fn register_agent<S>(
         server: Arc<LabyrinthServer>,
-        mut stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        stream: S,
         client_addr: SocketAddr,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::register_agent_stream(server, stream, client_addr, "tcp/tls", None).await
+    }
+
+    pub async fn register_quic_agent<S>(
+        server: Arc<LabyrinthServer>,
+        stream: S,
+        client_addr: SocketAddr,
+        connection: quinn::Connection,
+    ) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::register_agent_stream(server, stream, client_addr, "quic/udp", Some(connection)).await
+    }
+
+    async fn register_agent_stream<S>(
+        server: Arc<LabyrinthServer>,
+        mut stream: S,
+        client_addr: SocketAddr,
+        transport_label: &str,
+        quic_connection: Option<quinn::Connection>,
+    ) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         info!("New agent connection from {}", client_addr);
 
         // Read the initial registration message from the agent.
@@ -32,7 +60,15 @@ impl AgentManager {
         if let Message::AgentRegister(agent_info) = message {
             // Authenticate the agent if required.
             Self::authenticate_agent(&server, &agent_info, client_addr)?;
-            Self::register_live_agent(server, stream, agent_info, client_addr.to_string()).await
+            Self::register_live_agent(
+                server,
+                stream,
+                agent_info,
+                format!("{} via {}", client_addr, transport_label),
+                transport_label.to_string(),
+                quic_connection,
+            )
+            .await
         } else {
             error!("Expected AgentRegister message, got {:?}", message);
             Err(LabyrinthError::Message(
@@ -67,6 +103,8 @@ impl AgentManager {
         mut stream: S,
         agent_info: AgentInfo,
         remote_addr: String,
+        transport_label: String,
+        quic_connection: Option<quinn::Connection>,
     ) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -90,6 +128,8 @@ impl AgentManager {
             id: agent_id.clone(),
             info: agent_info.clone(),
             sender: tx,
+            transport_label: transport_label.to_string(),
+            quic_connection,
             tunnel_active: false,
             tunnel_subnet: None,
             tun_name: None,

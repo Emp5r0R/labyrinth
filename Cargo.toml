@@ -41,6 +41,7 @@ futures = "0.3"
 fastrand = "2.0"
 portable-pty = "0.9.0"
 crossterm = "0.27.0"
+quinn = { version = "0.11.6", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 
 # Optional: userland TCP/IP stack for Fullhouse (server-side)
 # Enable with: `--features netstack_smoltcp`

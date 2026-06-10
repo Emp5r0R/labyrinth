@@ -3,9 +3,10 @@
 ## Project Overview
 Labyrinth is a Rust 2021 network tunneling and reverse port-forwarding tool with
 three CLI modes:
-- `server`: TLS control server with interactive or headless operation.
-- `agent`: outbound TLS client that registers host/network details and handles
-  server requests.
+- `server`: TCP/TLS or QUIC/UDP control server with interactive or headless
+  operation.
+- `agent`: outbound TCP/TLS or QUIC/UDP client that registers host/network
+  details and handles server requests.
 - `dweller`: persistent inbound listener installed or started on a host and
   authenticated by the server.
 
@@ -19,8 +20,8 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
 - `src/bin/` - dedicated `labyrinth-server`, `labyrinth-agent`, and
   `labyrinth-dweller` entry points.
 - `src/lib.rs` - library exports used by integration tests and benches.
-- `src/server/mod.rs` - server startup, TLS listener setup, interactive CLI,
-  command dispatch, headless mode, and Room streaming orchestration.
+- `src/server/mod.rs` - server startup, transport listener setup, interactive
+  CLI, command dispatch, headless mode, and Room streaming orchestration.
 - `src/server/core.rs` - `LabyrinthServer` state: connected agents, selected
   agent, auth, streaming managers, port-forward listeners, Fullhouse listeners,
   and dweller registry.
@@ -40,8 +41,9 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
   certificate handling, privilege checks, and display helpers.
 - `src/server/netstack_bridge_windows.rs` - Windows-only netstack bridge.
 - `src/agent/core.rs` - agent and dweller runtime loops plus message handling.
-- `src/agent/connection.rs` and `src/agent/tls_config.rs` - TLS/SOCKS
-  connection setup and certificate verification.
+- `src/agent/connection.rs` and `src/agent/tls_config.rs` - TCP/TLS,
+  QUIC/UDP, SOCKS connection setup, and certificate verification. SOCKS proxy
+  mode applies to TCP/TLS only.
 - `src/agent/reverse_port_forward.rs` and `src/agent/streaming_manager.rs` -
   agent-side reverse forwarding and stream handling.
 - `src/agent/command_executor.rs` and `src/agent/pty_shell.rs` - remote command
@@ -51,7 +53,7 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
   managers, metrics, and recovery. `resource_manager.rs` and
   `test_interfaces.rs` are test-only modules.
 - Shared modules: `src/config.rs`, `src/error.rs`, `src/protocol.rs`,
-  `src/security.rs`, and `src/styling.rs`.
+  `src/security.rs`, `src/styling.rs`, and `src/transport.rs`.
 - Tests: `tests/integration_streaming.rs`.
 - Benches: `benches/streaming_benchmarks.rs`.
 - Assets: `assets/peas/` fallback PEAS scripts used by command workflows.
@@ -65,12 +67,16 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
   `LABYRINTH_AUTH_KEY=<secret> cargo run --bin labyrinth-server -- --listen-addr 0.0.0.0:44344`
 - Run headless server:
   `LABYRINTH_AUTH_KEY=<secret> cargo run --bin labyrinth-server -- --headless --listen-addr 0.0.0.0:44344`
+- Run QUIC server:
+  `LABYRINTH_AUTH_KEY=<secret> cargo run --bin labyrinth-server -- --transport quic --listen-addr 0.0.0.0:44344`
 - Local unauthenticated server testing only:
   `cargo run --bin labyrinth-server -- --no-auth`
 - Browser visualization is enabled by default on `127.0.0.1:44777`. Move it
   with `--web-ui-addr <ip:port>` or disable it with `--no-web-ui`.
 - Run agent:
   `cargo run --bin labyrinth-agent -- --server 127.0.0.1:44344 --fingerprint <sha256> [--retry]`
+- Run agent over QUIC:
+  `cargo run --bin labyrinth-agent -- --transport quic --server 127.0.0.1:44344 --fingerprint <sha256> [--retry]`
 - Run agent through SOCKS5:
   `cargo run --bin labyrinth-agent -- --server 127.0.0.1:44344 --proxy socks5://127.0.0.1:1080 --fingerprint <sha256>`
 - Run dweller listener:
@@ -103,6 +109,13 @@ relying on automatic tunnel startup from those flags.
 - The browser dashboard is also visualization-only. Keep `GET /api/network-map`
   typed, read-only, and derived from the same server snapshots as terminal
   topology/map views. Do not add command execution or mutation endpoints there.
+- `--transport tcp` is the default server-agent transport. `--transport quic`
+  runs the server-agent control stream over QUIC/UDP using the same certificate
+  fingerprint trust model. For QUIC-connected agents, Room and Linux Fullhouse
+  accepted TCP flows open native per-connection QUIC bidirectional streams
+  instead of carrying payloads as JSON stream messages on the control stream.
+  Keep transport changes behind `TransportMode` and do not remove the TCP/TLS
+  path without a migration plan.
 - The Shell category inside `commands` offers a raw SSH/WinRM-style terminal
   and a line-oriented control shell. The raw terminal forwards key presses to
   the remote PTY and uses `Ctrl-]` as the local detach sequence.
