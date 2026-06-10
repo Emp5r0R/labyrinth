@@ -5,6 +5,8 @@ use crate::server::core::LabyrinthServer;
 use crate::server::netstack_bridge_windows::WindowsNetstackBridge;
 #[cfg(target_os = "linux")]
 use crate::server::privileges::PrivilegeManager;
+#[cfg(target_os = "linux")]
+use crate::server::quic_stream_bridge::QuicStreamBridge;
 use crate::server::topology::{DetectedRoute, TopologyManager};
 #[cfg(target_os = "linux")]
 use crate::streaming::{models::PortMapping, ConnectionId, StreamMessage};
@@ -729,8 +731,36 @@ impl TunnelManager {
                 LabyrinthError::Message(format!("Failed to track Fullhouse connection: {}", e))
             })?;
         server
-            .register_connection_owner(connection_id, agent_id)
+            .register_connection_owner(connection_id, agent_id.clone())
             .await;
+
+        let use_quic_stream = {
+            let agents = server.agents().read().await;
+            agents
+                .get(&agent_id)
+                .and_then(|agent| agent.quic_connection.as_ref())
+                .is_some()
+        };
+
+        if use_quic_stream {
+            if let Err(e) = QuicStreamBridge::create_bidirectional_stream(
+                Arc::clone(&server),
+                agent_id,
+                connection_id,
+                client_socket,
+                mapping,
+            )
+            .await
+            {
+                let _ = connection_manager.cleanup_connection(&connection_id).await;
+                let _ = server.unregister_connection_owner(&connection_id).await;
+                return Err(LabyrinthError::Message(format!(
+                    "Failed to create QUIC Fullhouse stream: {}",
+                    e
+                )));
+            }
+            return Ok(());
+        }
 
         if let Err(e) = stream_manager
             .create_bidirectional_stream(connection_id, client_socket)

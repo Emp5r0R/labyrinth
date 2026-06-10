@@ -1,3 +1,4 @@
+use crate::transport::TransportMode;
 use crate::{agent, server, styling};
 use clap::{Args, Parser, Subcommand};
 use tracing::{info, Level};
@@ -61,6 +62,9 @@ pub struct ServerArgs {
     /// Domain for TLS certificate
     #[arg(long)]
     pub domain: Option<String>,
+    /// Agent transport to listen for
+    #[arg(long, value_enum, default_value_t = TransportMode::Tcp)]
+    pub transport: TransportMode,
     /// Disable the read-only browser visualization dashboard
     #[arg(long)]
     pub no_web_ui: bool,
@@ -83,6 +87,9 @@ pub struct AgentArgs {
     /// SOCKS5 proxy URL (e.g., socks5://user:pass@127.0.0.1:1080)
     #[arg(short, long)]
     pub proxy: Option<String>,
+    /// Transport used to connect to the server
+    #[arg(long, value_enum, default_value_t = TransportMode::Tcp)]
+    pub transport: TransportMode,
     /// Auto-retry on connection failure
     #[arg(short, long)]
     pub retry: bool,
@@ -158,12 +165,12 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
                 "Starting Labyrinth server in headless mode"
             )
         );
+        let _headless_compat = (args.interface, args.route);
         server::run_headless_server(
             &args.listen_addr,
             args.no_auth,
-            args.interface,
-            args.route,
             args.domain,
+            args.transport,
             !args.no_web_ui,
             &args.web_ui_addr,
         )
@@ -180,6 +187,7 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
             &args.listen_addr,
             args.no_auth,
             args.domain,
+            args.transport,
             !args.no_web_ui,
             &args.web_ui_addr,
         )
@@ -197,6 +205,7 @@ async fn run_agent(args: AgentArgs) -> anyhow::Result<()> {
         args.cert,
         args.fingerprint,
         args.proxy,
+        args.transport,
         args.retry,
     )
     .await?;

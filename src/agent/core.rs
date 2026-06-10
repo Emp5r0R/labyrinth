@@ -10,6 +10,7 @@ use crate::security::SecurityManager;
 
 use crate::streaming::models::{CloseReason, ConnectionId, DataDirection, StreamMessage};
 use crate::styling;
+use crate::transport::{QuicBidiStream, TransportMode};
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use std::path::{Path, PathBuf};
@@ -30,6 +31,7 @@ impl AgentCore {
         server_cert_b64: Option<String>,
         accept_fingerprint: Option<String>,
         proxy: Option<String>,
+        transport: TransportMode,
         retry: bool,
     ) -> Result<()> {
         info!("{} Starting Labyrinth agent...", styling::SUCCESS_INDICATOR);
@@ -45,32 +47,35 @@ impl AgentCore {
         );
 
         loop {
-            // Establish TLS connection to server
-            let mut tls_stream = match ConnectionManager::establish_tls_connection_with_retry(
-                server_addr,
-                server_cert_b64.clone(),
-                accept_fingerprint.clone(),
-                proxy.clone(),
-                retry,
-            )
-            .await
-            {
-                Ok(stream) => stream,
-                Err(e) => {
-                    if retry {
-                        sleep(Duration::from_secs(5)).await;
-                        continue;
-                    } else {
-                        return Err(e);
+            // Establish control connection to server
+            let control_connection =
+                match ConnectionManager::establish_control_connection_with_retry(
+                    server_addr,
+                    server_cert_b64.clone(),
+                    accept_fingerprint.clone(),
+                    proxy.clone(),
+                    transport,
+                    retry,
+                )
+                .await
+                {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        if retry {
+                            sleep(Duration::from_secs(5)).await;
+                            continue;
+                        } else {
+                            return Err(e);
+                        }
                     }
-                }
-            };
+                };
+            let mut control_stream = control_connection.stream;
 
             // Send agent registration
             let register_msg = Message::AgentRegister(agent_info.clone());
             let msg_str = serde_json::to_string(&register_msg)?;
 
-            if let Err(e) = tls_stream.write_all(msg_str.as_bytes()).await {
+            if let Err(e) = control_stream.write_all(msg_str.as_bytes()).await {
                 error!(
                     "{} Failed to send registration: {}",
                     styling::ERROR_INDICATOR,
@@ -84,7 +89,7 @@ impl AgentCore {
                 }
             }
 
-            if let Err(e) = tls_stream.write_all(b"\n").await {
+            if let Err(e) = control_stream.write_all(b"\n").await {
                 error!(
                     "{} Failed to send delimiter: {}",
                     styling::ERROR_INDICATOR,
@@ -100,7 +105,7 @@ impl AgentCore {
 
             // Wait for acknowledgment
             let mut buf = Vec::new();
-            let mut reader = tokio::io::BufReader::new(&mut tls_stream);
+            let mut reader = tokio::io::BufReader::new(&mut control_stream);
             match reader.read_until(b'\n', &mut buf).await {
                 Ok(_) => {
                     let response: Message = match serde_json::from_slice(&buf[..buf.len() - 1]) {
@@ -159,15 +164,19 @@ impl AgentCore {
                 }
             }
 
-            let (tls_reader, mut tls_writer) = tokio::io::split(tls_stream);
-            let reader = tokio::io::BufReader::new(tls_reader);
+            let (control_reader, mut control_writer) = tokio::io::split(control_stream);
+            let reader = tokio::io::BufReader::new(control_reader);
 
             info!(
                 "{} Agent connected and ready for commands",
                 styling::SUCCESS_INDICATOR
             );
 
-            Self::run_control_loop(reader, &mut tls_writer).await;
+            if let Some(connection) = control_connection.quic_connection {
+                tokio::spawn(Self::run_quic_stream_acceptor(connection));
+            }
+
+            Self::run_control_loop(reader, &mut control_writer).await;
 
             if !retry {
                 break;
@@ -901,6 +910,93 @@ impl AgentCore {
         WRITERS.get_or_init(|| tokio::sync::RwLock::new(std::collections::HashMap::new()))
     }
 
+    async fn run_quic_stream_acceptor(connection: quinn::Connection) {
+        loop {
+            match connection.accept_bi().await {
+                Ok((send, recv)) => {
+                    tokio::spawn(async move {
+                        if let Err(e) = Self::handle_quic_stream(send, recv).await {
+                            error!("{} QUIC stream failed: {}", styling::ERROR_INDICATOR, e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    warn!(
+                        "{} QUIC stream acceptor stopped: {}",
+                        styling::WARNING_INDICATOR,
+                        e
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn handle_quic_stream(
+        mut send: quinn::SendStream,
+        recv: quinn::RecvStream,
+    ) -> Result<()> {
+        let mut reader = tokio::io::BufReader::new(recv);
+        let mut setup_buf = Vec::new();
+        reader.read_until(b'\n', &mut setup_buf).await?;
+        let message: Message =
+            serde_json::from_slice(&setup_buf[..setup_buf.len().saturating_sub(1)])?;
+        let (connection_id, mapping) = match message {
+            Message::Stream(StreamMessage::Setup {
+                connection_id,
+                mapping,
+            }) => (connection_id, mapping),
+            other => {
+                return Err(LabyrinthError::Message(format!(
+                    "Unexpected QUIC stream setup message: {:?}",
+                    other
+                )))
+            }
+        };
+
+        let target_addr = format!("{}:{}", mapping.target_host, mapping.target_port);
+        let mut target = match TcpStream::connect(&target_addr).await {
+            Ok(stream) => {
+                let ack = Message::Stream(StreamMessage::SetupAck {
+                    connection_id,
+                    success: true,
+                    error_message: None,
+                });
+                let ack_line = serde_json::to_string(&ack)?;
+                send.write_all(ack_line.as_bytes())
+                    .await
+                    .map_err(|e| LabyrinthError::Message(format!("QUIC write failed: {}", e)))?;
+                send.write_all(b"\n")
+                    .await
+                    .map_err(|e| LabyrinthError::Message(format!("QUIC write failed: {}", e)))?;
+                stream
+            }
+            Err(e) => {
+                let ack = Message::Stream(StreamMessage::SetupAck {
+                    connection_id,
+                    success: false,
+                    error_message: Some(format!(
+                        "Failed to connect to target {}: {}",
+                        target_addr, e
+                    )),
+                });
+                let ack_line = serde_json::to_string(&ack)?;
+                send.write_all(ack_line.as_bytes())
+                    .await
+                    .map_err(|e| LabyrinthError::Message(format!("QUIC write failed: {}", e)))?;
+                send.write_all(b"\n")
+                    .await
+                    .map_err(|e| LabyrinthError::Message(format!("QUIC write failed: {}", e)))?;
+                return Err(LabyrinthError::Io(e));
+            }
+        };
+
+        let recv = reader.into_inner();
+        let mut quic_stream = QuicBidiStream::new(send, recv);
+        tokio::io::copy_bidirectional(&mut quic_stream, &mut target).await?;
+        Ok(())
+    }
+
     async fn handle_stream_message(stream_message: StreamMessage) -> Result<()> {
         match stream_message {
             StreamMessage::Setup {
@@ -1026,6 +1122,7 @@ pub async fn run_agent(
     server_cert_b64: Option<String>,
     accept_fingerprint: Option<String>,
     proxy: Option<String>,
+    transport: TransportMode,
     retry: bool,
 ) -> Result<()> {
     AgentCore::run_agent(
@@ -1033,6 +1130,7 @@ pub async fn run_agent(
         server_cert_b64,
         accept_fingerprint,
         proxy,
+        transport,
         retry,
     )
     .await

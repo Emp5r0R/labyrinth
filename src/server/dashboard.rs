@@ -977,7 +977,7 @@ impl DashboardServer {
             edges.push(DashboardEdge {
                 source: "server".to_string(),
                 target: agent_node_id.clone(),
-                label: "tls/enc".to_string(),
+                label: agent.transport_label.clone(),
                 encrypted: true,
                 kind: "transport".to_string(),
             });
@@ -1341,9 +1341,9 @@ fn agent_name(agents: &HashMap<String, ConnectedAgent>, agent_id: &str) -> Strin
 
 fn active_transport_label(agent: &ConnectedAgent) -> String {
     if is_room_transport(agent) {
-        "room/tls/enc".to_string()
+        format!("room/{}", agent.transport_label)
     } else {
-        "tun/tls/enc".to_string()
+        format!("tun/{}", agent.transport_label)
     }
 }
 
@@ -1384,6 +1384,8 @@ mod tests {
                 listener_port: None,
             },
             sender,
+            transport_label: "tcp/tls".to_string(),
+            quic_connection: None,
             tunnel_active: false,
             tunnel_subnet: None,
             tun_name: None,
@@ -1422,7 +1424,7 @@ mod tests {
         assert!(snapshot
             .edges
             .iter()
-            .any(|edge| edge.label == "tls/enc" && edge.encrypted));
+            .any(|edge| edge.label == "tcp/tls" && edge.encrypted));
         assert!(snapshot
             .edges
             .iter()

@@ -18,6 +18,8 @@ pub struct ConnectedAgent {
     pub id: String,
     pub info: AgentInfo,
     pub sender: mpsc::Sender<Message>,
+    pub transport_label: String,
+    pub quic_connection: Option<quinn::Connection>,
     pub tunnel_active: bool,
     pub tunnel_subnet: Option<String>,
     pub tun_name: Option<String>,

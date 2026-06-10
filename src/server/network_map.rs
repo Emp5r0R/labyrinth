@@ -29,7 +29,7 @@ impl NetworkMapRenderer {
         ));
         lines.push(format!(
             "{}",
-            "Edges: tls/enc = encrypted transport, local/unenc = local listener or host-side plaintext"
+            "Edges: tcp/tls or quic/udp = encrypted transport, local/unenc = local listener or host-side plaintext"
                 .bright_black()
         ));
         lines.push(String::new());
@@ -65,7 +65,7 @@ impl NetworkMapRenderer {
             let node = Self::agent_node(agent);
             lines.push(format!(
                 "  {} {} {}",
-                "├─ tls/enc online →".green(),
+                format!("├─ {} online →", agent.transport_label).green(),
                 node,
                 Self::short_id(&agent.id).bright_black()
             ));
@@ -77,14 +77,14 @@ impl NetworkMapRenderer {
 
             if let Some(route) = by_agent_fullhouse.get(&agent.id) {
                 lines.push(format!(
-                    "  │  {} fullhouse tunnel local/unenc → tun/tls/enc {} proxy:{}",
+                    "  │  {} fullhouse tunnel local/unenc → tun/{} proxy:{}",
                     "├─".bright_black(),
                     Self::agent_transport_label(agent).cyan(),
                     route.proxy_port.to_string().cyan()
                 ));
             } else if agent.tunnel_active && !Self::is_room_transport(agent) {
                 lines.push(format!(
-                    "  │  {} fullhouse tunnel local/unenc → tun/tls/enc {}",
+                    "  │  {} fullhouse tunnel local/unenc → tun/{}",
                     "├─".bright_black(),
                     Self::agent_transport_label(agent).cyan()
                 ));
@@ -269,7 +269,7 @@ impl NetworkMapRenderer {
     }
 
     fn agent_transport_label(agent: &ConnectedAgent) -> &str {
-        agent.tunnel_subnet.as_deref().unwrap_or("unknown")
+        &agent.transport_label
     }
 
     fn is_room_transport(agent: &ConnectedAgent) -> bool {
@@ -323,6 +323,8 @@ mod tests {
                 listener_port: None,
             },
             sender,
+            transport_label: "tcp/tls".to_string(),
+            quic_connection: None,
             tunnel_active: false,
             tunnel_subnet: None,
             tun_name: None,
@@ -356,7 +358,7 @@ mod tests {
         assert!(output.contains("Network Map"));
         assert!(output.contains("[PF]"));
         assert!(output.contains("10.10.1.0/24"));
-        assert!(output.contains("tls/enc"));
+        assert!(output.contains("tcp/tls"));
         assert!(output.contains("local/unenc"));
     }
 
