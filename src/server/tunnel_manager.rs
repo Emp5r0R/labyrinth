@@ -34,6 +34,86 @@ use tracing::{error, info};
 pub struct TunnelManager;
 
 impl TunnelManager {
+    pub async fn start_tunnel_for_agent(
+        server: &LabyrinthServer,
+        agent_id: &str,
+        subnet: &str,
+        tun_name: &str,
+    ) -> Result<()> {
+        if !Self::validate_cidr(subnet) {
+            return Err(LabyrinthError::Message(format!(
+                "Invalid subnet format: {}",
+                subnet
+            )));
+        }
+
+        Self::run_fullhouse_preflight()?;
+
+        let agent_sender = {
+            let agents = server.agents().read().await;
+            let Some(agent) = agents.get(agent_id) else {
+                return Err(LabyrinthError::Message(
+                    "Selected agent not found".to_string(),
+                ));
+            };
+
+            if agent.tunnel_active {
+                if agent
+                    .tunnel_subnet
+                    .as_deref()
+                    .map(|active| active == subnet)
+                    .unwrap_or(false)
+                {
+                    return Ok(());
+                }
+                return Err(LabyrinthError::Message(format!(
+                    "{} already has an active tunnel for {}",
+                    agent.info.name,
+                    agent.tunnel_subnet.as_deref().unwrap_or("another subnet")
+                )));
+            }
+
+            agent.sender.clone()
+        };
+
+        #[cfg(target_os = "linux")]
+        Self::setup_tunnel(server, agent_id, &agent_sender, tun_name, subnet).await?;
+        #[cfg(target_os = "windows")]
+        Self::setup_tunnel_windows(tun_name, subnet).await?;
+
+        let start_msg = Message::StartTunnel {
+            subnet: subnet.to_string(),
+            tun_name: tun_name.to_string(),
+        };
+
+        if let Err(e) = agent_sender.send(start_msg).await {
+            #[cfg(target_os = "linux")]
+            let _ = Self::cleanup_tunnel(server, agent_id, tun_name, subnet).await;
+            #[cfg(target_os = "windows")]
+            let _ = Self::cleanup_tunnel_windows(tun_name).await;
+            return Err(LabyrinthError::Message(format!(
+                "Failed to send tunnel start request: {}",
+                e
+            )));
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            WindowsNetstackBridge::start(tun_name, agent_sender.clone()).map_err(|e| {
+                LabyrinthError::Message(format!("Failed to start Wintun bridge: {}", e))
+            })?;
+        }
+
+        let mut agents = server.agents().write().await;
+        if let Some(agent) = agents.get_mut(agent_id) {
+            agent.tunnel_active = true;
+            agent.tunnel_subnet = Some(subnet.to_string());
+            agent.tun_name = Some(tun_name.to_string());
+        }
+
+        Ok(())
+    }
+
     pub async fn start_tunnel(server: &LabyrinthServer) -> Result<()> {
         let current_id = server.current_agent().read().await.clone();
         if let Some(agent_id) = current_id {

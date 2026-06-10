@@ -1,5 +1,6 @@
 use crate::error::{LabyrinthError, Result};
 use crate::protocol::AgentKind;
+use crate::server::chain_manager::{ChainManager, ChainPlan};
 use crate::server::core::{
     ConnectedAgent, FullhouseSnapshot, LabyrinthServer, PortForwardSnapshot,
 };
@@ -157,6 +158,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       gap: 8px;
       z-index: 2;
     }
+    .map-spacer { flex: 1; }
     .tool {
       min-height: 32px;
       display: inline-flex;
@@ -170,6 +172,16 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       backdrop-filter: blur(10px);
       box-shadow: 0 8px 20px rgba(0, 0, 0, .2);
       font-size: 12px;
+    }
+    .tool-button {
+      width: 32px;
+      justify-content: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .tool-button:hover {
+      border-color: rgba(70, 166, 255, .55);
+      color: var(--text);
     }
     .tool svg { color: var(--accent); }
     .empty {
@@ -446,6 +458,9 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
             Click nodes for details
           </span>
           <span class="tool" id="edge-count">0 links</span>
+          <button class="tool tool-button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+          <button class="tool tool-button" id="zoom-out" title="Zoom out" aria-label="Zoom out">-</button>
+          <button class="tool tool-button" id="zoom-fit" title="Fit map" aria-label="Fit map">⌂</button>
         </div>
         <svg id="map" role="img" aria-label="Labyrinth network topology"></svg>
         <div id="empty" class="empty">
@@ -487,6 +502,10 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
         <section class="section">
           <h2>Active Tunnels</h2>
           <div class="list" id="tunnels"></div>
+        </section>
+        <section class="section">
+          <h2>Smart Access</h2>
+          <div class="list" id="chains"></div>
         </section>
         <section class="section">
           <h2>Room Forwards</h2>
@@ -534,8 +553,10 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
         ['path', { d: 'M-11 -7h10v14h-10zM1 -7h10v14H1zM-1 0h2M-7 0h2M5 0h2' }]
       ]
     };
-    let current = { nodes: [], edges: [], routes: [], port_forwards: [], fullhouse: [], shared_networks: [], conflicts: [] };
+    let current = { nodes: [], edges: [], routes: [], port_forwards: [], fullhouse: [], shared_networks: [], conflicts: [], chain_plans: [] };
     let selectedNodeId = '';
+    let viewport = { x: 0, y: 0, scale: 1 };
+    let pan = { active: false, x: 0, y: 0, moved: false };
 
     function el(name, attrs = {}, parent = svg) {
       const node = document.createElementNS('http://www.w3.org/2000/svg', name);
@@ -653,10 +674,12 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       el('feMergeNode', { in: 'blur' }, merge);
       el('feMergeNode', { in: 'SourceGraphic' }, merge);
 
-      const backgroundLayer = el('g');
-      const edgeLayer = el('g');
-      const labelLayer = el('g');
-      const nodeLayer = el('g');
+      const world = el('g', { id: 'world' });
+      const backgroundLayer = el('g', {}, world);
+      const edgeLayer = el('g', {}, world);
+      const labelLayer = el('g', {}, world);
+      const nodeLayer = el('g', {}, world);
+      applyViewport();
       const center = nodeMap.get('server');
       if (center) {
         [110, 210, 320].forEach(radius => el('circle', {
@@ -729,6 +752,31 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       renderSide(data);
     }
 
+    function applyViewport() {
+      const world = document.getElementById('world');
+      if (!world) return;
+      world.setAttribute('transform', `translate(${viewport.x},${viewport.y}) scale(${viewport.scale})`);
+    }
+
+    function zoomAt(clientX, clientY, factor) {
+      const rect = svg.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      const next = Math.max(0.35, Math.min(3.4, viewport.scale * factor));
+      const ratio = next / viewport.scale;
+      viewport.x = x - (x - viewport.x) * ratio;
+      viewport.y = y - (y - viewport.y) * ratio;
+      viewport.scale = next;
+      applyViewport();
+    }
+
+    function fitMap() {
+      viewport.x = 0;
+      viewport.y = 0;
+      viewport.scale = 1;
+      applyViewport();
+    }
+
     function shortLabel(value, max) {
       const text = String(value || '');
       return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -792,6 +840,9 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       document.getElementById('tunnels').innerHTML = data.fullhouse.length
         ? data.fullhouse.map(t => item(t.agent_name, `proxy:${t.proxy_port}`, [{ text: 'tun/tls/enc', tone: 'ok' }], `agent:${t.agent_id}`)).join('')
         : emptyText('No active Fullhouse tunnels.');
+      document.getElementById('chains').innerHTML = data.chain_plans && data.chain_plans.length
+        ? data.chain_plans.map(plan => item(plan.target, chainSummary(plan), [{ text: plan.ready ? 'ready' : 'planned', tone: plan.ready ? 'ok' : '' }, { text: `${plan.actions.length} steps` }], '')).join('')
+        : emptyText('No smart access suggestions yet.');
       document.getElementById('forwards').innerHTML = data.port_forwards.length
         ? data.port_forwards.map(f => item(`localhost:${f.local_port}`, `${f.agent_name} -> ${f.target_host}:${f.target_port}`, [{ text: 'local/unenc', tone: 'warn' }, { text: 'stream/tls/enc', tone: 'ok' }], `port-forward:${f.local_port}`)).join('')
         : emptyText('No active Room forwards.');
@@ -802,6 +853,19 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
         ? data.conflicts.map(c => item(c.cidr, c.agents.join(', '), [{ text: 'overlap', tone: 'bad' }], `network:${c.cidr}`)).join('')
         : emptyText('No route ownership conflicts.');
       bindListSelection();
+    }
+
+    function chainSummary(plan) {
+      const actions = plan.actions || [];
+      const blocked = actions.find(action => action.Blocked || action.blocked);
+      if (blocked) return blocked.Blocked?.reason || blocked.blocked?.reason || 'Blocked';
+      return actions.map(action => {
+        if (action.StartTunnel) return `start ${action.StartTunnel.cidr}`;
+        if (action.ReuseTunnel) return `reuse ${action.ReuseTunnel.cidr}`;
+        if (action.ConnectDweller) return `connect ${action.ConnectDweller.dweller_name}`;
+        if (action.RetryAfterDweller) return 'refresh topology';
+        return 'step';
+      }).join(' -> ');
     }
 
     async function refresh() {
@@ -820,7 +884,47 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
     }
 
     window.addEventListener('resize', () => render(current));
+    document.getElementById('zoom-in').addEventListener('click', () => {
+      const rect = svg.getBoundingClientRect();
+      zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, 1.18);
+    });
+    document.getElementById('zoom-out').addEventListener('click', () => {
+      const rect = svg.getBoundingClientRect();
+      zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, 1 / 1.18);
+    });
+    document.getElementById('zoom-fit').addEventListener('click', fitMap);
+    svg.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      zoomAt(event.clientX, event.clientY, event.deltaY < 0 ? 1.12 : 1 / 1.12);
+    }, { passive: false });
+    svg.addEventListener('pointerdown', (event) => {
+      if (event.target.closest && event.target.closest('.node')) return;
+      pan.active = true;
+      pan.moved = false;
+      pan.x = event.clientX;
+      pan.y = event.clientY;
+      svg.setPointerCapture(event.pointerId);
+    });
+    svg.addEventListener('pointermove', (event) => {
+      if (!pan.active) return;
+      const dx = event.clientX - pan.x;
+      const dy = event.clientY - pan.y;
+      if (Math.abs(dx) + Math.abs(dy) > 2) pan.moved = true;
+      viewport.x += dx;
+      viewport.y += dy;
+      pan.x = event.clientX;
+      pan.y = event.clientY;
+      applyViewport();
+    });
+    svg.addEventListener('pointerup', (event) => {
+      pan.active = false;
+      try { svg.releasePointerCapture(event.pointerId); } catch (_) {}
+    });
     svg.addEventListener('click', (event) => {
+      if (pan.moved) {
+        pan.moved = false;
+        return;
+      }
       if (event.target === svg) selectNode('');
     });
     refresh();
@@ -836,6 +940,7 @@ pub(crate) struct DashboardSnapshot {
     summary: DashboardSummary,
     nodes: Vec<DashboardNode>,
     edges: Vec<DashboardEdge>,
+    chain_plans: Vec<ChainPlan>,
     routes: Vec<DashboardRoute>,
     shared_networks: Vec<DashboardSharedNetwork>,
     conflicts: Vec<DashboardRouteConflict>,
@@ -944,7 +1049,12 @@ impl DashboardServer {
         let fullhouse = server.fullhouse_snapshots().await;
         let agents = server.agents().read().await;
         let dwellers = server.dweller_registry().read().await;
-        Self::build_snapshot(&agents, &dwellers, &port_forwards, &fullhouse).await
+        let mut snapshot =
+            Self::build_snapshot(&agents, &dwellers, &port_forwards, &fullhouse).await;
+        drop(dwellers);
+        drop(agents);
+        snapshot.chain_plans = ChainManager::suggestions(server).await;
+        snapshot
     }
 
     async fn build_snapshot(
@@ -1066,6 +1176,7 @@ impl DashboardServer {
                     proxy_port: snapshot.proxy_port,
                 })
                 .collect(),
+            chain_plans: Vec::new(),
             nodes,
             edges,
         }

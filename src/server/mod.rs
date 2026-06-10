@@ -1,6 +1,7 @@
 pub mod agent_connection;
 pub mod agent_manager;
 pub mod certificate;
+pub mod chain_manager;
 pub mod core;
 pub mod dashboard;
 pub mod dweller_manager;
@@ -19,6 +20,7 @@ use crate::error::{LabyrinthError, Result};
 use crate::protocol::Message;
 use crate::server::agent_manager::AgentManager;
 use crate::server::certificate::CertificateManager;
+use crate::server::chain_manager::ChainManager;
 use crate::server::core::LabyrinthServer;
 use crate::server::dashboard::DashboardServer;
 use crate::server::dweller_manager::DwellerManager;
@@ -219,6 +221,9 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
         "show",
         "topology",
         "routes",
+        "plan",
+        "access",
+        "chain",
         "map",
         "network-map",
         "tunnel",
@@ -285,6 +290,18 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                         println!(
                             "  {}  Show route topology and shared networks",
                             "topology".cyan()
+                        );
+                        println!(
+                            "  {}  Preview smart route plan for a target",
+                            "plan <ip|cidr>".cyan()
+                        );
+                        println!(
+                            "  {}  Plan and apply smart access to a target",
+                            "access <ip|cidr>".cyan()
+                        );
+                        println!(
+                            "  {}  Show smart chain state or diagnose reachability",
+                            "chain status|doctor [target]".cyan()
                         );
                         println!("  {}  Show visual network map", "map".cyan());
                         println!("  {}  Start Tunnel", "Fullhouse".cyan());
@@ -362,6 +379,46 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                     }
                     "topology" | "routes" => {
                         ServerUI::show_topology(&server).await;
+                    }
+                    command if command.starts_with("plan ") => {
+                        let target = command.trim_start_matches("plan").trim();
+                        if let Err(e) = ChainManager::show_plan(&server, target).await {
+                            println!(
+                                "{}",
+                                styling::format_error_msg(
+                                    styling::ERROR_INDICATOR,
+                                    &format!("Plan failed: {}", e)
+                                )
+                            );
+                        }
+                    }
+                    command if command.starts_with("access ") => {
+                        let target = command.trim_start_matches("access").trim();
+                        if let Err(e) = ChainManager::access(server.clone(), target).await {
+                            println!(
+                                "{}",
+                                styling::format_error_msg(
+                                    styling::ERROR_INDICATOR,
+                                    &format!("Access failed: {}", e)
+                                )
+                            );
+                        }
+                    }
+                    "chain" | "chain status" => {
+                        ChainManager::show_status(&server).await;
+                    }
+                    command if command.starts_with("chain doctor") => {
+                        let target = command.trim_start_matches("chain doctor").trim();
+                        let target = (!target.is_empty()).then_some(target);
+                        if let Err(e) = ChainManager::doctor(&server, target).await {
+                            println!(
+                                "{}",
+                                styling::format_error_msg(
+                                    styling::ERROR_INDICATOR,
+                                    &format!("Chain doctor failed: {}", e)
+                                )
+                            );
+                        }
                     }
                     "map" | "network-map" => {
                         ServerUI::show_network_map(&server).await;
