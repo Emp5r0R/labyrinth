@@ -86,7 +86,28 @@ impl DwellerManager {
         let Some(record) = Self::select_record(&server, "Connect to which dweller?").await? else {
             return Ok(());
         };
+        Self::connect_dweller_record(server, record).await
+    }
 
+    pub async fn connect_dweller_by_id(
+        server: Arc<LabyrinthServer>,
+        dweller_id: &str,
+    ) -> Result<()> {
+        let record = {
+            let registry = server.dweller_registry().read().await;
+            registry.dwellers.get(dweller_id).cloned()
+        }
+        .ok_or_else(|| {
+            LabyrinthError::Message(format!("No remembered dweller with id {}", dweller_id))
+        })?;
+
+        Self::connect_dweller_record(server, record).await
+    }
+
+    async fn connect_dweller_record(
+        server: Arc<LabyrinthServer>,
+        record: DwellerRecord,
+    ) -> Result<()> {
         if server
             .agents()
             .read()

@@ -22,6 +22,8 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
 - `src/lib.rs` - library exports used by integration tests and benches.
 - `src/server/mod.rs` - server startup, transport listener setup, interactive
   CLI, command dispatch, headless mode, and Room streaming orchestration.
+- `src/server/chain_manager.rs` - smart access planning for terminal-first
+  multi-hop workflows across agents, active tunnels, and remembered dwellers.
 - `src/server/core.rs` - `LabyrinthServer` state: connected agents, selected
   agent, auth, streaming managers, port-forward listeners, Fullhouse listeners,
   and dweller registry.
@@ -32,8 +34,8 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
   shared-network detection, and conflict detection for multi-hop planning.
 - `src/server/network_map.rs` - read-only terminal map renderer for agents,
   dwellers, detected networks, tunnels, Room forwards, and shared routes.
-- `src/server/dashboard.rs` - read-only browser visualization server and JSON
-  snapshot API for the live network map.
+- `src/server/dashboard.rs` - browser visualization server and JSON snapshot
+  API for the live network map and smart access suggestions.
 - `src/server/reverse_port_forward.rs` - Room reverse port-forwarding support.
 - `src/server/dweller_manager.rs` and `src/server/dweller_registry.rs` -
   dweller install, connect, forget, persistence, and `dwellers.json`.
@@ -99,16 +101,23 @@ relying on automatic tunnel startup from those flags.
 
 ## Runtime Behavior Notes
 - Interactive server commands include `help`, `agents`, `dwellers`, `select`,
-  `connect-dweller`, `drop-dweller`, `forget-dweller`, `info`, `tunnel` /
-  `fullhouse`, `topology` / `routes`, `map` / `network-map`, `forward` /
-  `room`, `commands` / `cmd`, `upload`, `download`, `status`, `cert`, `stop`,
-  and `exit`.
+  `connect-dweller`, `drop-dweller`, `forget-dweller`, `info`, `plan
+  <ip|cidr>`, `access <ip|cidr>`, `chain status`, `chain doctor [ip|cidr]`,
+  `tunnel` / `fullhouse`, `topology` / `routes`, `map` / `network-map`,
+  `forward` / `room`, `commands` / `cmd`, `upload`, `download`, `status`,
+  `cert`, `stop`, and `exit`.
+- Smart access is terminal-first. `plan` must be read-only. `access` must show
+  the chosen path and require confirmation before mutating tunnels or dweller
+  connections. Keep this path idempotent: reuse active tunnels, do not duplicate
+  listeners, and make blockers explicit.
 - `map` is visualization-only. It reads current server snapshots and should not
   mutate route ownership, active tunnels, dwellers, port forwards, or selected
   agent state.
-- The browser dashboard is also visualization-only. Keep `GET /api/network-map`
-  typed, read-only, and derived from the same server snapshots as terminal
-  topology/map views. Do not add command execution or mutation endpoints there.
+- The browser dashboard remains read-mostly in this version. Keep
+  `GET /api/network-map` typed and derived from the same server snapshots as
+  terminal topology/map views. Control endpoints should only be added after the
+  terminal smart access workflow is stable and should default to localhost or
+  explicit token protection.
 - `--transport tcp` is the default server-agent transport. `--transport quic`
   runs the server-agent control stream over QUIC/UDP using the same certificate
   fingerprint trust model. For QUIC-connected agents, Room and Linux Fullhouse
@@ -130,6 +139,9 @@ relying on automatic tunnel startup from those flags.
 - Fullhouse requires elevated privileges for TUN setup. Treat privilege warnings
   as expected when running without root/admin rights.
 - Dweller state is persisted in `dwellers.json` in the server working directory.
+- Dwellers are persistent remembered listeners for future access. Smart access
+  may connect a remembered dweller automatically after a parent tunnel makes its
+  listen address reachable, then refresh topology and continue planning.
 
 ## Coding Style & Naming Conventions
 - Use Rust 2021 and 4-space indentation.

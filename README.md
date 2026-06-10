@@ -82,6 +82,8 @@ Back on your server, you'll see the agent connected. Now you can:
 ```bash
 labyrinth → agents          # See connected machines
 labyrinth → select          # Choose which machine to work with
+labyrinth → plan 10.10.0.0/24
+labyrinth → access 10.10.0.0/24
 labyrinth → map             # Visualize agents, dwellers, networks, tunnels, and forwards
 labyrinth → fullhouse       # Start Fullhouse Mode (IP Tunneling)
 labyrinth → room            # Start Room Mode (Port Forwarding)
@@ -91,6 +93,12 @@ Fullhouse automatically detects likely target CIDRs from the selected agent's
 interface addresses. The `agents`, `info`, and `status` commands show the best
 auto route, and the `fullhouse` prompt uses it as the default. Type a different
 CIDR if you need to pivot through another client network.
+
+For chained environments, prefer `plan <ip|cidr>` and `access <ip|cidr>`.
+`plan` shows the server-selected path without changing state. `access` previews
+the same plan, asks for confirmation, then reuses active tunnels, starts the
+needed Fullhouse tunnel, and connects remembered dwellers when they become
+reachable through an active parent route.
 
 ## 📖 How to Use Every Feature
 
@@ -292,14 +300,29 @@ agents, dwellers, detected networks, active Fullhouse tunnels, Room port
 forwards, shared multi-network pivots, and route conflicts. Edges are labeled
 with transport context such as `tls/enc` and `local/unenc`.
 
-#### Browser Network Map - Read-Only Web UI
+#### `plan`, `access`, and `chain` - Smart Multi-Hop Access
+```bash
+labyrinth → plan 172.16.20.0/24
+labyrinth → access 172.16.20.25
+labyrinth → chain status
+labyrinth → chain doctor 172.16.20.25
+```
+**What it does:** Builds a server-side route plan from connected agents,
+remembered dwellers, active tunnels, and detected CIDRs. `access` applies the
+plan after confirmation. If a remembered dweller is only reachable after a
+parent tunnel comes up, Labyrinth starts the parent tunnel first and then
+connects the dweller.
+
+#### Browser Network Map - Web UI
 ```bash
 open http://127.0.0.1:44777
 ```
 **What it shows:** A live browser visualization of the same server snapshot:
 connection status, agents, dwellers, detected CIDRs, multi-network pivots,
 route conflicts, Fullhouse tunnels, Room forwards, and encrypted versus
-local/unencrypted edges.
+local/unencrypted edges. The map supports pan, zoom, fit-to-view, node
+selection, and smart access suggestions. Mutation actions remain terminal-first
+in this version.
 
 #### `tunnel` or `fullhouse` - Start Fullhouse Mode (IP Tunneling)
 ```bash
@@ -615,6 +638,10 @@ LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent --retry --server IP:44
 | `forget-dweller` | Remove a remembered dweller |
 | `info` | Show machine details |
 | `topology` or `routes` | Show route ownership, shared networks, and conflicts |
+| `plan <ip\|cidr>` | Preview the smart access path to a target |
+| `access <ip\|cidr>` | Apply the smart access path after confirmation |
+| `chain status` | Show active tunnels, remembered dwellers, and reachability |
+| `chain doctor [ip\|cidr]` | Diagnose why a target or dweller is unreachable |
 | `map` or `network-map` | Show a read-only network graph with tunnels, dwellers, and forwards |
 | `tunnel` or `fullhouse` | Start Fullhouse mode (IP tunneling) |
 | `forward` or `room` | Start Room mode (Port forwarding) |
