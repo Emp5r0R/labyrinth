@@ -2,10 +2,12 @@ pub mod agent_connection;
 pub mod agent_manager;
 pub mod certificate;
 pub mod core;
+pub mod dashboard;
 pub mod dweller_manager;
 pub mod dweller_registry;
 #[cfg(target_os = "windows")]
 pub mod netstack_bridge_windows;
+pub mod network_map;
 pub mod privileges;
 pub mod reverse_port_forward;
 pub mod topology;
@@ -17,6 +19,7 @@ use crate::protocol::Message;
 use crate::server::agent_manager::AgentManager;
 use crate::server::certificate::CertificateManager;
 use crate::server::core::LabyrinthServer;
+use crate::server::dashboard::DashboardServer;
 use crate::server::dweller_manager::DwellerManager;
 use crate::server::privileges::PrivilegeManager;
 
@@ -25,6 +28,8 @@ use crate::server::ui::ServerUI;
 use crate::styling;
 use base64::{engine::general_purpose, Engine as _};
 use colored::Colorize;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use dialoguer::{Input, Select};
 use rustyline::completion::{Completer, Pair};
 use rustyline::highlight::Highlighter;
@@ -36,6 +41,7 @@ use std::borrow::Cow;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -96,6 +102,8 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
         "show",
         "topology",
         "routes",
+        "map",
+        "network-map",
         "tunnel",
         "fullhouse",
         "stop",
@@ -161,6 +169,7 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                             "  {}  Show route topology and shared networks",
                             "topology".cyan()
                         );
+                        println!("  {}  Show visual network map", "map".cyan());
                         println!("  {}  Start Tunnel", "Fullhouse".cyan());
                         println!("  {}  Port Forwarding", "Room".cyan());
                         println!("  {}  Stop active tunnel/forwarding", "stop".cyan());
@@ -236,6 +245,9 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                     }
                     "topology" | "routes" => {
                         ServerUI::show_topology(&server).await;
+                    }
+                    "map" | "network-map" => {
+                        ServerUI::show_network_map(&server).await;
                     }
                     "tunnel" | "fullhouse" | "Fullhouse" => {
                         if let Err(e) = TunnelManager::start_tunnel(&server).await {
@@ -464,7 +476,16 @@ async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
             });
 
             match server
-                .register_port_forward_listener(local_port, agent_id.clone(), handle)
+                .register_port_forward_listener(
+                    local_port,
+                    agent_id.clone(),
+                    PortMapping {
+                        local_port,
+                        target_host: target_host.clone(),
+                        target_port,
+                    },
+                    handle,
+                )
                 .await
             {
                 Ok(()) => {
@@ -818,6 +839,35 @@ mod tests {
     fn shell_input_encoding_produces_transport_token() {
         let encoded = general_purpose::STANDARD.encode("ls\n".as_bytes());
         assert_eq!(encoded, "bHMK");
+    }
+
+    #[test]
+    fn raw_shell_key_translation_forwards_control_c() {
+        let input = raw_shell_key_input(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(matches!(input, RawShellInput::Bytes(bytes) if bytes == vec![0x03]));
+    }
+
+    #[test]
+    fn raw_shell_key_translation_detaches_on_control_bracket() {
+        let input = raw_shell_key_input(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL));
+        assert!(matches!(input, RawShellInput::Detach));
+    }
+
+    #[test]
+    fn raw_shell_key_translation_maps_arrow_keys_to_ansi() {
+        let input = raw_shell_key_input(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert!(matches!(input, RawShellInput::Bytes(bytes) if bytes == b"\x1b[A".to_vec()));
+    }
+
+    #[test]
+    fn raw_shell_key_translation_ignores_release_events() {
+        let input = raw_shell_key_input(KeyEvent {
+            code: KeyCode::Char('x'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        assert!(matches!(input, RawShellInput::Ignore));
     }
 
     #[test]
@@ -1555,7 +1605,47 @@ async fn start_shell_mode(
 ) -> Result<()> {
     println!(
         "\n{}",
-        styling::format_section_title("Interactive Shell", "stateful operator session")
+        styling::format_section_title("Interactive Shell", "remote PTY session")
+    );
+    println!("{}", "────────────────".bright_black());
+
+    let choices = vec![
+        "Interactive terminal (SSH/WinRM style)",
+        "Control shell (Labyrinth slash commands)",
+        "Back",
+    ];
+    let selection = Select::new()
+        .with_prompt("Select shell mode")
+        .items(&choices)
+        .interact()
+        .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
+
+    match selection {
+        0 => start_raw_shell_mode(agent_name, agent_sender, shell_events).await,
+        1 => {
+            start_control_shell_mode(
+                agent_name,
+                selected_os,
+                agent_sender,
+                command_response,
+                shell_events,
+            )
+            .await
+        }
+        _ => Ok(()),
+    }
+}
+
+async fn start_control_shell_mode(
+    agent_name: &str,
+    selected_os: CommandsOs,
+    agent_sender: &mpsc::Sender<Message>,
+    command_response: &Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Message>>>>,
+    shell_events: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<Message>>>>,
+) -> Result<()> {
+    println!(
+        "\n{}",
+        styling::format_section_title("Control Shell", "stateful operator session")
     );
     println!("{}", "────────────────".bright_black());
     println!("{}", styling::format_hint("Local commands use a '/' prefix so nested prompts like mysql, python, and powershell stay fully interactive."));
@@ -1595,7 +1685,14 @@ async fn start_shell_mode(
         *sink = Some(shell_tx);
     }
 
-    start_remote_shell_session(&session_id, agent_sender, &mut shell_rx).await?;
+    let (cols, rows) = local_terminal_size();
+    if let Err(e) =
+        start_remote_shell_session(&session_id, agent_sender, &mut shell_rx, cols, rows).await
+    {
+        let mut sink = shell_events.lock().await;
+        *sink = None;
+        return Err(e);
+    }
     let initial_output = collect_shell_output(
         &session_id,
         &mut shell_rx,
@@ -1887,6 +1984,93 @@ async fn start_shell_mode(
     Ok(())
 }
 
+async fn start_raw_shell_mode(
+    agent_name: &str,
+    agent_sender: &mpsc::Sender<Message>,
+    shell_events: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<Message>>>>,
+) -> Result<()> {
+    let transcript = create_shell_transcript(agent_name)?;
+    println!(
+        "{}",
+        styling::format_success_msg(
+            styling::SUCCESS_INDICATOR,
+            &format!("Shell transcript: {}", transcript.display())
+        )
+    );
+    println!(
+        "{}",
+        styling::format_hint("Entering raw terminal mode. Press Ctrl-] to detach.")
+    );
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let (shell_tx, mut shell_rx) = mpsc::unbounded_channel();
+    {
+        let mut sink = shell_events.lock().await;
+        *sink = Some(shell_tx);
+    }
+
+    let (cols, rows) = local_terminal_size();
+    if let Err(e) =
+        start_remote_shell_session(&session_id, agent_sender, &mut shell_rx, cols, rows).await
+    {
+        let mut sink = shell_events.lock().await;
+        *sink = None;
+        return Err(e);
+    }
+
+    let _raw_guard = TerminalRawMode::enter()?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut input_task =
+        spawn_raw_shell_input_task(session_id.clone(), agent_sender.clone(), Arc::clone(&stop));
+    let mut output_task = tokio::spawn(pump_raw_shell_output(
+        session_id.clone(),
+        shell_rx,
+        transcript.clone(),
+        Arc::clone(&stop),
+    ));
+
+    tokio::select! {
+        input_result = &mut input_task => {
+            stop.store(true, Ordering::SeqCst);
+            match input_result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(e) => return Err(LabyrinthError::Message(format!("Raw shell input task failed: {}", e))),
+            }
+            let _ = agent_sender
+                .send(Message::ShellSessionClose {
+                    session_id: session_id.clone(),
+                })
+                .await;
+            output_task.abort();
+        }
+        output_result = &mut output_task => {
+            stop.store(true, Ordering::SeqCst);
+            match output_result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(e) if e.is_cancelled() => {}
+                Err(e) => return Err(LabyrinthError::Message(format!("Raw shell output task failed: {}", e))),
+            }
+            input_task.abort();
+        }
+    }
+
+    {
+        let mut sink = shell_events.lock().await;
+        *sink = None;
+    }
+    append_shell_transcript(&transcript, "[raw session ended]");
+
+    println!();
+    println!(
+        "{}",
+        styling::format_success_msg(styling::SUCCESS_INDICATOR, "Detached from shell")
+    );
+
+    Ok(())
+}
+
 fn shell_local_command_token(selected_os: CommandsOs, input: &str) -> Option<String> {
     match selected_os {
         CommandsOs::Linux => match input {
@@ -1906,16 +2090,190 @@ fn shell_local_command_token(selected_os: CommandsOs, input: &str) -> Option<Str
     }
 }
 
+struct TerminalRawMode;
+
+impl TerminalRawMode {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()
+            .map_err(|e| LabyrinthError::Message(format!("Failed to enter raw mode: {}", e)))?;
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalRawMode {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
+
+enum RawShellInput {
+    Bytes(Vec<u8>),
+    Detach,
+    Ignore,
+}
+
+fn local_terminal_size() -> (u16, u16) {
+    crossterm::terminal::size().unwrap_or((120, 32))
+}
+
+fn spawn_raw_shell_input_task(
+    session_id: String,
+    agent_sender: mpsc::Sender<Message>,
+    stop: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<Result<()>> {
+    tokio::task::spawn_blocking(move || {
+        while !stop.load(Ordering::SeqCst) {
+            if !event::poll(Duration::from_millis(100)).map_err(|e| {
+                LabyrinthError::Message(format!("Failed to poll terminal input: {}", e))
+            })? {
+                continue;
+            }
+
+            let input = match event::read().map_err(|e| {
+                LabyrinthError::Message(format!("Failed to read terminal input: {}", e))
+            })? {
+                Event::Key(key) => raw_shell_key_input(key),
+                Event::Paste(text) => RawShellInput::Bytes(text.into_bytes()),
+                Event::Resize(cols, rows) => {
+                    let _ = agent_sender.blocking_send(Message::ShellSessionResize {
+                        session_id: session_id.clone(),
+                        cols,
+                        rows,
+                    });
+                    RawShellInput::Ignore
+                }
+                _ => RawShellInput::Ignore,
+            };
+
+            match input {
+                RawShellInput::Bytes(bytes) if !bytes.is_empty() => {
+                    agent_sender
+                        .blocking_send(Message::ShellSessionInput {
+                            session_id: session_id.clone(),
+                            data_b64: general_purpose::STANDARD.encode(bytes),
+                        })
+                        .map_err(|e| {
+                            LabyrinthError::Message(format!("Failed to send shell input: {}", e))
+                        })?;
+                }
+                RawShellInput::Detach => break,
+                _ => {}
+            }
+        }
+
+        Ok(())
+    })
+}
+
+async fn pump_raw_shell_output(
+    session_id: String,
+    mut shell_rx: mpsc::UnboundedReceiver<Message>,
+    transcript: PathBuf,
+    stop: Arc<AtomicBool>,
+) -> Result<()> {
+    while let Some(message) = shell_rx.recv().await {
+        match message {
+            Message::ShellSessionOutput {
+                session_id: msg_session,
+                data_b64,
+            } if msg_session == session_id => {
+                let bytes = general_purpose::STANDARD.decode(data_b64.as_bytes())?;
+                std::io::stdout().write_all(&bytes)?;
+                std::io::stdout().flush()?;
+                append_shell_transcript(&transcript, &String::from_utf8_lossy(&bytes));
+            }
+            Message::ShellSessionClose {
+                session_id: msg_session,
+            } if msg_session == session_id => {
+                stop.store(true, Ordering::SeqCst);
+                std::io::stdout().write_all(b"\r\n[labyrinth] remote shell session closed\r\n")?;
+                std::io::stdout().flush()?;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn raw_shell_key_input(key: KeyEvent) -> RawShellInput {
+    if key.kind == KeyEventKind::Release {
+        return RawShellInput::Ignore;
+    }
+
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(']') {
+        return RawShellInput::Detach;
+    }
+
+    let mut bytes = Vec::new();
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        bytes.push(0x1b);
+    }
+
+    match key.code {
+        KeyCode::Backspace => bytes.push(0x7f),
+        KeyCode::Enter => bytes.push(b'\r'),
+        KeyCode::Left => bytes.extend_from_slice(b"\x1b[D"),
+        KeyCode::Right => bytes.extend_from_slice(b"\x1b[C"),
+        KeyCode::Up => bytes.extend_from_slice(b"\x1b[A"),
+        KeyCode::Down => bytes.extend_from_slice(b"\x1b[B"),
+        KeyCode::Home => bytes.extend_from_slice(b"\x1b[H"),
+        KeyCode::End => bytes.extend_from_slice(b"\x1b[F"),
+        KeyCode::PageUp => bytes.extend_from_slice(b"\x1b[5~"),
+        KeyCode::PageDown => bytes.extend_from_slice(b"\x1b[6~"),
+        KeyCode::Tab | KeyCode::BackTab => bytes.push(b'\t'),
+        KeyCode::Delete => bytes.extend_from_slice(b"\x1b[3~"),
+        KeyCode::Insert => bytes.extend_from_slice(b"\x1b[2~"),
+        KeyCode::Esc => bytes.push(0x1b),
+        KeyCode::Char(ch) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(byte) = control_char_byte(ch) {
+                bytes.push(byte);
+            }
+        }
+        KeyCode::Char(ch) => {
+            let mut encoded = [0u8; 4];
+            bytes.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+        }
+        _ => {}
+    }
+
+    if bytes.is_empty() {
+        RawShellInput::Ignore
+    } else {
+        RawShellInput::Bytes(bytes)
+    }
+}
+
+fn control_char_byte(ch: char) -> Option<u8> {
+    let upper = ch.to_ascii_uppercase();
+    if upper.is_ascii_alphabetic() {
+        Some((upper as u8) - b'A' + 1)
+    } else {
+        match ch {
+            '@' => Some(0x00),
+            '[' => Some(0x1b),
+            '\\' => Some(0x1c),
+            '^' => Some(0x1e),
+            '_' => Some(0x1f),
+            '?' => Some(0x7f),
+            _ => None,
+        }
+    }
+}
+
 async fn start_remote_shell_session(
     session_id: &str,
     agent_sender: &mpsc::Sender<Message>,
     shell_rx: &mut mpsc::UnboundedReceiver<Message>,
+    cols: u16,
+    rows: u16,
 ) -> Result<()> {
     agent_sender
         .send(Message::ShellSessionStart {
             session_id: session_id.to_string(),
-            cols: 120,
-            rows: 32,
+            cols,
+            rows,
         })
         .await
         .map_err(|e| LabyrinthError::Message(format!("Failed to start shell session: {}", e)))?;
@@ -2384,6 +2742,8 @@ pub async fn run_interactive_server(
     listen_addr: &str,
     no_auth: bool,
     domain: Option<String>,
+    web_ui_enabled: bool,
+    web_ui_addr: &str,
 ) -> Result<()> {
     // Load or generate certificates
     let (certs, key, _cert_pem) = CertificateManager::load_or_generate_cert(domain)?;
@@ -2409,6 +2769,18 @@ pub async fn run_interactive_server(
         styling::format_success_msg(styling::SUCCESS_INDICATOR, ""),
         listen_addr.cyan()
     );
+
+    if web_ui_enabled {
+        if let Err(e) = DashboardServer::spawn(Arc::clone(&server), web_ui_addr).await {
+            println!(
+                "{}",
+                styling::format_warning_msg(
+                    styling::WARNING_INDICATOR,
+                    &format!("Web UI unavailable on {}: {}", web_ui_addr, e)
+                )
+            );
+        }
+    }
 
     // Display copy-friendly fingerprint for easy agent connection
     if let Ok(cert_pem) = std::fs::read_to_string("cert.pem") {
@@ -2478,6 +2850,8 @@ pub async fn run_headless_server(
     _interface: Option<String>,
     _route: Option<String>,
     domain: Option<String>,
+    web_ui_enabled: bool,
+    web_ui_addr: &str,
 ) -> Result<()> {
     // Load or generate certificates
     let (certs, key, _cert_pem) = CertificateManager::load_or_generate_cert(domain)?;
@@ -2493,6 +2867,12 @@ pub async fn run_headless_server(
     // Create server instance
     let server = Arc::new(LabyrinthServer::new(!no_auth, auth_key));
     DwellerManager::load_registry(&server).await?;
+
+    if web_ui_enabled {
+        if let Err(e) = DashboardServer::spawn(Arc::clone(&server), web_ui_addr).await {
+            warn!("Web UI unavailable on {}: {}", web_ui_addr, e);
+        }
+    }
 
     // Start listening for connections
     let listener = TcpListener::bind(listen_addr).await?;

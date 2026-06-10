@@ -47,12 +47,17 @@ You'll see:
                  by Emp5r0R
 
 [+] Server started on 0.0.0.0:44344
+[+] Web UI: http://127.0.0.1:44777
 
 [+] Labyrinth Control Interface
 Navigate the network maze with precision
 
 labyrinth → 
 ```
+
+Open `http://127.0.0.1:44777` on the server host for the read-only browser
+network map. It updates automatically as agents, dwellers, Fullhouse tunnels,
+Room port forwards, and detected networks change.
 
 > [!IMPORTANT]
 > **Get the fingerprint!** Use the `cert` command to see the certificate fingerprint you'll need for secure agent connections.
@@ -77,6 +82,7 @@ Back on your server, you'll see the agent connected. Now you can:
 ```bash
 labyrinth → agents          # See connected machines
 labyrinth → select          # Choose which machine to work with
+labyrinth → map             # Visualize agents, dwellers, networks, tunnels, and forwards
 labyrinth → fullhouse       # Start Fullhouse Mode (IP Tunneling)
 labyrinth → room            # Start Room Mode (Port Forwarding)
 ```
@@ -102,6 +108,15 @@ sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server --listen-addr 0.
 ```
 **What it does:** Starts server on port 8080 instead
 
+#### Start Server (Browser Map Address)
+```bash
+sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server \
+    --web-ui-addr 127.0.0.1:44777
+```
+**What it does:** Starts the read-only browser visualization on the selected
+address. Use `--no-web-ui` to disable the browser dashboard. The dashboard binds
+to localhost by default and exposes only visualization endpoints.
+
 #### Start Server (No Security - Testing Only)
 ```bash
 sudo ./labyrinth-server --no-auth
@@ -122,12 +137,15 @@ sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server --headless
 sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server \
     --interface labyrinth \
     --route 192.168.1.0/24 \
-    --domain example.com
+    --domain example.com \
+    --web-ui-addr 127.0.0.1:44777
 ```
 **What it does:** 
 - `--interface`: Set custom TUN interface name for tunneling (headless mode only)
 - `--route`: Pre-configure target subnet to route (headless mode only)
 - `--domain`: Set custom domain for TLS certificate
+- `--web-ui-addr`: Set the read-only browser map address
+- `--no-web-ui`: Disable the browser map
 
 ---
 
@@ -238,6 +256,24 @@ Network Interfaces
     10.0.0.100
 ```
 
+#### `map` or `network-map` - Visualize Network State
+```bash
+labyrinth → map
+```
+**What it shows:** A read-only BloodHound-style terminal graph of connected
+agents, dwellers, detected networks, active Fullhouse tunnels, Room port
+forwards, shared multi-network pivots, and route conflicts. Edges are labeled
+with transport context such as `tls/enc` and `local/unenc`.
+
+#### Browser Network Map - Read-Only Web UI
+```bash
+open http://127.0.0.1:44777
+```
+**What it shows:** A live browser visualization of the same server snapshot:
+connection status, agents, dwellers, detected CIDRs, multi-network pivots,
+route conflicts, Fullhouse tunnels, Room forwards, and encrypted versus
+local/unencrypted edges.
+
 #### `tunnel` or `fullhouse` - Start Fullhouse Mode (IP Tunneling)
 ```bash
 labyrinth → tunnel
@@ -293,6 +329,8 @@ labyrinth → cmd
 **What you'll see:**
 - **Linux systems**: Options to run `ifconfig`, `ss -tunlp`
 - **Windows systems**: Options to run `ipconfig`, `netstat -aon`
+- **Shell**: Choose either an SSH/WinRM-style raw terminal or the Labyrinth
+  control shell with slash commands
 - **Unknown systems**: No commands available message
 
 **Example output:**
@@ -319,6 +357,12 @@ Select a command to execute
 ```
 
 **Features:**
+- **Interactive terminal**: Raw PTY streaming supports arrows, Ctrl-C,
+  full-screen terminal programs, PowerShell, and shell prompts. Press `Ctrl-]`
+  to detach.
+- **Control shell fallback**: Use slash commands such as `/upload`,
+  `/download`, `/sysenum`, `/network`, and `/resize` while keeping the same
+  remote PTY session model.
 - **30-second timeout**: Commands automatically timeout if they take too long
 - **Real-time feedback**: See command execution status and results immediately
 - **Error handling**: Clear error messages if commands fail
@@ -540,6 +584,7 @@ LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent --retry --server IP:44
 | `forget-dweller` | Remove a remembered dweller |
 | `info` | Show machine details |
 | `topology` or `routes` | Show route ownership, shared networks, and conflicts |
+| `map` or `network-map` | Show a read-only network graph with tunnels, dwellers, and forwards |
 | `tunnel` or `fullhouse` | Start Fullhouse mode (IP tunneling) |
 | `forward` or `room` | Start Room mode (Port forwarding) |
 | `commands` or `cmd` | Execute system commands on agent |

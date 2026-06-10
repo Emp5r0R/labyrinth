@@ -1,6 +1,7 @@
 use crate::error::{LabyrinthError, Result};
 use crate::protocol::AgentKind;
 use crate::server::core::LabyrinthServer;
+use crate::server::network_map::NetworkMapRenderer;
 use crate::server::topology::TopologyManager;
 
 use crate::styling;
@@ -441,6 +442,21 @@ impl ServerUI {
                 );
             }
         }
+        println!();
+    }
+
+    pub async fn show_network_map(server: &LabyrinthServer) {
+        let port_forwards = server.port_forward_snapshots().await;
+        let fullhouse = server.fullhouse_snapshots().await;
+        let agents = server.agents().read().await;
+        let dwellers = server.dweller_registry().read().await;
+        let topology = TopologyManager::build_snapshot(&agents);
+
+        println!();
+        println!(
+            "{}",
+            NetworkMapRenderer::render(&agents, &dwellers, &topology, &port_forwards, &fullhouse)
+        );
         println!();
     }
 }
