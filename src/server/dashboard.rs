@@ -1,9 +1,7 @@
 use crate::error::{LabyrinthError, Result};
 use crate::protocol::{AgentKind, InternetAccess};
 use crate::server::chain_manager::{ChainManager, ChainPlan};
-use crate::server::core::{
-    ConnectedAgent, FullhouseSnapshot, LabyrinthServer, PortForwardSnapshot,
-};
+use crate::server::core::{AriadneSnapshot, ConnectedAgent, LabyrinthServer, PortalSnapshot};
 use crate::server::dweller_registry::{DwellerRecord, DwellerRegistry};
 use crate::server::topology::{TopologyManager, TopologySnapshot};
 use colored::Colorize;
@@ -579,7 +577,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       opacity: 0.85;
     }
 
-    .edge.room-forward {
+    .edge.portal-forward {
       stroke: var(--forward);
       opacity: 0.8;
     }
@@ -925,7 +923,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
             <div class="section-title">Active Tunnels</div>
             <div class="list-container" id="overview-tunnels"></div>
 
-            <div class="section-title">Room Forwards</div>
+            <div class="section-title">Portal Forwards</div>
             <div class="list-container" id="overview-forwards"></div>
 
             <div class="section-title">Legend</div>
@@ -935,7 +933,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
                 <div class="legend-item"><span class="legend-color" style="background:var(--agent); --legend-c:var(--agent)"></span>Agent</div>
                 <div class="legend-item"><span class="legend-color" style="background:var(--dweller); --legend-c:var(--dweller)"></span>Dweller</div>
                 <div class="legend-item"><span class="legend-color" style="background:var(--network); --legend-c:var(--network)"></span>Detected Network</div>
-                <div class="legend-item"><span class="legend-color" style="background:var(--forward); --legend-c:var(--forward)"></span>Room Port Forward</div>
+                <div class="legend-item"><span class="legend-color" style="background:var(--forward); --legend-c:var(--forward)"></span>Portal Port Forward</div>
                 <div class="legend-item"><span class="legend-line" style="background:var(--ok); box-shadow:0 0 4px var(--ok)"></span>Encrypted link</div>
                 <div class="legend-item"><span class="legend-line" style="background:var(--warn); box-shadow:0 0 4px var(--warn)"></span>Unencrypted/local link</div>
               </div>
@@ -1027,7 +1025,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
     };
 
     // Globals
-    let current = { nodes: [], edges: [], routes: [], port_forwards: [], fullhouse: [], shared_networks: [], conflicts: [], chain_plans: [] };
+    let current = { nodes: [], edges: [], routes: [], port_forwards: [], ariadne: [], shared_networks: [], conflicts: [], chain_plans: [] };
     let nodes = [];
     let edges = [];
     let nodeMap = new Map();
@@ -1428,7 +1426,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
 
         let desired = 150;
         if (edge.kind === 'route') desired = 130;
-        else if (edge.kind === 'room') desired = 110;
+        else if (edge.kind === 'portal') desired = 110;
 
         const force = (dist - desired) * 0.038;
         dx /= dist;
@@ -1751,13 +1749,13 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
 
       document.getElementById('selected-inspect-container').innerHTML = selectedDetails(data);
 
-      document.getElementById('overview-tunnels').innerHTML = data.fullhouse.length
-        ? data.fullhouse.map(t => item(t.agent_name, `Proxy port: ${t.proxy_port}`, [{ text: 'tun/tls/enc', tone: 'ok' }], `agent:${t.agent_id}`)).join('')
-        : emptyText('No active Fullhouse tunnels.');
+      document.getElementById('overview-tunnels').innerHTML = data.ariadne.length
+        ? data.ariadne.map(t => item(t.agent_name, `Proxy port: ${t.proxy_port}`, [{ text: 'tun/tls/enc', tone: 'ok' }], `agent:${t.agent_id}`)).join('')
+        : emptyText('No active Ariadne tunnels.');
 
       document.getElementById('overview-forwards').innerHTML = data.port_forwards.length
         ? data.port_forwards.map(f => item(`localhost:${f.local_port}`, `${f.agent_name} → ${f.target_host}:${f.target_port}`, [{ text: 'local/unenc', tone: 'warn' }, { text: 'stream/tls/enc', tone: 'ok' }], `port-forward:${f.local_port}`)).join('')
-        : emptyText('No active Room forwards.');
+        : emptyText('No active Portal forwards.');
 
       // 2. Inventory Tab
       const filteredNodes = data.nodes.filter(node => (node.kind === 'agent' || node.kind === 'dweller') && !isNodeFiltered(node));
@@ -1950,8 +1948,8 @@ pub(crate) struct DashboardSnapshot {
     routes: Vec<DashboardRoute>,
     shared_networks: Vec<DashboardSharedNetwork>,
     conflicts: Vec<DashboardRouteConflict>,
-    port_forwards: Vec<DashboardPortForward>,
-    fullhouse: Vec<DashboardFullhouse>,
+    port_forwards: Vec<DashboardPortal>,
+    ariadne: Vec<DashboardAriadne>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -2006,7 +2004,7 @@ struct DashboardRouteConflict {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct DashboardPortForward {
+struct DashboardPortal {
     local_port: u16,
     agent_id: String,
     agent_name: String,
@@ -2015,7 +2013,7 @@ struct DashboardPortForward {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct DashboardFullhouse {
+struct DashboardAriadne {
     agent_id: String,
     agent_name: String,
     proxy_port: u16,
@@ -2051,12 +2049,11 @@ impl DashboardServer {
     }
 
     pub(crate) async fn snapshot(server: &LabyrinthServer) -> DashboardSnapshot {
-        let port_forwards = server.port_forward_snapshots().await;
-        let fullhouse = server.fullhouse_snapshots().await;
+        let port_forwards = server.portal_snapshots().await;
+        let ariadne = server.ariadne_snapshots().await;
         let agents = server.agents().read().await;
         let dwellers = server.dweller_registry().read().await;
-        let mut snapshot =
-            Self::build_snapshot(&agents, &dwellers, &port_forwards, &fullhouse).await;
+        let mut snapshot = Self::build_snapshot(&agents, &dwellers, &port_forwards, &ariadne).await;
         drop(dwellers);
         drop(agents);
         snapshot.chain_plans = ChainManager::suggestions(server).await;
@@ -2066,8 +2063,8 @@ impl DashboardServer {
     async fn build_snapshot(
         agents: &HashMap<String, ConnectedAgent>,
         dwellers: &DwellerRegistry,
-        port_forwards: &[PortForwardSnapshot],
-        fullhouse: &[FullhouseSnapshot],
+        port_forwards: &[PortalSnapshot],
+        ariadne: &[AriadneSnapshot],
     ) -> DashboardSnapshot {
         let topology = TopologyManager::build_snapshot(agents);
         let mut nodes = vec![DashboardNode {
@@ -2128,10 +2125,10 @@ impl DashboardServer {
                 dwellers_online,
                 dwellers_total: dwellers.dwellers.len(),
                 detected_networks: topology.routes.len(),
-                active_tunnels: fullhouse.len()
+                active_tunnels: ariadne.len()
                     + agents
                         .values()
-                        .filter(|agent| agent.tunnel_active && !is_room_transport(agent))
+                        .filter(|agent| agent.tunnel_active && !is_portal_transport(agent))
                         .count(),
                 port_forwards: port_forwards.len(),
                 route_conflicts: topology.conflicts.len(),
@@ -2166,7 +2163,7 @@ impl DashboardServer {
                 .collect(),
             port_forwards: port_forwards
                 .iter()
-                .map(|forward| DashboardPortForward {
+                .map(|forward| DashboardPortal {
                     local_port: forward.local_port,
                     agent_id: forward.agent_id.clone(),
                     agent_name: agent_name(agents, &forward.agent_id),
@@ -2174,9 +2171,9 @@ impl DashboardServer {
                     target_port: forward.target_port,
                 })
                 .collect(),
-            fullhouse: fullhouse
+            ariadne: ariadne
                 .iter()
-                .map(|snapshot| DashboardFullhouse {
+                .map(|snapshot| DashboardAriadne {
                     agent_id: snapshot.agent_id.clone(),
                     agent_name: agent_name(agents, &snapshot.agent_id),
                     proxy_port: snapshot.proxy_port,
@@ -2332,7 +2329,7 @@ fn append_route_nodes(
 
 fn append_port_forward_nodes(
     agents: &HashMap<String, ConnectedAgent>,
-    port_forwards: &[PortForwardSnapshot],
+    port_forwards: &[PortalSnapshot],
     nodes: &mut Vec<DashboardNode>,
     edges: &mut Vec<DashboardEdge>,
 ) {
@@ -2357,7 +2354,7 @@ fn append_port_forward_nodes(
             target: agent_node_id(&forward.agent_id),
             label: "stream/tls/enc".to_string(),
             encrypted: true,
-            kind: "room".to_string(),
+            kind: "portal".to_string(),
         });
         if !agents.contains_key(&forward.agent_id) {
             edges.push(DashboardEdge {
@@ -2395,10 +2392,12 @@ fn append_offline_dweller_nodes(
             kind: "dweller".to_string(),
             status: "remembered/offline".to_string(),
             detail: format!(
-                "{} {} / callback: {} / path: {}",
+                "{} {} / callback: {} / hibernation: {} / tasks: {} / path: {}",
                 record.socket_addr(),
                 record.os,
                 callback_summary(&record.callback_servers),
+                hibernation_summary(&record.hibernation),
+                task_summary(&record.tasks),
                 path_summary(&record.path)
             ),
         });
@@ -2463,6 +2462,39 @@ fn callback_summary(callbacks: &[crate::protocol::DwellerServerEndpoint]) -> Str
         .join(", ")
 }
 
+fn hibernation_summary(config: &crate::protocol::DwellerHibernationConfig) -> String {
+    if config.enabled {
+        format!(
+            "sleep {}s jitter {}% batch {}",
+            config.sleep_seconds, config.jitter_percent, config.task_batch_size
+        )
+    } else {
+        "persistent".to_string()
+    }
+}
+
+fn task_summary(tasks: &[crate::protocol::DwellerTask]) -> String {
+    let pending = tasks
+        .iter()
+        .filter(|task| matches!(task.status, crate::protocol::DwellerTaskStatus::Pending))
+        .count();
+    let running = tasks
+        .iter()
+        .filter(|task| matches!(task.status, crate::protocol::DwellerTaskStatus::Running))
+        .count();
+    let failed = tasks
+        .iter()
+        .filter(|task| matches!(task.status, crate::protocol::DwellerTaskStatus::Failed))
+        .count();
+    format!(
+        "{} total, {} pending, {} running, {} failed",
+        tasks.len(),
+        pending,
+        running,
+        failed
+    )
+}
+
 fn path_summary(path: &[crate::protocol::DwellerPathHop]) -> String {
     if path.is_empty() {
         return "unknown".to_string();
@@ -2502,14 +2534,14 @@ fn agent_name(agents: &HashMap<String, ConnectedAgent>, agent_id: &str) -> Strin
 }
 
 fn active_transport_label(agent: &ConnectedAgent) -> String {
-    if is_room_transport(agent) {
-        format!("room/{}", agent.transport_label)
+    if is_portal_transport(agent) {
+        format!("portal/{}", agent.transport_label)
     } else {
         format!("tun/{}", agent.transport_label)
     }
 }
 
-fn is_room_transport(agent: &ConnectedAgent) -> bool {
+fn is_portal_transport(agent: &ConnectedAgent) -> bool {
     agent
         .tunnel_subnet
         .as_deref()
@@ -2569,7 +2601,7 @@ mod tests {
         let snapshot = DashboardServer::build_snapshot(
             &agents,
             &DwellerRegistry::default(),
-            &[PortForwardSnapshot {
+            &[PortalSnapshot {
                 local_port: 8080,
                 agent_id: "agent-a".to_string(),
                 target_host: "10.10.1.20".to_string(),

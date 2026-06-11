@@ -32,6 +32,45 @@ pub struct DwellerServerEndpoint {
     pub transport: String,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_dweller_sleep_seconds() -> u64 {
+    60
+}
+
+fn default_dweller_jitter_percent() -> u8 {
+    50
+}
+
+fn default_dweller_task_batch_size() -> usize {
+    10
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct DwellerHibernationConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_dweller_sleep_seconds")]
+    pub sleep_seconds: u64,
+    #[serde(default = "default_dweller_jitter_percent")]
+    pub jitter_percent: u8,
+    #[serde(default = "default_dweller_task_batch_size")]
+    pub task_batch_size: usize,
+}
+
+impl Default for DwellerHibernationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            sleep_seconds: default_dweller_sleep_seconds(),
+            jitter_percent: default_dweller_jitter_percent(),
+            task_batch_size: default_dweller_task_batch_size(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct DwellerPathHop {
     pub agent_id: String,
@@ -44,6 +83,56 @@ pub struct DwellerPathHop {
 pub struct DwellerRuntimeConfig {
     #[serde(default)]
     pub callback_servers: Vec<DwellerServerEndpoint>,
+    #[serde(default)]
+    pub hibernation: DwellerHibernationConfig,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum DwellerTaskKind {
+    Command {
+        command: String,
+    },
+    StartTunnel {
+        subnet: String,
+        tun_name: String,
+    },
+    StopTunnel,
+    PortalPortForward {
+        local_port: u16,
+        target_addr: String,
+        auth_key: Option<String>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum DwellerTaskStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct DwellerTaskResult {
+    pub task_id: String,
+    pub success: bool,
+    pub output: String,
+    pub error: Option<String>,
+    pub finished_at: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct DwellerTask {
+    pub task_id: String,
+    pub kind: DwellerTaskKind,
+    pub status: DwellerTaskStatus,
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default)]
+    pub result: Option<DwellerTaskResult>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -93,6 +182,8 @@ pub struct DwellerInstallRequest {
     pub callback_servers: Vec<DwellerServerEndpoint>,
     #[serde(default)]
     pub parent_path: Vec<DwellerPathHop>,
+    #[serde(default)]
+    pub hibernation: DwellerHibernationConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -112,6 +203,8 @@ pub struct DwellerInstallReceipt {
     pub callback_servers: Vec<DwellerServerEndpoint>,
     #[serde(default)]
     pub parent_path: Vec<DwellerPathHop>,
+    #[serde(default)]
+    pub hibernation: DwellerHibernationConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -126,12 +219,26 @@ pub enum Message {
     },
     /// Server updates a connected dweller's future callback server list
     ConfigureDweller {
-        callback_servers: Vec<DwellerServerEndpoint>,
+        config: DwellerRuntimeConfig,
     },
     /// Dweller acknowledges callback server configuration
     ConfigureDwellerResponse {
         success: bool,
         message: String,
+    },
+    /// Hibernating dweller asks for queued tasks.
+    DwellerPollTasks {
+        dweller_id: String,
+        max_tasks: usize,
+    },
+    /// Server returns queued tasks for a hibernating dweller.
+    DwellerTasks {
+        tasks: Vec<DwellerTask>,
+    },
+    /// Hibernating dweller returns task output.
+    DwellerTaskResult {
+        dweller_id: String,
+        result: DwellerTaskResult,
     },
     /// Server requests to start tunnel for specific subnet
     StartTunnel {
@@ -144,8 +251,8 @@ pub enum Message {
     StopTunnel,
     /// Agent acknowledges tunnel stop
     TunnelStopped,
-    /// Room mode: Server requests port forwarding
-    RoomPortForward {
+    /// Portal mode: Server requests port forwarding
+    PortalPortForward {
         local_port: u16,
         target_addr: String,
         auth_key: Option<String>,

@@ -18,8 +18,8 @@
 
 ### 🚀 Enhanced Command System
 - **New Commands**: 
-  - `fullhouse` - IP tunneling (branded as "Fullhouse Mode")
-  - `room` - Port forwarding (branded as "Room Mode")
+  - `ariadne` - IP tunneling (branded as "Ariadne Mode")
+  - `portal` - Port forwarding (branded as "Portal Mode")
 - **Backward Compatibility**: Legacy `tunnel` and `forward` commands still work
 - **Improved Help**: Clear descriptions with Labyrinth-specific terminology
 
@@ -52,8 +52,8 @@
 - **Visual Status Indicators**: Color-coded connection states
 
 ### Network Operations
-- **Fullhouse Mode**: Complete IP tunneling with CIDR validation
-- **Room Mode**: Port forwarding with mapping validation
+- **Ariadne Mode**: Complete IP tunneling with CIDR validation
+- **Portal Mode**: Port forwarding with mapping validation
 - **Interactive Setup**: Guided configuration with visual feedback
 
 ### User Experience
@@ -67,8 +67,8 @@
 ## 🔄 Backward Compatibility
 
 All existing functionality is preserved:
-- ✅ Legacy `tunnel` command → `fullhouse`
-- ✅ Legacy `forward` command → `room`
+- ✅ Legacy `tunnel` command → `ariadne`
+- ✅ Legacy `forward` command → `portal`
 - ✅ All CLI arguments and options
 - ✅ Configuration file formats
 - ✅ Network protocols and agent communication
@@ -160,8 +160,8 @@ cargo build --release
 
 ### v1.0.0 (2025-07-21)
 - **BREAKING**: Complete UI redesign with new visual identity
-- **NEW**: `fullhouse` command for IP tunneling
-- **NEW**: `room` command for port forwarding  
+- **NEW**: `ariadne` command for IP tunneling
+- **NEW**: `portal` command for port forwarding
 - **NEW**: Vertical data presentation throughout interface
 - **NEW**: Branded ASCII logo with author attribution
 - **IMPROVED**: Error handling and user feedback

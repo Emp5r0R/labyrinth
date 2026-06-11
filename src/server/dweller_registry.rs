@@ -1,5 +1,8 @@
 use crate::error::{LabyrinthError, Result};
-use crate::protocol::{DwellerInstallReceipt, DwellerPathHop, DwellerServerEndpoint};
+use crate::protocol::{
+    DwellerHibernationConfig, DwellerInstallReceipt, DwellerPathHop, DwellerServerEndpoint,
+    DwellerTask, DwellerTaskKind, DwellerTaskResult, DwellerTaskStatus,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -26,6 +29,10 @@ pub struct DwellerRecord {
     pub callback_servers: Vec<DwellerServerEndpoint>,
     #[serde(default)]
     pub path: Vec<DwellerPathHop>,
+    #[serde(default)]
+    pub hibernation: DwellerHibernationConfig,
+    #[serde(default)]
+    pub tasks: Vec<DwellerTask>,
 }
 
 impl DwellerRecord {
@@ -46,6 +53,8 @@ impl DwellerRecord {
             last_connected: None,
             callback_servers: receipt.callback_servers,
             path: receipt.parent_path,
+            hibernation: receipt.hibernation,
+            tasks: Vec::new(),
         }
     }
 
@@ -98,6 +107,66 @@ impl DwellerRegistry {
         items
     }
 
+    pub fn enqueue_task(
+        &mut self,
+        dweller_id: &str,
+        kind: DwellerTaskKind,
+        now: String,
+    ) -> Option<DwellerTask> {
+        let record = self.dwellers.get_mut(dweller_id)?;
+        let task = DwellerTask {
+            task_id: uuid::Uuid::new_v4().to_string(),
+            kind,
+            status: DwellerTaskStatus::Pending,
+            created_at: now.clone(),
+            updated_at: Some(now),
+            attempts: 0,
+            result: None,
+        };
+        record.tasks.push(task.clone());
+        Some(task)
+    }
+
+    pub fn claim_tasks(&mut self, dweller_id: &str, limit: usize, now: String) -> Vec<DwellerTask> {
+        let Some(record) = self.dwellers.get_mut(dweller_id) else {
+            return Vec::new();
+        };
+        let mut claimed = Vec::new();
+        for task in record.tasks.iter_mut() {
+            if claimed.len() >= limit {
+                break;
+            }
+            if task.status == DwellerTaskStatus::Pending {
+                task.status = DwellerTaskStatus::Running;
+                task.updated_at = Some(now.clone());
+                task.attempts = task.attempts.saturating_add(1);
+                claimed.push(task.clone());
+            }
+        }
+        claimed
+    }
+
+    pub fn complete_task(&mut self, dweller_id: &str, result: DwellerTaskResult) -> bool {
+        let Some(record) = self.dwellers.get_mut(dweller_id) else {
+            return false;
+        };
+        let Some(task) = record
+            .tasks
+            .iter_mut()
+            .find(|task| task.task_id == result.task_id)
+        else {
+            return false;
+        };
+        task.status = if result.success {
+            DwellerTaskStatus::Completed
+        } else {
+            DwellerTaskStatus::Failed
+        };
+        task.updated_at = Some(result.finished_at.clone());
+        task.result = Some(result);
+        true
+    }
+
     fn path() -> PathBuf {
         Path::new(DWELLER_REGISTRY_FILE).to_path_buf()
     }
@@ -122,6 +191,7 @@ mod tests {
             service_name: "labyrinth-dweller-alpha".to_string(),
             callback_servers: Vec::new(),
             parent_path: Vec::new(),
+            hibernation: DwellerHibernationConfig::default(),
         }
     }
 
@@ -141,6 +211,7 @@ mod tests {
         assert_eq!(record.auth_key, "secret");
         assert_eq!(record.install_path, "/usr/local/bin/alpha");
         assert_eq!(record.socket_addr(), "10.0.0.5:45454");
+        assert!(record.hibernation.enabled);
     }
 
     #[test]
@@ -181,5 +252,39 @@ mod tests {
             .map(|item| item.dweller_name.as_str())
             .collect();
         assert_eq!(names, vec!["alpha", "bravo"]);
+    }
+
+    #[test]
+    fn task_queue_claims_and_completes_tasks() {
+        let mut registry = DwellerRegistry::default();
+        registry.upsert(DwellerRecord::from_receipt(
+            sample_receipt(),
+            "secret".to_string(),
+        ));
+        let task = registry
+            .enqueue_task(
+                "dweller123",
+                DwellerTaskKind::Command {
+                    command: "whoami".to_string(),
+                },
+                "now".to_string(),
+            )
+            .unwrap();
+        let claimed = registry.claim_tasks("dweller123", 10, "later".to_string());
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].task_id, task.task_id);
+
+        assert!(registry.complete_task(
+            "dweller123",
+            DwellerTaskResult {
+                task_id: task.task_id,
+                success: true,
+                output: "ok".to_string(),
+                error: None,
+                finished_at: "done".to_string(),
+            }
+        ));
+        let record = registry.dwellers.get("dweller123").unwrap();
+        assert_eq!(record.tasks[0].status, DwellerTaskStatus::Completed);
     }
 }

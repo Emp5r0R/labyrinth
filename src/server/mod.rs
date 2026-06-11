@@ -217,6 +217,8 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
         "connect-dweller",
         "drop-dweller",
         "configure-dweller",
+        "task-dweller",
+        "dweller-tasks",
         "forget-dweller",
         "info",
         "show",
@@ -228,10 +230,10 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
         "map",
         "network-map",
         "tunnel",
-        "fullhouse",
+        "ariadne",
         "stop",
         "forward",
-        "room",
+        "portal",
         "commands",
         "cmd",
         "upload",
@@ -290,6 +292,14 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                             "  {}  Configure a remembered dweller callback server",
                             "configure-dweller".cyan()
                         );
+                        println!(
+                            "  {}  Queue a task for a hibernating dweller",
+                            "task-dweller".cyan()
+                        );
+                        println!(
+                            "  {}  Show queued dweller tasks and results",
+                            "dweller-tasks".cyan()
+                        );
                         println!("  {}  Forget a remembered dweller", "forget-dweller".cyan());
                         println!("  {}  Show detailed agent information", "info".cyan());
                         println!(
@@ -309,8 +319,8 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                             "chain status|doctor [target]".cyan()
                         );
                         println!("  {}  Show visual network map", "map".cyan());
-                        println!("  {}  Start Tunnel", "Fullhouse".cyan());
-                        println!("  {}  Port Forwarding", "Room".cyan());
+                        println!("  {}  Start Tunnel", "Ariadne".cyan());
+                        println!("  {}  Port Forwarding", "Portal".cyan());
                         println!("  {}  Stop active tunnel/forwarding", "stop".cyan());
                         println!("  {}  Execute system commands on agent", "commands".cyan());
                         println!("  {}  Upload file to selected agent", "upload".cyan());
@@ -367,6 +377,28 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                                 styling::format_error_msg(
                                     styling::ERROR_INDICATOR,
                                     &format!("Configure Dweller failed: {}", e)
+                                )
+                            );
+                        }
+                    }
+                    "task-dweller" => {
+                        if let Err(e) = DwellerManager::enqueue_dweller_task(server.clone()).await {
+                            println!(
+                                "{}",
+                                styling::format_error_msg(
+                                    styling::ERROR_INDICATOR,
+                                    &format!("Queue Dweller task failed: {}", e)
+                                )
+                            );
+                        }
+                    }
+                    "dweller-tasks" => {
+                        if let Err(e) = DwellerManager::list_dweller_tasks(&server).await {
+                            println!(
+                                "{}",
+                                styling::format_error_msg(
+                                    styling::ERROR_INDICATOR,
+                                    &format!("List Dweller tasks failed: {}", e)
                                 )
                             );
                         }
@@ -439,7 +471,7 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                     "map" | "network-map" => {
                         ServerUI::show_network_map(&server).await;
                     }
-                    "tunnel" | "fullhouse" | "Fullhouse" => {
+                    "tunnel" | "ariadne" | "fullhouse" | "Ariadne" | "Fullhouse" => {
                         if let Err(e) = TunnelManager::start_tunnel(&server).await {
                             println!(
                                 "{}",
@@ -461,7 +493,7 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                             );
                         }
                     }
-                    "forward" | "room" | "Room" => {
+                    "forward" | "portal" | "room" | "Portal" | "Room" => {
                         if let Err(e) = start_port_forwarding(server.clone()).await {
                             println!(
                                 "{}",
@@ -570,8 +602,8 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
 async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
     let current_id = server.current_agent().read().await.clone();
     if let Some(agent_id) = current_id {
-        println!("\n{}", "Room Mode (Port Forwarding)".cyan().bold());
-        println!("{}", "──────────────────────────".bright_black());
+        println!("\n{}", "Portal Mode (Port Forwarding)".cyan().bold());
+        println!("{}", "────────────────────────────".bright_black());
         println!();
 
         let mappings: Vec<String> = loop {
@@ -660,13 +692,11 @@ async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
                         local_port, e
                     );
                 }
-                server_for_task
-                    .unregister_port_forward_listener(local_port)
-                    .await;
+                server_for_task.unregister_portal_listener(local_port).await;
             });
 
             match server
-                .register_port_forward_listener(
+                .register_portal_listener(
                     local_port,
                     agent_id.clone(),
                     PortMapping {
@@ -721,7 +751,7 @@ async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
         drop(agents);
 
         println!(
-            "\n{} Room Mode Active",
+            "\n{} Portal Mode Active",
             styling::format_success_msg(styling::CHECK_INDICATOR, "")
                 .trim_start()
                 .bold()
@@ -891,7 +921,7 @@ async fn run_streaming_port_forward_listener(
         match listener.accept().await {
             Ok((client_socket, client_addr)) => {
                 info!(
-                    "Streaming Room: client {} connected on {}",
+                    "Streaming Portal: client {} connected on {}",
                     client_addr, addr
                 );
 

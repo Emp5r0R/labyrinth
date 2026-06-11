@@ -7,7 +7,7 @@
 ## [+] Architecture Assessment
 
 ### Core Design Strengths
-- **Dual-mode operation**: Fullhouse (IP tunneling) and Room (port forwarding)
+- **Dual-mode operation**: Ariadne (IP tunneling) and Portal (port forwarding)
 - **Async-first design**: Proper use of Tokio for concurrent operations
 - **TLS encryption**: Secure communication channels
 - **Modular structure**: Well-organized code with clear separation of concerns
@@ -54,11 +54,11 @@ struct SmartCertVerifier {
 ```rust
 // Added to protocol messages
 pub enum Message {
-    FullhouseInit { 
+    AriadneInit {
         agent_listen_addr: String,
         auth_key: Option<String>, // NEW
     },
-    RoomPortForward { 
+    PortalPortForward {
         local_port: u16, 
         target_addr: String,
         auth_key: Option<String>, // NEW
@@ -158,10 +158,10 @@ pub struct LabyrinthConfig {
 export LABYRINTH_AUTH_KEY="your-secret-key"
 
 # Run server (requires root for TUN)
-sudo ./labyrinth server-fullhouse --addr 10.0.0.1/24 --agent-internal-subnet 172.16.20.0/24
+sudo ./labyrinth server-ariadne --addr 10.0.0.1/24 --agent-internal-subnet 172.16.20.0/24
 
 # Run agent
-./labyrinth agent-fullhouse --server-addr 127.0.0.1:44344 --listen-addr 127.0.0.1:1080
+./labyrinth agent-ariadne --server-addr 127.0.0.1:44344 --listen-addr 127.0.0.1:1080
 ```
 
 ### Production Considerations
@@ -190,7 +190,7 @@ sudo ./labyrinth server-fullhouse --addr 10.0.0.1/24 --agent-internal-subnet 172
 
 ## [+] Final Assessment
 
-**Overall Grade: B+ (Good with room for improvement)**
+**Overall Grade: B+ (Good with portal for improvement)**
 
 ### Strengths
 - Solid architecture and design patterns

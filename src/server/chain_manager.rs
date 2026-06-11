@@ -445,7 +445,7 @@ impl ChainManager {
                     tun_name,
                     ..
                 } => println!(
-                    "{}Start Fullhouse {} via {} on {}",
+                    "{}Start Ariadne {} via {} on {}",
                     step,
                     cidr.cyan(),
                     agent_name,

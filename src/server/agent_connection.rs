@@ -163,6 +163,38 @@ async fn process_message(
                 }
             }
         }
+        Message::DwellerPollTasks {
+            dweller_id,
+            max_tasks,
+        } => {
+            if dweller_id != agent_id {
+                warn!(
+                    "Dweller {} tried to poll tasks for {}",
+                    agent_id, dweller_id
+                );
+                return Ok(());
+            }
+            let tasks = server
+                .claim_dweller_tasks(agent_id, max_tasks.clamp(1, 100))
+                .await?;
+            if let Some(agent) = server.agents().read().await.get(agent_id) {
+                if let Err(e) = agent.sender.send(Message::DwellerTasks { tasks }).await {
+                    error!("Failed to send dweller task batch: {}", e);
+                }
+            }
+        }
+        Message::DwellerTaskResult { dweller_id, result } => {
+            if dweller_id != agent_id {
+                warn!(
+                    "Dweller {} tried to complete task for {}",
+                    agent_id, dweller_id
+                );
+                return Ok(());
+            }
+            if !server.complete_dweller_task(agent_id, result).await? {
+                warn!("Dweller {} returned result for unknown task", agent_id);
+            }
+        }
         Message::FileDownloadResponse {
             success,
             message,
@@ -204,7 +236,7 @@ async fn process_message(
                 return Ok(());
             }
 
-            // Handle streaming data coming from the agent (Room mode)
+            // Handle streaming data coming from the agent (Portal mode)
             match stream_msg {
                 StreamMessage::Data {
                     connection_id,

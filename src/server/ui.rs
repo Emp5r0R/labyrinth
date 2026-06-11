@@ -91,7 +91,7 @@ impl ServerUI {
             };
             println!(
                 "{}",
-                styling::format_field("Fullhouse (Tunnel):", &tunnel_status)
+                styling::format_field("Ariadne (Tunnel):", &tunnel_status)
             );
             let route_hint = TopologyManager::best_route_for_agent(&agent.info.interfaces)
                 .map(|route| route.cidr.clone())
@@ -278,7 +278,7 @@ impl ServerUI {
                 let detected_routes = TopologyManager::detect_agent_routes(&agent.info.interfaces);
                 println!(
                     "\n{}",
-                    styling::format_section_title("Detected Routes", "Fullhouse auto candidates")
+                    styling::format_section_title("Detected Routes", "Ariadne auto candidates")
                 );
                 println!("{}", styling::format_separator(styling::SECTION_SEPARATOR));
                 if detected_routes.is_empty() {
@@ -380,7 +380,7 @@ impl ServerUI {
                 );
                 println!(
                     "{:<20} {}",
-                    "Fullhouse (Tunnel):",
+                    "Ariadne (Tunnel):",
                     if agent.tunnel_active {
                         "Active".green()
                     } else {
@@ -471,8 +471,8 @@ impl ServerUI {
     }
 
     pub async fn show_network_map(server: &LabyrinthServer) {
-        let port_forwards = server.port_forward_snapshots().await;
-        let fullhouse = server.fullhouse_snapshots().await;
+        let portals = server.portal_snapshots().await;
+        let ariadne = server.ariadne_snapshots().await;
         let agents = server.agents().read().await;
         let dwellers = server.dweller_registry().read().await;
         let topology = TopologyManager::build_snapshot(&agents);
@@ -480,7 +480,7 @@ impl ServerUI {
         println!();
         println!(
             "{}",
-            NetworkMapRenderer::render(&agents, &dwellers, &topology, &port_forwards, &fullhouse)
+            NetworkMapRenderer::render(&agents, &dwellers, &topology, &portals, &ariadne)
         );
         println!();
     }

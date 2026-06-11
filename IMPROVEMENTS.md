@@ -4,13 +4,13 @@
 
 Labyrinth is a sophisticated network tunneling tool written in Rust that provides secure, encrypted communication channels between agents and servers. It operates in two primary modes:
 
-### 1. Fullhouse Mode (IP Tunneling)
+### 1. Ariadne Mode (IP Tunneling)
 - Creates TUN interfaces for full IP-layer packet forwarding
 - Establishes bidirectional encrypted tunnels
 - Handles raw IP packet routing through TLS connections
 - Requires root privileges for TUN interface management
 
-### 2. Room Mode (Port Forwarding)
+### 2. Portal Mode (Port Forwarding)
 - Simple TCP port forwarding through encrypted channels
 - No special privileges required
 - Multiple port mappings supported

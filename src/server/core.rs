@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::protocol::{AgentInfo, Message};
+use crate::protocol::{AgentInfo, DwellerTask, DwellerTaskKind, DwellerTaskResult, Message};
 use crate::server::dweller_registry::{DwellerRecord, DwellerRegistry};
 use crate::streaming::{
     traits::{ConnectionManager as StreamConnectionManager, StreamManager as StreamManagerTrait},
@@ -29,7 +29,7 @@ pub struct ConnectedAgent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PortForwardSnapshot {
+pub struct PortalSnapshot {
     pub local_port: u16,
     pub agent_id: String,
     pub target_host: String,
@@ -37,18 +37,18 @@ pub struct PortForwardSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FullhouseSnapshot {
+pub struct AriadneSnapshot {
     pub agent_id: String,
     pub proxy_port: u16,
 }
 
-struct PortForwardListener {
+struct PortalListener {
     agent_id: String,
     mapping: crate::streaming::models::PortMapping,
     handle: JoinHandle<()>,
 }
 
-impl PortForwardListener {
+impl PortalListener {
     fn new(
         agent_id: String,
         mapping: crate::streaming::models::PortMapping,
@@ -66,12 +66,12 @@ impl PortForwardListener {
     }
 }
 
-struct FullhouseListener {
+struct AriadneListener {
     proxy_port: u16,
     handle: JoinHandle<()>,
 }
 
-impl FullhouseListener {
+impl AriadneListener {
     fn new(proxy_port: u16, handle: JoinHandle<()>) -> Self {
         Self { proxy_port, handle }
     }
@@ -88,12 +88,12 @@ pub struct LabyrinthServer {
     current_agent: Arc<RwLock<Option<String>>>,
     auth_required: bool,
     auth_key: Option<String>,
-    // Streaming managers used by Room mode when enabled
+    // Streaming managers used by Portal mode when enabled
     stream_manager: Arc<RwLock<Option<Arc<dyn StreamManagerTrait>>>>,
     connection_manager: Arc<RwLock<Option<Arc<dyn StreamConnectionManager>>>>,
-    port_forward_listeners: Arc<RwLock<HashMap<u16, PortForwardListener>>>,
+    portal_listeners: Arc<RwLock<HashMap<u16, PortalListener>>>,
     connection_owners: Arc<RwLock<HashMap<ConnectionId, String>>>,
-    fullhouse_listeners: Arc<RwLock<HashMap<String, FullhouseListener>>>,
+    ariadne_listeners: Arc<RwLock<HashMap<String, AriadneListener>>>,
     dweller_registry: Arc<RwLock<DwellerRegistry>>,
 }
 
@@ -106,9 +106,9 @@ impl LabyrinthServer {
             auth_key,
             stream_manager: Arc::new(RwLock::new(None)),
             connection_manager: Arc::new(RwLock::new(None)),
-            port_forward_listeners: Arc::new(RwLock::new(HashMap::new())),
+            portal_listeners: Arc::new(RwLock::new(HashMap::new())),
             connection_owners: Arc::new(RwLock::new(HashMap::new())),
-            fullhouse_listeners: Arc::new(RwLock::new(HashMap::new())),
+            ariadne_listeners: Arc::new(RwLock::new(HashMap::new())),
             dweller_registry: Arc::new(RwLock::new(DwellerRegistry::default())),
         }
     }
@@ -137,9 +137,9 @@ impl LabyrinthServer {
             auth_key: self.auth_key.clone(),
             stream_manager: Arc::clone(&self.stream_manager),
             connection_manager: Arc::clone(&self.connection_manager),
-            port_forward_listeners: Arc::clone(&self.port_forward_listeners),
+            portal_listeners: Arc::clone(&self.portal_listeners),
             connection_owners: Arc::clone(&self.connection_owners),
-            fullhouse_listeners: Arc::clone(&self.fullhouse_listeners),
+            ariadne_listeners: Arc::clone(&self.ariadne_listeners),
             dweller_registry: Arc::clone(&self.dweller_registry),
         }
     }
@@ -163,6 +163,39 @@ impl LabyrinthServer {
         let removed = registry.remove(dweller_id);
         registry.save()?;
         Ok(removed)
+    }
+
+    pub async fn enqueue_dweller_task(
+        &self,
+        dweller_id: &str,
+        kind: DwellerTaskKind,
+    ) -> Result<Option<DwellerTask>> {
+        let mut registry = self.dweller_registry.write().await;
+        let task = registry.enqueue_task(dweller_id, kind, chrono_like_now());
+        registry.save()?;
+        Ok(task)
+    }
+
+    pub async fn claim_dweller_tasks(
+        &self,
+        dweller_id: &str,
+        limit: usize,
+    ) -> Result<Vec<DwellerTask>> {
+        let mut registry = self.dweller_registry.write().await;
+        let tasks = registry.claim_tasks(dweller_id, limit, chrono_like_now());
+        registry.save()?;
+        Ok(tasks)
+    }
+
+    pub async fn complete_dweller_task(
+        &self,
+        dweller_id: &str,
+        result: DwellerTaskResult,
+    ) -> Result<bool> {
+        let mut registry = self.dweller_registry.write().await;
+        let completed = registry.complete_task(dweller_id, result);
+        registry.save()?;
+        Ok(completed)
     }
 
     // Streaming manager accessors
@@ -189,42 +222,39 @@ impl LabyrinthServer {
         self.connection_manager.read().await.deref().clone()
     }
 
-    pub async fn register_port_forward_listener(
+    pub async fn register_portal_listener(
         &self,
         local_port: u16,
         agent_id: String,
         mapping: crate::streaming::models::PortMapping,
         handle: JoinHandle<()>,
     ) -> Result<()> {
-        let mut listeners = self.port_forward_listeners.write().await;
+        let mut listeners = self.portal_listeners.write().await;
         if listeners.contains_key(&local_port) {
             return Err(crate::error::LabyrinthError::Message(format!(
                 "Port {} already in use for port forwarding",
                 local_port
             )));
         }
-        listeners.insert(
-            local_port,
-            PortForwardListener::new(agent_id, mapping, handle),
-        );
+        listeners.insert(local_port, PortalListener::new(agent_id, mapping, handle));
         Ok(())
     }
 
-    pub async fn unregister_port_forward_listener(&self, local_port: u16) {
-        let mut listeners = self.port_forward_listeners.write().await;
+    pub async fn unregister_portal_listener(&self, local_port: u16) {
+        let mut listeners = self.portal_listeners.write().await;
         listeners.remove(&local_port);
     }
 
-    pub async fn has_port_forwarding(&self, agent_id: &str) -> bool {
-        let listeners = self.port_forward_listeners.read().await;
+    pub async fn has_portal_forwarding(&self, agent_id: &str) -> bool {
+        let listeners = self.portal_listeners.read().await;
         listeners
             .values()
             .any(|listener| listener.agent_id == agent_id)
     }
 
-    pub async fn stop_port_forwarding_for_agent(&self, agent_id: &str) -> Vec<u16> {
+    pub async fn stop_portal_forwarding_for_agent(&self, agent_id: &str) -> Vec<u16> {
         let ports: Vec<u16> = {
-            let listeners = self.port_forward_listeners.read().await;
+            let listeners = self.portal_listeners.read().await;
             listeners
                 .iter()
                 .filter_map(|(port, listener)| {
@@ -238,7 +268,7 @@ impl LabyrinthServer {
         };
 
         if !ports.is_empty() {
-            let mut listeners = self.port_forward_listeners.write().await;
+            let mut listeners = self.portal_listeners.write().await;
             for port in &ports {
                 if let Some(listener) = listeners.remove(port) {
                     listener.stop();
@@ -253,24 +283,24 @@ impl LabyrinthServer {
         owners.insert(connection_id, agent_id);
     }
 
-    pub async fn register_fullhouse_listener(
+    pub async fn register_ariadne_listener(
         &self,
         agent_id: String,
         proxy_port: u16,
         handle: JoinHandle<()>,
     ) {
-        let mut listeners = self.fullhouse_listeners.write().await;
+        let mut listeners = self.ariadne_listeners.write().await;
         if let Some(existing) = listeners.remove(&agent_id) {
             existing.stop();
         }
-        listeners.insert(agent_id, FullhouseListener::new(proxy_port, handle));
+        listeners.insert(agent_id, AriadneListener::new(proxy_port, handle));
     }
 
-    pub async fn port_forward_snapshots(&self) -> Vec<PortForwardSnapshot> {
-        let listeners = self.port_forward_listeners.read().await;
+    pub async fn portal_snapshots(&self) -> Vec<PortalSnapshot> {
+        let listeners = self.portal_listeners.read().await;
         let mut snapshots: Vec<_> = listeners
             .values()
-            .map(|listener| PortForwardSnapshot {
+            .map(|listener| PortalSnapshot {
                 local_port: listener.mapping.local_port,
                 agent_id: listener.agent_id.clone(),
                 target_host: listener.mapping.target_host.clone(),
@@ -285,11 +315,11 @@ impl LabyrinthServer {
         snapshots
     }
 
-    pub async fn fullhouse_snapshots(&self) -> Vec<FullhouseSnapshot> {
-        let listeners = self.fullhouse_listeners.read().await;
+    pub async fn ariadne_snapshots(&self) -> Vec<AriadneSnapshot> {
+        let listeners = self.ariadne_listeners.read().await;
         let mut snapshots: Vec<_> = listeners
             .iter()
-            .map(|(agent_id, listener)| FullhouseSnapshot {
+            .map(|(agent_id, listener)| AriadneSnapshot {
                 agent_id: agent_id.clone(),
                 proxy_port: listener.proxy_port,
             })
@@ -298,9 +328,9 @@ impl LabyrinthServer {
         snapshots
     }
 
-    pub async fn stop_fullhouse_listener(&self, agent_id: &str) -> Option<u16> {
-        let mut listeners = self.fullhouse_listeners.write().await;
-        listeners.remove(agent_id).map(FullhouseListener::stop)
+    pub async fn stop_ariadne_listener(&self, agent_id: &str) -> Option<u16> {
+        let mut listeners = self.ariadne_listeners.write().await;
+        listeners.remove(agent_id).map(AriadneListener::stop)
     }
 
     pub async fn unregister_connection_owner(
@@ -331,6 +361,10 @@ impl LabyrinthServer {
     }
 }
 
+fn chrono_like_now() -> String {
+    format!("{:?}", std::time::SystemTime::now())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,7 +380,7 @@ mod tests {
     async fn register_and_stop_port_forwarding() {
         let server = LabyrinthServer::new(false, None);
         server
-            .register_port_forward_listener(
+            .register_portal_listener(
                 8080,
                 "agent".to_string(),
                 crate::streaming::models::PortMapping {
@@ -358,11 +392,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(server.has_port_forwarding("agent").await);
+        assert!(server.has_portal_forwarding("agent").await);
 
-        let stopped = server.stop_port_forwarding_for_agent("agent").await;
+        let stopped = server.stop_portal_forwarding_for_agent("agent").await;
         assert_eq!(stopped, vec![8080]);
-        assert!(!server.has_port_forwarding("agent").await);
+        assert!(!server.has_portal_forwarding("agent").await);
     }
 
     #[tokio::test]
