@@ -136,6 +136,34 @@ Agents collect host, operating system, interface, route, and low-noise outbound
 reachability data during registration. The server uses that information for
 route detection, topology display, and smart access planning.
 
+## BloodHound Collection
+
+Labyrinth includes an automated workflow for BloodHound data collection using
+SharpHound. This feature simplifies Active Directory enumeration by handling
+the binary provisioning, execution, and data exfiltration.
+
+To trigger collection on a Windows agent:
+
+1.  Select the target agent in the server CLI.
+2.  Type `bloodhound`.
+
+### Workflow Automation
+
+- **Auto-Discovery**: The server checks for `SharpHound.exe` in local directories
+  and standard Kali Linux locations (`/usr/share/sharphound/`).
+- **Auto-Provisioning**: If the binary is missing, the server automatically
+  downloads the latest release from the official SharpHound GitHub repository.
+- **Secure Execution**: The binary is uploaded to a temporary location on the
+  target, executed with comprehensive flags (`-c All,GPOLocations`), and results
+  are retrieved to the `labyrinth-artifacts/` folder.
+- **Cleanup**: After successful (or failed) retrieval, the server removes both
+  the executable and the generated ZIP from the remote host.
+
+### Shell Integration
+
+You can also trigger collection from within an interactive shell session using
+ the `!bloodhound` command.
+
 ## Dweller
 
 Dwellers are persistent remembered endpoints. They are useful when a host should

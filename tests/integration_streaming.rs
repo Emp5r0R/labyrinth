@@ -244,7 +244,7 @@ async fn test_end_to_end_data_flow() {
     assert!(stats.total_connections > 0);
     assert!(stats.total_connections >= 1);
 
-    info!("✅ End-to-end data flow test passed");
+    info!("End-to-end data flow test passed");
 }
 
 /// Test concurrent connection handling and resource management
@@ -327,7 +327,7 @@ async fn test_concurrent_connections() {
         });
         assert!(found, "Missing data message for connection {}", i);
         info!(
-            "✅ Connection {} ({}) completed successfully",
+            "Connection {} ({}) completed successfully",
             i, connection_id
         );
     }
@@ -341,7 +341,7 @@ async fn test_concurrent_connections() {
 
     assert_eq!(stats.total_connections, concurrent_count);
     info!(
-        "✅ Concurrent connections test passed with {} connections",
+        "Concurrent connections test passed with {} connections",
         concurrent_count
     );
 }
@@ -403,7 +403,7 @@ async fn test_error_handling_and_cleanup() {
                 .await;
         }
 
-        info!("✅ Non-existent target error handling test passed");
+        info!("Non-existent target error handling test passed");
     }
 
     // Test 2: Stream termination and cleanup
@@ -448,10 +448,10 @@ async fn test_error_handling_and_cleanup() {
         // Drop client stream to simulate client disconnect
         drop(client_stream);
 
-        info!("✅ Stream termination and cleanup test passed");
+        info!("Stream termination and cleanup test passed");
     }
 
-    info!("✅ All error handling and cleanup tests passed");
+    info!("All error handling and cleanup tests passed");
 }
 
 /// Performance benchmark comparing streaming vs synchronous implementation
@@ -519,7 +519,7 @@ async fn test_performance_benchmark() {
     // Calculate throughput
     let throughput_mbps = (data_size as f64 / (1024.0 * 1024.0)) / streaming_duration.as_secs_f64();
 
-    info!("🚀 Streaming Performance Results:");
+    info!("Streaming performance results:");
     info!(
         "   Data size: {} bytes ({:.2} MB)",
         data_size,
@@ -547,7 +547,7 @@ async fn test_performance_benchmark() {
 
     info!("   Final connection stats: {:?}", stats);
 
-    info!("✅ Performance benchmark completed successfully");
+    info!("Performance benchmark completed successfully");
 }
 
 /// Test stream message protocol correctness
@@ -619,7 +619,7 @@ async fn test_stream_message_protocol() {
         }
     }
 
-    info!("✅ Stream message protocol test passed");
+    info!("Stream message protocol test passed");
 }
 
 /// Test connection state management
@@ -691,7 +691,7 @@ async fn test_connection_state_management() {
         ));
     }
 
-    info!("✅ Connection state management test passed");
+    info!("Connection state management test passed");
 }
 
 /// Test graceful shutdown and resource cleanup
@@ -758,7 +758,7 @@ async fn test_graceful_shutdown() {
     // Total tracked connections stay cumulative, but no active streams should remain.
     assert_eq!(stats_after.active_connections, 0);
 
-    info!("✅ Graceful shutdown test passed");
+    info!("Graceful shutdown test passed");
 }
 
 /// Integration test runner that executes all tests with proper setup and teardown
@@ -769,9 +769,9 @@ async fn run_all_integration_tests() {
         .with_env_filter("debug")
         .try_init();
 
-    info!("🚀 Starting streaming integration tests...");
+    info!("Starting streaming integration tests...");
 
     // This is a meta-test that just reports results
     // Individual tests are run separately by the test framework
-    info!("✅ All streaming integration tests completed successfully!");
+    info!("All streaming integration tests completed successfully");
 }

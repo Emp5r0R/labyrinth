@@ -1,4 +1,4 @@
-# Labyrinth v1.0.0
+# Labyrinth v1.1.0
 
 ```
  )   _ ( _        _ o  _  _)_ ( _
@@ -11,7 +11,7 @@
 Labyrinth is a Rust network access and visualization toolkit for authorized
 security testing. It provides an operator server, outbound agents, persistent
 dwellers, IP tunneling, reverse port forwarding, interactive shells, QUIC
-streaming, and read-only network map visualization.
+streaming, automated BloodHound collection, and read-only network map visualization.
 
 Use it only on systems and networks where you have explicit authorization.
 
@@ -27,6 +27,8 @@ Use it only on systems and networks where you have explicit authorization.
   agent interfaces.
 - Portal reverse port forwarding for service-specific access.
 - Smart multi-hop planning with `plan`, `access`, and `chain doctor`.
+- Automated BloodHound (SharpHound) collection with auto-discovery,
+  provisioning from GitHub, secure execution, and result retrieval.
 - Remembered dwellers with callback server configuration, observed parent path
   metadata, low-noise outbound reachability status, hibernation, jitter, and
   queued task polling.

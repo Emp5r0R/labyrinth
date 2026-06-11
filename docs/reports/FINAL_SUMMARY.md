@@ -2,12 +2,12 @@
 
 ## [+] Project Overview
 
-**Labyrinth** is a sophisticated Rust-based network tunneling tool that provides secure, encrypted communication channels. The project demonstrates excellent architecture and async programming patterns but had several critical issues that have been addressed.
+**Labyrinth** is a sophisticated Rust-based network tunneling tool that provides secure, encrypted communication channels. The project demonstrates excellent architecture and async programming patterns, featuring automated AD collection, IP tunneling, and reverse port forwarding.
 
 ## [+] Architecture Assessment
 
 ### Core Design Strengths
-- **Dual-mode operation**: Ariadne (IP tunneling) and Portal (port forwarding)
+- **Multi-mode operation**: Ariadne (IP tunneling), Portal (port forwarding), and BloodHound (AD enumeration)
 - **Async-first design**: Proper use of Tokio for concurrent operations
 - **TLS encryption**: Secure communication channels
 - **Modular structure**: Well-organized code with clear separation of concerns
