@@ -6,8 +6,9 @@ use crate::agent::pty_shell::PtyShellManager;
 use crate::agent::system_info::SystemInfoCollector;
 use crate::error::{LabyrinthError, Result};
 use crate::protocol::{
-    AgentInfo, AgentKind, DwellerInstallReceipt, DwellerInstallRequest, DwellerRuntimeConfig,
-    DwellerServerEndpoint, Message,
+    AgentInfo, AgentKind, DwellerHibernationConfig, DwellerInstallReceipt, DwellerInstallRequest,
+    DwellerRuntimeConfig, DwellerServerEndpoint, DwellerTask, DwellerTaskKind, DwellerTaskResult,
+    Message,
 };
 use crate::security::SecurityManager;
 
@@ -16,12 +17,14 @@ use crate::styling;
 use crate::transport::{QuicBidiStream, TransportMode};
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
+use rand::Rng;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
@@ -39,6 +42,7 @@ pub struct DwellerRunConfig {
     pub auth_key: String,
     pub config_file: Option<String>,
     pub callback_servers: Vec<DwellerServerEndpoint>,
+    pub hibernation: DwellerHibernationConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -50,8 +54,14 @@ struct DwellerRuntimeContext {
 }
 
 static DWELLER_CONTEXT: OnceLock<DwellerRuntimeContext> = OnceLock::new();
-static DWELLER_CALLBACKS: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    OnceLock::new();
+static DWELLER_CALLBACKS: OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, DwellerCallbackSupervisor>>,
+> = OnceLock::new();
+
+struct DwellerCallbackSupervisor {
+    signature: String,
+    handle: JoinHandle<()>,
+}
 
 impl AgentCore {
     pub async fn run_agent(
@@ -285,10 +295,13 @@ impl AgentCore {
             config.listen_addr
         );
 
-        let callbacks =
-            Self::load_dweller_callbacks(config.config_file.as_deref(), config.callback_servers)
-                .await;
-        Self::spawn_dweller_callbacks(callbacks);
+        let runtime_config = Self::load_dweller_runtime_config(
+            config.config_file.as_deref(),
+            config.callback_servers,
+            config.hibernation,
+        )
+        .await;
+        Self::spawn_dweller_callbacks(runtime_config);
 
         loop {
             let (stream, _addr) = listener.accept().await.map_err(LabyrinthError::Io)?;
@@ -314,14 +327,19 @@ impl AgentCore {
         }
     }
 
-    async fn load_dweller_callbacks(
+    async fn load_dweller_runtime_config(
         config_file: Option<&str>,
         mut cli_callbacks: Vec<DwellerServerEndpoint>,
-    ) -> Vec<DwellerServerEndpoint> {
+        cli_hibernation: DwellerHibernationConfig,
+    ) -> DwellerRuntimeConfig {
+        let mut hibernation = cli_hibernation;
         if let Some(path) = config_file {
             match tokio::fs::read_to_string(path).await {
                 Ok(body) => match serde_json::from_str::<DwellerRuntimeConfig>(&body) {
-                    Ok(config) => cli_callbacks.extend(config.callback_servers),
+                    Ok(config) => {
+                        cli_callbacks.extend(config.callback_servers);
+                        hibernation = config.hibernation;
+                    }
                     Err(e) => warn!(
                         "{} Failed to parse dweller config {}: {}",
                         styling::WARNING_INDICATOR,
@@ -338,7 +356,10 @@ impl AgentCore {
                 ),
             }
         }
-        Self::dedupe_callbacks(cli_callbacks)
+        DwellerRuntimeConfig {
+            callback_servers: Self::dedupe_callbacks(cli_callbacks),
+            hibernation: Self::normalize_hibernation(hibernation),
+        }
     }
 
     fn dedupe_callbacks(callbacks: Vec<DwellerServerEndpoint>) -> Vec<DwellerServerEndpoint> {
@@ -356,23 +377,57 @@ impl AgentCore {
         deduped
     }
 
-    fn spawn_dweller_callbacks(callbacks: Vec<DwellerServerEndpoint>) {
-        if callbacks.is_empty() {
+    fn normalize_hibernation(mut config: DwellerHibernationConfig) -> DwellerHibernationConfig {
+        if config.sleep_seconds == 0 {
+            config.sleep_seconds = 60;
+        }
+        if config.jitter_percent > 100 {
+            config.jitter_percent = 100;
+        }
+        if config.task_batch_size == 0 {
+            config.task_batch_size = 10;
+        }
+        config
+    }
+
+    fn spawn_dweller_callbacks(config: DwellerRuntimeConfig) {
+        if config.callback_servers.is_empty() {
             return;
         }
 
-        let seen = DWELLER_CALLBACKS.get_or_init(|| std::sync::Mutex::new(Default::default()));
-        for callback in callbacks {
-            let key = format!("{}|{}", callback.address, callback.transport);
-            if !seen
-                .lock()
-                .expect("dweller callback tracker poisoned")
-                .insert(key)
-            {
-                continue;
+        let callbacks = Self::dedupe_callbacks(config.callback_servers);
+        let desired: std::collections::HashSet<String> =
+            callbacks.iter().map(Self::callback_key).collect();
+        let supervisors =
+            DWELLER_CALLBACKS.get_or_init(|| std::sync::Mutex::new(Default::default()));
+        let mut supervisors = supervisors
+            .lock()
+            .expect("dweller callback tracker poisoned");
+        let stale: Vec<String> = supervisors
+            .keys()
+            .filter(|key| !desired.contains(*key))
+            .cloned()
+            .collect();
+        for key in stale {
+            if let Some(supervisor) = supervisors.remove(&key) {
+                supervisor.handle.abort();
             }
-            tokio::spawn(async move {
-                if let Err(e) = Self::run_dweller_callback(callback).await {
+        }
+
+        for callback in callbacks {
+            let key = Self::callback_key(&callback);
+            let signature = Self::callback_signature(&callback, &config.hibernation);
+            if let Some(existing) = supervisors.get(&key) {
+                if existing.signature == signature {
+                    continue;
+                }
+            }
+            if let Some(existing) = supervisors.remove(&key) {
+                existing.handle.abort();
+            }
+            let hibernation = config.hibernation.clone();
+            let handle = tokio::spawn(async move {
+                if let Err(e) = Self::run_dweller_callback(callback, hibernation).await {
                     warn!(
                         "{} Dweller callback supervisor stopped: {}",
                         styling::WARNING_INDICATOR,
@@ -380,15 +435,46 @@ impl AgentCore {
                     );
                 }
             });
+            supervisors.insert(key, DwellerCallbackSupervisor { signature, handle });
         }
     }
 
-    async fn run_dweller_callback(endpoint: DwellerServerEndpoint) -> Result<()> {
+    fn callback_key(callback: &DwellerServerEndpoint) -> String {
+        format!("{}|{}", callback.address, callback.transport)
+    }
+
+    fn callback_signature(
+        callback: &DwellerServerEndpoint,
+        hibernation: &DwellerHibernationConfig,
+    ) -> String {
+        format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            callback.address,
+            callback.transport,
+            callback.fingerprint.clone().unwrap_or_default(),
+            hibernation.enabled,
+            hibernation.sleep_seconds,
+            hibernation.jitter_percent,
+            hibernation.task_batch_size
+        )
+    }
+
+    async fn run_dweller_callback(
+        endpoint: DwellerServerEndpoint,
+        hibernation: DwellerHibernationConfig,
+    ) -> Result<()> {
         let context = DWELLER_CONTEXT.get().cloned().ok_or_else(|| {
             LabyrinthError::Message("Dweller runtime context missing".to_string())
         })?;
         let transport = match endpoint.transport.to_ascii_lowercase().as_str() {
             "quic" | "quic/udp" => TransportMode::Quic,
+            "tcp" | "tcp/tls" => TransportMode::Tcp,
+            "http" | "https" | "dns" => {
+                return Err(LabyrinthError::Message(format!(
+                    "Dweller callback transport '{}' is configured but no {} tasking listener is enabled in this build",
+                    endpoint.transport, endpoint.transport
+                )));
+            }
             _ => TransportMode::Tcp,
         };
         let port = context
@@ -412,6 +498,15 @@ impl AgentCore {
             styling::SUCCESS_INDICATOR,
             endpoint.address
         );
+        if hibernation.enabled {
+            return Self::run_hibernating_dweller_callback(
+                info,
+                endpoint,
+                transport,
+                Self::normalize_hibernation(hibernation),
+            )
+            .await;
+        }
         Self::run_registered_client(
             info,
             &endpoint.address,
@@ -424,15 +519,180 @@ impl AgentCore {
         .await
     }
 
-    async fn persist_dweller_callbacks(
+    async fn run_hibernating_dweller_callback(
+        agent_info: AgentInfo,
+        endpoint: DwellerServerEndpoint,
+        transport: TransportMode,
+        hibernation: DwellerHibernationConfig,
+    ) -> Result<()> {
+        loop {
+            match Self::run_dweller_poll_cycle(&agent_info, &endpoint, transport, &hibernation)
+                .await
+            {
+                Ok(count) => {
+                    if count > 0 {
+                        info!(
+                            "{} Dweller completed {} queued task(s)",
+                            styling::SUCCESS_INDICATOR,
+                            count
+                        );
+                    }
+                }
+                Err(e) => warn!(
+                    "{} Dweller hibernation check-in failed: {}",
+                    styling::WARNING_INDICATOR,
+                    e
+                ),
+            }
+            let sleep_for = Self::jittered_sleep_duration(&hibernation);
+            info!(
+                "{} Dweller hibernating for {} seconds",
+                styling::SUCCESS_INDICATOR,
+                sleep_for.as_secs()
+            );
+            sleep(sleep_for).await;
+        }
+    }
+
+    async fn run_dweller_poll_cycle(
+        agent_info: &AgentInfo,
+        endpoint: &DwellerServerEndpoint,
+        transport: TransportMode,
+        hibernation: &DwellerHibernationConfig,
+    ) -> Result<usize> {
+        let control_connection = ConnectionManager::establish_control_connection_with_retry(
+            &endpoint.address,
+            None,
+            endpoint.fingerprint.clone(),
+            None,
+            transport,
+            false,
+        )
+        .await?;
+        let mut control_stream = control_connection.stream;
+        Self::write_message(
+            &mut control_stream,
+            &Message::AgentRegister(agent_info.clone()),
+        )
+        .await?;
+
+        let mut reader = tokio::io::BufReader::new(control_stream);
+        let mut buf = Vec::new();
+        reader.read_until(b'\n', &mut buf).await?;
+        let response: Message = serde_json::from_slice(&buf[..buf.len() - 1])?;
+        if !matches!(response, Message::AgentAck) {
+            return Err(LabyrinthError::Message(format!(
+                "Unexpected server response during dweller poll: {:?}",
+                response
+            )));
+        }
+
+        let mut stream = reader.into_inner();
+        Self::write_message(
+            &mut stream,
+            &Message::DwellerPollTasks {
+                dweller_id: agent_info.stable_id.clone().unwrap_or_default(),
+                max_tasks: hibernation.task_batch_size,
+            },
+        )
+        .await?;
+
+        let mut reader = tokio::io::BufReader::new(stream);
+        buf.clear();
+        reader.read_until(b'\n', &mut buf).await?;
+        let tasks_message: Message = serde_json::from_slice(&buf[..buf.len() - 1])?;
+        let tasks = match tasks_message {
+            Message::DwellerTasks { tasks } => tasks,
+            other => {
+                return Err(LabyrinthError::Message(format!(
+                    "Unexpected task poll response: {:?}",
+                    other
+                )))
+            }
+        };
+
+        let mut stream = reader.into_inner();
+        let mut completed = 0;
+        for task in tasks {
+            let result = Self::execute_dweller_task(task).await;
+            Self::write_message(
+                &mut stream,
+                &Message::DwellerTaskResult {
+                    dweller_id: agent_info.stable_id.clone().unwrap_or_default(),
+                    result,
+                },
+            )
+            .await?;
+            completed += 1;
+        }
+        Ok(completed)
+    }
+
+    async fn execute_dweller_task(task: DwellerTask) -> DwellerTaskResult {
+        let finished_at = Self::system_time_string();
+        match task.kind {
+            DwellerTaskKind::Command { command } => {
+                let os = OSDetector::detect_os();
+                let executor = CommandExecutor::new(&os);
+                match executor.execute_command(&command).await {
+                    Ok(output) => DwellerTaskResult {
+                        task_id: task.task_id,
+                        success: true,
+                        output,
+                        error: None,
+                        finished_at,
+                    },
+                    Err(e) => DwellerTaskResult {
+                        task_id: task.task_id,
+                        success: false,
+                        output: String::new(),
+                        error: Some(e.to_string()),
+                        finished_at,
+                    },
+                }
+            }
+            DwellerTaskKind::StartTunnel { .. }
+            | DwellerTaskKind::StopTunnel
+            | DwellerTaskKind::PortalPortForward { .. } => DwellerTaskResult {
+                task_id: task.task_id,
+                success: false,
+                output: String::new(),
+                error: Some(
+                    "Long-lived tunnel and port-forward tasks require hibernation=false so the control channel stays online"
+                        .to_string(),
+                ),
+                finished_at,
+            },
+        }
+    }
+
+    fn jittered_sleep_duration(config: &DwellerHibernationConfig) -> Duration {
+        let base = config.sleep_seconds.max(1);
+        let spread = base.saturating_mul(config.jitter_percent.min(100) as u64) / 100;
+        let min = base.saturating_sub(spread).max(1);
+        let max = base.saturating_add(spread).max(min);
+        let seconds = if min == max {
+            min
+        } else {
+            rand::thread_rng().gen_range(min..=max)
+        };
+        Duration::from_secs(seconds)
+    }
+
+    fn system_time_string() -> String {
+        format!("{:?}", std::time::SystemTime::now())
+    }
+
+    async fn persist_dweller_runtime_config(
         config_file: Option<&str>,
-        callback_servers: Vec<DwellerServerEndpoint>,
+        config: DwellerRuntimeConfig,
     ) -> Result<()> {
         let Some(path) = config_file else {
             return Ok(());
         };
         let config = DwellerRuntimeConfig {
-            callback_servers: Self::dedupe_callbacks(callback_servers),
+            callback_servers: Self::dedupe_callbacks(config.callback_servers),
+            hibernation: Self::normalize_hibernation(config.hibernation),
         };
         if let Some(parent) = Path::new(path).parent() {
             tokio::fs::create_dir_all(parent)
@@ -605,21 +865,23 @@ impl AgentCore {
                 tls_writer.write_all(pong_str.as_bytes()).await?;
                 tls_writer.write_all(b"\n").await?;
             }
-            Message::ConfigureDweller { callback_servers } => {
+            Message::ConfigureDweller { config } => {
                 let response = if let Some(context) = DWELLER_CONTEXT.get() {
-                    let callbacks = Self::dedupe_callbacks(callback_servers);
-                    match Self::persist_dweller_callbacks(
+                    let runtime_config = DwellerRuntimeConfig {
+                        callback_servers: Self::dedupe_callbacks(config.callback_servers),
+                        hibernation: Self::normalize_hibernation(config.hibernation),
+                    };
+                    match Self::persist_dweller_runtime_config(
                         context.config_file.as_deref(),
-                        callbacks.clone(),
+                        runtime_config.clone(),
                     )
                     .await
                     {
                         Ok(()) => {
-                            Self::spawn_dweller_callbacks(callbacks);
+                            Self::spawn_dweller_callbacks(runtime_config);
                             Message::ConfigureDwellerResponse {
                                 success: true,
-                                message: "Dweller callback server configuration updated"
-                                    .to_string(),
+                                message: "Dweller runtime configuration updated".to_string(),
                             }
                         }
                         Err(e) => Message::ConfigureDwellerResponse {
@@ -637,13 +899,13 @@ impl AgentCore {
                 tls_writer.write_all(response_str.as_bytes()).await?;
                 tls_writer.write_all(b"\n").await?;
             }
-            Message::RoomPortForward {
+            Message::PortalPortForward {
                 local_port,
                 target_addr,
                 auth_key: _,
             } => {
                 info!(
-                    "{} Server requested port forwarding: {} -> {}",
+                    "{} Server requested portal forwarding: {} -> {}",
                     styling::SUCCESS_INDICATOR,
                     local_port,
                     target_addr
@@ -915,6 +1177,7 @@ impl AgentCore {
         let config_path = config_dir.join("dweller-config.json");
         let runtime_config = DwellerRuntimeConfig {
             callback_servers: request.callback_servers.clone(),
+            hibernation: request.hibernation.clone(),
         };
         tokio::fs::write(&config_path, serde_json::to_string_pretty(&runtime_config)?)
             .await
@@ -941,6 +1204,7 @@ impl AgentCore {
             service_name: request.service_name,
             callback_servers: request.callback_servers,
             parent_path: request.parent_path,
+            hibernation: request.hibernation,
         })
     }
 

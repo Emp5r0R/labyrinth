@@ -18,14 +18,14 @@
 
 ### Operating Modes
 
-#### 1. **Fullhouse Mode** (IP Tunneling)
+#### 1. **Ariadne Mode** (IP Tunneling)
 - Creates TUN interfaces for full IP-layer packet forwarding
 - Establishes bidirectional encrypted tunnels
 - Handles raw IP packet routing through TLS connections
 - Requires root privileges for TUN interface management
 - Uses iptables for routing and NAT configuration
 
-#### 2. **Room Mode** (Port Forwarding)
+#### 2. **Portal Mode** (Port Forwarding)
 - Simple TCP port forwarding through encrypted channels
 - No special privileges required
 - Multiple port mappings supported
@@ -256,7 +256,7 @@ async fn handle_packet(data: &[u8]) -> Result<()> {
 
 ### System Requirements
 - Linux with TUN/TAP support
-- Root privileges for Fullhouse mode
+- Root privileges for Ariadne mode
 - iptables for routing configuration
 - TLS certificates for secure communication
 

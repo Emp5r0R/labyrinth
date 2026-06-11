@@ -24,7 +24,7 @@ impl PrivilegeManager {
         );
         println!("{}Some features may be limited:", styling::INDENT_LEVEL_1);
         println!(
-            "{}• Fullhouse mode (TUN interface creation)",
+            "{}• Ariadne mode (TUN interface creation)",
             styling::INDENT_LEVEL_2
         );
         println!(

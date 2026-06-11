@@ -1,4 +1,4 @@
-use crate::protocol::DwellerServerEndpoint;
+use crate::protocol::{DwellerHibernationConfig, DwellerServerEndpoint};
 use crate::transport::TransportMode;
 use crate::{agent, server, styling};
 use clap::{Args, Parser, Subcommand};
@@ -128,6 +128,18 @@ pub struct DwellerArgs {
     /// Transport used for dweller callback check-ins
     #[arg(long = "callback-transport", default_value = "tcp")]
     pub callback_transport: String,
+    /// Enable hibernating task polling for callback check-ins
+    #[arg(long, default_value_t = true)]
+    pub hibernation: bool,
+    /// Base hibernation sleep interval in seconds
+    #[arg(long = "sleep", default_value_t = 60)]
+    pub sleep_seconds: u64,
+    /// Hibernation jitter percentage, clamped to 0-100
+    #[arg(long = "jitter", default_value_t = 50)]
+    pub jitter_percent: u8,
+    /// Maximum queued tasks to claim per hibernation check-in
+    #[arg(long = "task-batch-size", default_value_t = 10)]
+    pub task_batch_size: usize,
 }
 
 pub async fn run_labyrinth_cli() -> anyhow::Result<()> {
@@ -245,6 +257,12 @@ async fn run_dweller(args: DwellerArgs) -> anyhow::Result<()> {
                 transport: args.callback_transport.clone(),
             })
             .collect(),
+        hibernation: DwellerHibernationConfig {
+            enabled: args.hibernation,
+            sleep_seconds: args.sleep_seconds,
+            jitter_percent: args.jitter_percent,
+            task_batch_size: args.task_batch_size,
+        },
     })
     .await?;
     Ok(())

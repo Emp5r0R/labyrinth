@@ -39,14 +39,14 @@ This report validates all improvements implemented for the Labyrinth project acc
 
 **Status: PASSED**
 
-- ✅ **"Fullhouse (Tunnel)" Terminology**: Updated throughout the UI
-- ✅ **"Room (Port Forwarding)" Terminology**: Updated throughout the UI
+- ✅ **"Ariadne (Tunnel)" Terminology**: Updated throughout the UI
+- ✅ **"Portal (Port Forwarding)" Terminology**: Updated throughout the UI
 - ✅ **Consistent Usage**: Terminology is consistent across all user-facing messages
 - ✅ **Help Text Updates**: Command descriptions updated with new terminology
 
 **Evidence:**
-- Fullhouse terminology in `src/server/ui.rs` line 71, `src/server/mod.rs` line 62
-- Room terminology in `src/server/mod.rs` lines 65, 147
+- Ariadne terminology in `src/server/ui.rs` line 71, `src/server/mod.rs` line 62
+- Portal terminology in `src/server/mod.rs` lines 65, 147
 - Help text updates in `src/server/mod.rs` lines 62-65
 - Consistent usage across tunnel manager and other components
 
@@ -126,8 +126,8 @@ This report validates all improvements implemented for the Labyrinth project acc
 | 2.2 - Agent removal from list | ✅ PASS | cleanup_dead_agents function |
 | 2.3 - Current agents display | ✅ PASS | Agent list filtering |
 | 2.4 - Automatic cleanup | ✅ PASS | Periodic health checks |
-| 3.1 - "Fullhouse (Tunnel)" terminology | ✅ PASS | UI updates throughout |
-| 3.2 - "Room (Port Forwarding)" terminology | ✅ PASS | UI updates throughout |
+| 3.1 - "Ariadne (Tunnel)" terminology | ✅ PASS | UI updates throughout |
+| 3.2 - "Portal (Port Forwarding)" terminology | ✅ PASS | UI updates throughout |
 | 3.3 - Consistent terminology | ✅ PASS | Comprehensive terminology usage |
 | 3.4 - Clear functionality indication | ✅ PASS | Descriptive labels |
 | 4.1 - OS detection | ✅ PASS | OSDetector implementation |

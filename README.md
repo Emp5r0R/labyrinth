@@ -56,14 +56,14 @@ labyrinth →
 ```
 
 Open `http://127.0.0.1:44777` on the server host for the read-only browser
-network map. It updates automatically as agents, dwellers, Fullhouse tunnels,
-Room port forwards, and detected networks change.
+network map. It updates automatically as agents, dwellers, Ariadne tunnels,
+Portal port forwards, and detected networks change.
 
 > [!IMPORTANT]
 > **Get the fingerprint!** Use the `cert` command to see the certificate fingerprint you'll need for secure agent connections.
 
 > [!WARNING]
-> **Running without sudo?** You'll see a warning about limited functionality. Fullhouse mode requires root privileges for TUN interface creation.
+> **Running without sudo?** You'll see a warning about limited functionality. Ariadne mode requires root privileges for TUN interface creation.
 
 ### 3. Connect an Agent (On Target Machine)
 
@@ -85,19 +85,19 @@ labyrinth → select          # Choose which machine to work with
 labyrinth → plan 10.10.0.0/24
 labyrinth → access 10.10.0.0/24
 labyrinth → map             # Visualize agents, dwellers, networks, tunnels, and forwards
-labyrinth → fullhouse       # Start Fullhouse Mode (IP Tunneling)
-labyrinth → room            # Start Room Mode (Port Forwarding)
+labyrinth → ariadne       # Start Ariadne Mode (IP Tunneling)
+labyrinth → portal            # Start Portal Mode (Port Forwarding)
 ```
 
-Fullhouse automatically detects likely target CIDRs from the selected agent's
+Ariadne automatically detects likely target CIDRs from the selected agent's
 interface addresses. The `agents`, `info`, and `status` commands show the best
-auto route, and the `fullhouse` prompt uses it as the default. Type a different
+auto route, and the `ariadne` prompt uses it as the default. Type a different
 CIDR if you need to pivot through another client network.
 
 For chained environments, prefer `plan <ip|cidr>` and `access <ip|cidr>`.
 `plan` shows the server-selected path without changing state. `access` previews
 the same plan, asks for confirmation, then reuses active tunnels, starts the
-needed Fullhouse tunnel, and connects remembered dwellers when they become
+needed Ariadne tunnel, and connects remembered dwellers when they become
 reachable through an active parent route.
 
 ## 📖 How to Use Every Feature
@@ -124,7 +124,7 @@ sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server \
 ```
 **What it does:** Listens for agents over QUIC/UDP instead of the default
 TCP/TLS transport. Use this with agents started with `--transport quic`. For
-QUIC agents, Room and Linux Fullhouse open a separate QUIC bidirectional stream
+QUIC agents, Portal and Linux Ariadne open a separate QUIC bidirectional stream
 for each proxied TCP connection.
 
 #### Start Server (Browser Map Address)
@@ -204,7 +204,7 @@ LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
 ```
 **What it does:** Connects to a QUIC-enabled server over UDP. This keeps the
 same certificate fingerprint verification model as TCP/TLS and enables native
-per-connection QUIC streams for Room and Linux Fullhouse traffic.
+per-connection QUIC streams for Portal and Linux Ariadne traffic.
 
 #### Connection Through Proxy
 ```bash
@@ -251,14 +251,14 @@ Agent 1
   Name:    target-host
   System:  Linux/x86_64
   Status:  Online
-  Fullhouse (Tunnel): Inactive
+  Ariadne (Tunnel): Inactive
   ───────────────────────
 Agent 2
   ID:      def67890
   Name:    web-server
   System:  Windows/amd64
   Status:  Online
-  Fullhouse (Tunnel): Active (192.168.1.0/24)
+  Ariadne (Tunnel): Active (192.168.1.0/24)
 ```
 
 #### `select` - Choose a Machine to Work With
@@ -296,7 +296,7 @@ Network Interfaces
 labyrinth → map
 ```
 **What it shows:** A read-only BloodHound-style terminal graph of connected
-agents, dwellers, detected networks, active Fullhouse tunnels, Room port
+agents, dwellers, detected networks, active Ariadne tunnels, Portal port
 forwards, shared multi-network pivots, and route conflicts. Edges are labeled
 with transport context such as `tls/enc` and `local/unenc`.
 
@@ -324,16 +324,16 @@ open http://127.0.0.1:44777
 ```
 **What it shows:** A live browser visualization of the same server snapshot:
 connection status, agents, dwellers, detected CIDRs, multi-network pivots,
-route conflicts, Fullhouse tunnels, Room forwards, and encrypted versus
+route conflicts, Ariadne tunnels, Portal forwards, and encrypted versus
 local/unencrypted edges. The map supports pan, zoom, fit-to-view, node
 selection, and smart access suggestions. Mutation actions remain terminal-first
 in this version.
 
-#### `tunnel` or `fullhouse` - Start Fullhouse Mode (IP Tunneling)
+#### `tunnel` or `ariadne` - Start Ariadne Mode (IP Tunneling)
 ```bash
 labyrinth → tunnel
 # or
-labyrinth → fullhouse
+labyrinth → ariadne
 ```
 **What it asks:**
 - Target subnet (auto-detected from the selected agent when possible)
@@ -341,11 +341,11 @@ labyrinth → fullhouse
 
 **What it does:** Creates a tunnel so you can access the entire network
 
-#### `forward` or `room` - Start Room Mode (Port Forwarding)
+#### `forward` or `portal` - Start Portal Mode (Port Forwarding)
 ```bash
 labyrinth → forward
 # or
-labyrinth → room
+labyrinth → portal
 ```
 **What it asks:**
 - Port mappings (like `8080:192.168.1.50:80`)
@@ -369,7 +369,7 @@ Active connections:  1
 Selected Agent
 ──────────────
 Agent:               target-host (abc12345)
-Fullhouse (Tunnel):  Active - 192.168.1.0/24
+Ariadne (Tunnel):  Active - 192.168.1.0/24
 System:              Linux/x86_64
 ```
 
@@ -488,7 +488,7 @@ sudo ./labyrinth server
 ```bash
 labyrinth → agents          # See office computer
 labyrinth → select          # Choose it
-labyrinth → fullhouse       # Start tunnel
+labyrinth → ariadne       # Start tunnel
 # Enter: 192.168.1.0/24
 # Enter: office
 ```
@@ -516,7 +516,7 @@ sudo ./labyrinth server
 
 **Step 3:** Set up port forwarding
 ```bash
-labyrinth → room
+labyrinth → portal
 # Enter: 8080:192.168.1.50:80
 # Enter: done
 ```
@@ -633,12 +633,25 @@ LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent --retry --server IP:44
 | `--config-file` | Persistent dweller runtime config | `--config-file /etc/labyrinth/branch/dweller-config.json` |
 | `--callback-server` | Server the dweller should check in to when reachable | `--callback-server 203.0.113.10:44344` |
 | `--callback-fingerprint` | Certificate fingerprint for callback server | `--callback-fingerprint a1b2c3...` |
-| `--callback-transport` | Callback transport, `tcp` or `quic` | `--callback-transport tcp` |
+| `--callback-transport` | Callback transport label, `tcp`, `quic`, `http`, `https`, or `dns` | `--callback-transport tcp` |
+| `--hibernation` | Enable or disable sleep/poll mode for callback check-ins | `--hibernation false` |
+| `--sleep` | Base hibernation sleep interval in seconds | `--sleep 60` |
+| `--jitter` | Hibernation jitter percentage, clamped to 0-100 | `--jitter 50` |
+| `--task-batch-size` | Maximum queued tasks claimed per check-in | `--task-batch-size 10` |
 
 Agents and dwellers report a low-noise outbound reachability status during
 registration. The check uses the local default route and a short TCP check to
 the configured Labyrinth server only; it does not probe unrelated public
 services by default.
+
+Dwellers default to hibernation mode when they have callback servers. A
+hibernating dweller sleeps, checks in to the configured server, claims queued
+tasks, sends results, then sleeps again. The default policy is `sleep=60s`,
+`jitter=50%`, and `task-batch-size=10`; `--hibernation false` keeps the
+callback connection online for long-lived tunnels and port forwards. TCP/TLS
+and QUIC callbacks use the current Labyrinth control protocol. HTTP, HTTPS, and
+DNS are accepted as runtime transport labels for planning/configuration, but
+they require dedicated server listeners before task transport is active.
 
 ### Interactive Commands
 | Command | What it does |
@@ -649,7 +662,9 @@ services by default.
 | `select` | Choose machine to control |
 | `connect-dweller` | Connect to a remembered dweller |
 | `drop-dweller` | Install a persistent dweller through the selected agent |
-| `configure-dweller` | Change a remembered dweller callback server |
+| `configure-dweller` | Change callback server, transport, sleep, jitter, and hibernation |
+| `task-dweller` | Queue a command task for a hibernating dweller |
+| `dweller-tasks` | Show queued dweller tasks and results |
 | `forget-dweller` | Remove a remembered dweller |
 | `info` | Show machine details |
 | `topology` or `routes` | Show route ownership, shared networks, and conflicts |
@@ -658,8 +673,8 @@ services by default.
 | `chain status` | Show active tunnels, remembered dwellers, and reachability |
 | `chain doctor [ip\|cidr]` | Diagnose why a target or dweller is unreachable |
 | `map` or `network-map` | Show a read-only network graph with tunnels, dwellers, and forwards |
-| `tunnel` or `fullhouse` | Start Fullhouse mode (IP tunneling) |
-| `forward` or `room` | Start Room mode (Port forwarding) |
+| `tunnel` or `ariadne` | Start Ariadne mode (IP tunneling) |
+| `forward` or `portal` | Start Portal mode (Port forwarding) |
 | `commands` or `cmd` | Execute system commands on agent |
 | `upload` | Upload file to selected agent |
 | `download` | Download file from selected agent |
@@ -710,9 +725,9 @@ labyrinth/src/
 │   ├── core.rs            # Server state management
 │   ├── dweller_manager.rs # Dweller install/connect workflows
 │   ├── dweller_registry.rs # Persisted dweller registry
-│   ├── netstack_bridge_windows.rs # Windows Fullhouse bridge
+│   ├── netstack_bridge_windows.rs # Windows Ariadne bridge
 │   ├── privileges.rs      # Sudo privilege detection
-│   ├── reverse_port_forward.rs # Room port forwarding
+│   ├── reverse_port_forward.rs # Portal port forwarding
 │   ├── tunnel_manager.rs  # Tunnel operations
 │   └── ui.rs              # User interface operations
 ├── streaming/              # Streaming architecture
@@ -750,7 +765,7 @@ labyrinth/src/
 - **Topology Awareness**: Route ownership and shared-network detection for multi-hop planning
 - **Improved Port Forwarding**: Enhanced reliability and proper traffic routing
 - **OS-Aware Commands**: Automatic detection of Linux/Windows systems with appropriate command sets
-- **Clean Terminology**: "Fullhouse" for tunneling, "Room" for port forwarding
+- **Clean Terminology**: "Ariadne" for tunneling, "Portal" for port forwarding
 
 ---
 
@@ -768,12 +783,12 @@ labyrinth/src/
  
 ---
 
-## 🌐 Fullhouse Netstack (Server-Only)
+## 🌐 Ariadne Netstack (Server-Only)
 
-Labyrinth’s Fullhouse mode is designed for L3 access without requiring root on the agent. To complete TCP handshakes and route arbitrary flows originating from the TUN, the server can run a small userland TCP/IP stack and bridge payloads to the agent over the streaming channel.
+Labyrinth’s Ariadne mode is designed for L3 access without requiring root on the agent. To complete TCP handshakes and route arbitrary flows originating from the TUN, the server can run a small userland TCP/IP stack and bridge payloads to the agent over the streaming channel.
 
 - Implementation: `src/server/netstack_bridge_windows.rs` on Windows; Linux
-  Fullhouse remains in `src/server/tunnel_manager.rs`.
+  Ariadne remains in `src/server/tunnel_manager.rs`.
 - Build with smoltcp backend:
   - Build: `cargo build --features netstack_smoltcp --bins`
   - Run wrapper: `cargo run --features netstack_smoltcp --bin labyrinth -- server`

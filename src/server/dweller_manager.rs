@@ -1,6 +1,7 @@
 use crate::error::{LabyrinthError, Result};
 use crate::protocol::{
-    AgentInfo, AgentKind, DwellerInstallRequest, DwellerPathHop, DwellerServerEndpoint, Message,
+    AgentInfo, AgentKind, DwellerHibernationConfig, DwellerInstallRequest, DwellerPathHop,
+    DwellerRuntimeConfig, DwellerServerEndpoint, DwellerTaskKind, Message,
 };
 use crate::security::SecurityManager;
 use crate::server::agent_manager::AgentManager;
@@ -10,7 +11,7 @@ use crate::server::dweller_registry::{DwellerRecord, DwellerRegistry};
 use crate::server::topology::TopologyManager;
 use crate::styling;
 use colored::Colorize;
-use dialoguer::{Input, Select};
+use dialoguer::{Confirm, Input, Select};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +31,7 @@ struct DwellerInstallConfig {
     cert: crate::security::GeneratedCertificate,
     callback_servers: Vec<DwellerServerEndpoint>,
     parent_path: Vec<DwellerPathHop>,
+    hibernation: DwellerHibernationConfig,
 }
 
 impl DwellerManager {
@@ -83,6 +85,45 @@ impl DwellerManager {
                     .join(", ")
             };
             println!("{}", styling::format_field("Callback:", &callbacks));
+            let hibernation = if record.hibernation.enabled {
+                format!(
+                    "enabled sleep={}s jitter={}%% batch={}",
+                    record.hibernation.sleep_seconds,
+                    record.hibernation.jitter_percent,
+                    record.hibernation.task_batch_size
+                )
+            } else {
+                "disabled (persistent callback)".to_string()
+            };
+            println!("{}", styling::format_field("Hibernation:", &hibernation));
+            let pending = record
+                .tasks
+                .iter()
+                .filter(|task| matches!(task.status, crate::protocol::DwellerTaskStatus::Pending))
+                .count();
+            let running = record
+                .tasks
+                .iter()
+                .filter(|task| matches!(task.status, crate::protocol::DwellerTaskStatus::Running))
+                .count();
+            let failed = record
+                .tasks
+                .iter()
+                .filter(|task| matches!(task.status, crate::protocol::DwellerTaskStatus::Failed))
+                .count();
+            println!(
+                "{}",
+                styling::format_field(
+                    "Tasks:",
+                    &format!(
+                        "{} total, {} pending, {} running, {} failed",
+                        record.tasks.len(),
+                        pending,
+                        running,
+                        failed
+                    )
+                )
+            );
             if !record.path.is_empty() {
                 let path = record
                     .path
@@ -123,6 +164,114 @@ impl DwellerManager {
         Ok(())
     }
 
+    pub async fn enqueue_dweller_task(server: Arc<LabyrinthServer>) -> Result<()> {
+        let Some(record) = Self::select_record(&server, "Queue a task for which dweller?").await?
+        else {
+            return Ok(());
+        };
+        let task_types = vec!["command"];
+        let task_selection = Select::new()
+            .with_prompt("Task type")
+            .items(&task_types)
+            .default(0)
+            .interact()
+            .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
+        let task_kind = match task_types[task_selection] {
+            "command" => {
+                let command: String = Input::new()
+                    .with_prompt("Command")
+                    .interact_text()
+                    .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+                if command.trim().is_empty() {
+                    return Err(LabyrinthError::Message(
+                        "Command task cannot be empty".to_string(),
+                    ));
+                }
+                DwellerTaskKind::Command {
+                    command: command.trim().to_string(),
+                }
+            }
+            _ => unreachable!(),
+        };
+
+        let Some(task) = server
+            .enqueue_dweller_task(&record.dweller_id, task_kind)
+            .await?
+        else {
+            return Err(LabyrinthError::Message(format!(
+                "Dweller {} is no longer remembered",
+                record.dweller_name
+            )));
+        };
+
+        println!(
+            "{}",
+            styling::format_success_msg(
+                styling::SUCCESS_INDICATOR,
+                &format!("Queued task {} for {}", task.task_id, record.dweller_name)
+            )
+        );
+        Ok(())
+    }
+
+    pub async fn list_dweller_tasks(server: &LabyrinthServer) -> Result<()> {
+        let Some(record) = Self::select_record(server, "Show tasks for which dweller?").await?
+        else {
+            return Ok(());
+        };
+        if record.tasks.is_empty() {
+            println!("{}", styling::format_hint("No queued task history."));
+            return Ok(());
+        }
+        println!(
+            "\n{}",
+            styling::format_section_title("Dweller Tasks", &record.dweller_name)
+        );
+        println!("{}", styling::format_separator(styling::SECTION_SEPARATOR));
+        for task in record.tasks.iter().rev().take(25) {
+            let description = match &task.kind {
+                DwellerTaskKind::Command { command } => format!("command: {}", command),
+                DwellerTaskKind::StartTunnel { subnet, tun_name } => {
+                    format!("start tunnel {} ({})", subnet, tun_name)
+                }
+                DwellerTaskKind::StopTunnel => "stop tunnel".to_string(),
+                DwellerTaskKind::PortalPortForward {
+                    local_port,
+                    target_addr,
+                    ..
+                } => format!("portal {} -> {}", local_port, target_addr),
+            };
+            println!("{}", styling::format_field("Task:", &task.task_id));
+            println!(
+                "{}",
+                styling::format_field("Status:", &format!("{:?}", task.status))
+            );
+            println!("{}", styling::format_field("Type:", &description));
+            println!(
+                "{}",
+                styling::format_field("Attempts:", &task.attempts.to_string())
+            );
+            if let Some(result) = &task.result {
+                println!(
+                    "{}",
+                    styling::format_field("Success:", &result.success.to_string())
+                );
+                if let Some(error) = &result.error {
+                    println!("{}", styling::format_field("Error:", error));
+                }
+                if !result.output.trim().is_empty() {
+                    println!("{}", styling::format_field("Output:", result.output.trim()));
+                }
+            }
+            println!(
+                "{}{}",
+                styling::INDENT_LEVEL_1,
+                styling::format_separator(styling::SUBSECTION_SEPARATOR)
+            );
+        }
+        Ok(())
+    }
+
     pub async fn configure_dweller(server: Arc<LabyrinthServer>) -> Result<()> {
         let Some(record) = Self::select_record(&server, "Configure which dweller?").await? else {
             return Ok(());
@@ -139,20 +288,37 @@ impl DwellerManager {
             .allow_empty(true)
             .interact_text()
             .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+        let callback_transport: String = Input::new()
+            .with_prompt("Callback transport (tcp, quic, http, https, dns)")
+            .default(
+                record
+                    .callback_servers
+                    .first()
+                    .map(|endpoint| endpoint.transport.clone())
+                    .unwrap_or_else(|| "tcp".to_string()),
+            )
+            .interact_text()
+            .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
         let callback_servers = if callback_server.trim().is_empty() {
             Vec::new()
         } else {
             vec![DwellerServerEndpoint {
                 address: callback_server.trim().to_string(),
                 fingerprint: Self::current_server_fingerprint().ok(),
-                transport: "tcp".to_string(),
+                transport: Self::normalize_callback_transport(&callback_transport)?,
             }]
+        };
+        let hibernation = Self::prompt_hibernation(record.hibernation.clone())?;
+        let runtime_config = DwellerRuntimeConfig {
+            callback_servers: callback_servers.clone(),
+            hibernation: hibernation.clone(),
         };
 
         {
             let mut registry = server.dweller_registry().write().await;
             if let Some(existing) = registry.dwellers.get_mut(&record.dweller_id) {
                 existing.callback_servers = callback_servers.clone();
+                existing.hibernation = hibernation;
             }
             registry.save()?;
         }
@@ -168,7 +334,7 @@ impl DwellerManager {
             *command_response.lock().await = Some(tx);
             sender
                 .send(Message::ConfigureDweller {
-                    callback_servers: callback_servers.clone(),
+                    config: runtime_config,
                 })
                 .await
                 .map_err(|e| {
@@ -377,15 +543,25 @@ impl DwellerManager {
             .allow_empty(true)
             .interact_text()
             .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+        let callback_transport: String = if callback_server.trim().is_empty() {
+            "tcp".to_string()
+        } else {
+            Input::new()
+                .with_prompt("Callback transport (tcp, quic, http, https, dns)")
+                .default("tcp".to_string())
+                .interact_text()
+                .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?
+        };
         let callback_servers = if callback_server.trim().is_empty() {
             Vec::new()
         } else {
             vec![DwellerServerEndpoint {
                 address: callback_server.trim().to_string(),
                 fingerprint: Self::current_server_fingerprint().ok(),
-                transport: "tcp".to_string(),
+                transport: Self::normalize_callback_transport(&callback_transport)?,
             }]
         };
+        let hibernation = Self::prompt_hibernation(DwellerHibernationConfig::default())?;
 
         let dweller_id = Self::generate_id();
         let auth_key = Self::generate_secret();
@@ -400,6 +576,7 @@ impl DwellerManager {
             cert,
             callback_servers,
             parent_path,
+            hibernation,
         })?;
 
         let response =
@@ -534,6 +711,7 @@ impl DwellerManager {
             service_name,
             callback_servers: config.callback_servers,
             parent_path: config.parent_path,
+            hibernation: config.hibernation,
         })
     }
 
@@ -557,6 +735,52 @@ impl DwellerManager {
     fn current_server_fingerprint() -> Result<String> {
         let cert_pem = std::fs::read_to_string("cert.pem").map_err(LabyrinthError::Io)?;
         CertificateManager::get_fingerprint_from_pem(&cert_pem)
+    }
+
+    fn prompt_hibernation(default: DwellerHibernationConfig) -> Result<DwellerHibernationConfig> {
+        let enabled = Confirm::new()
+            .with_prompt("Enable hibernation task polling")
+            .default(default.enabled)
+            .interact()
+            .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+        if !enabled {
+            return Ok(DwellerHibernationConfig { enabled, ..default });
+        }
+        let sleep_seconds: u64 = Input::new()
+            .with_prompt("Hibernation sleep seconds")
+            .default(default.sleep_seconds.max(1))
+            .interact_text()
+            .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+        let jitter_percent: u8 = Input::new()
+            .with_prompt("Hibernation jitter percent")
+            .default(default.jitter_percent.min(100))
+            .interact_text()
+            .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+        let task_batch_size: usize = Input::new()
+            .with_prompt("Max tasks per check-in")
+            .default(default.task_batch_size.max(1))
+            .interact_text()
+            .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+
+        Ok(DwellerHibernationConfig {
+            enabled,
+            sleep_seconds: sleep_seconds.max(1),
+            jitter_percent: jitter_percent.min(100),
+            task_batch_size: task_batch_size.max(1),
+        })
+    }
+
+    fn normalize_callback_transport(value: &str) -> Result<String> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "tcp" | "tcp/tls" => Ok("tcp".to_string()),
+            "quic" | "quic/udp" => Ok("quic".to_string()),
+            "http" | "https" | "dns" => Ok(normalized),
+            _ => Err(LabyrinthError::Message(format!(
+                "Unsupported callback transport '{}'. Use tcp, quic, http, https, or dns.",
+                value
+            ))),
+        }
     }
 
     fn validate_dweller_identity(record: &DwellerRecord, info: &AgentInfo) -> Result<()> {
@@ -597,7 +821,7 @@ fn chrono_like_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{DwellerInstallReceipt, NetworkInterface};
+    use crate::protocol::{DwellerHibernationConfig, DwellerInstallReceipt, NetworkInterface};
 
     fn sample_record() -> DwellerRecord {
         DwellerRecord::from_receipt(
@@ -615,6 +839,7 @@ mod tests {
                 service_name: "labyrinth-dweller-alpha".to_string(),
                 callback_servers: Vec::new(),
                 parent_path: Vec::new(),
+                hibernation: DwellerHibernationConfig::default(),
             },
             "secret".to_string(),
         )
@@ -655,6 +880,7 @@ mod tests {
             cert,
             callback_servers: Vec::new(),
             parent_path: Vec::new(),
+            hibernation: DwellerHibernationConfig::default(),
         })
         .unwrap();
 
@@ -677,6 +903,7 @@ mod tests {
             cert,
             callback_servers: Vec::new(),
             parent_path: Vec::new(),
+            hibernation: DwellerHibernationConfig::default(),
         })
         .unwrap();
 
@@ -698,6 +925,7 @@ mod tests {
             cert,
             callback_servers: Vec::new(),
             parent_path: Vec::new(),
+            hibernation: DwellerHibernationConfig::default(),
         })
         .unwrap_err();
 

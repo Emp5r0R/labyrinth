@@ -47,7 +47,7 @@ impl TunnelManager {
             )));
         }
 
-        Self::run_fullhouse_preflight()?;
+        Self::run_ariadne_preflight()?;
 
         let agent_sender = {
             let agents = server.agents().read().await;
@@ -117,11 +117,11 @@ impl TunnelManager {
     pub async fn start_tunnel(server: &LabyrinthServer) -> Result<()> {
         let current_id = server.current_agent().read().await.clone();
         if let Some(agent_id) = current_id {
-            // Display Fullhouse Mode header
+            // Display Ariadne Mode header
             println!(
                 "\n{}",
                 styling::format_section_title(
-                    "Fullhouse Mode",
+                    "Ariadne Mode",
                     "IP tunneling and ligolo-style pivoting"
                 )
             );
@@ -129,7 +129,7 @@ impl TunnelManager {
             println!("{}", styling::format_hint("The selected agent stays untouched until local preflight and route setup succeed."));
             println!();
 
-            Self::run_fullhouse_preflight()?;
+            Self::run_ariadne_preflight()?;
             println!();
 
             let (agent_sender, route_candidates) = {
@@ -251,7 +251,7 @@ impl TunnelManager {
                 agent.tun_name = Some(tun_name.clone());
 
                 println!(
-                    "\n{} Fullhouse Mode Active",
+                    "\n{} Ariadne Mode Active",
                     styling::format_success_msg(styling::CHECK_INDICATOR, "")
                         .trim_start()
                         .bold()
@@ -265,7 +265,7 @@ impl TunnelManager {
                 println!(
                     "{}",
                     styling::format_hint(
-                        "Linux Fullhouse currently proxies TCP flows. Use connect-style tooling; ICMP/UDP are not redirected yet."
+                        "Linux Ariadne currently proxies TCP flows. Use connect-style tooling; ICMP/UDP are not redirected yet."
                     )
                 );
                 println!();
@@ -286,10 +286,10 @@ impl TunnelManager {
         Ok(())
     }
 
-    fn run_fullhouse_preflight() -> Result<()> {
+    fn run_ariadne_preflight() -> Result<()> {
         println!(
             "{}",
-            styling::format_section_title("Fullhouse Preflight", "host capability checks")
+            styling::format_section_title("Ariadne Preflight", "host capability checks")
         );
         println!("{}", "──────────────────".bright_black());
 
@@ -307,7 +307,7 @@ impl TunnelManager {
                     )
                 );
                 return Err(LabyrinthError::Message(
-                    PrivilegeManager::create_sudo_error("Fullhouse mode"),
+                    PrivilegeManager::create_sudo_error("Ariadne mode"),
                 ));
             }
 
@@ -325,7 +325,7 @@ impl TunnelManager {
                     println!(
                         "{}",
                         styling::format_hint(
-                            "Install the missing networking utility before enabling Fullhouse."
+                            "Install the missing networking utility before enabling Ariadne."
                         )
                     );
                     return Err(LabyrinthError::Message(format!(
@@ -356,7 +356,7 @@ impl TunnelManager {
                     )
                 );
                 return Err(LabyrinthError::Message(
-                    "Fullhouse mode on Windows requires running as Administrator".to_string(),
+                    "Ariadne mode on Windows requires running as Administrator".to_string(),
                 ));
             }
 
@@ -372,7 +372,7 @@ impl TunnelManager {
                     )
                 );
                 return Err(LabyrinthError::Message(
-                    "wintun.dll is required for Windows Fullhouse mode. Place it next to labyrinth.exe or in PATH."
+                    "wintun.dll is required for Windows Ariadne mode. Place it next to labyrinth.exe or in PATH."
                         .to_string(),
                 ));
             }
@@ -388,7 +388,7 @@ impl TunnelManager {
                     )
                 );
                 return Err(LabyrinthError::Message(
-                    "PowerShell is required for Windows Fullhouse route setup".to_string(),
+                    "PowerShell is required for Windows Ariadne route setup".to_string(),
                 ));
             }
         }
@@ -450,8 +450,8 @@ impl TunnelManager {
                     return Ok(());
                 }
 
-                if server.has_port_forwarding(&agent_id).await {
-                    let stopped_ports = server.stop_port_forwarding_for_agent(&agent_id).await;
+                if server.has_portal_forwarding(&agent_id).await {
+                    let stopped_ports = server.stop_portal_forwarding_for_agent(&agent_id).await;
 
                     let connection_ids = server.connection_ids_for_agent(&agent_id).await;
                     if let Some(stream_manager) = server.get_stream_manager().await {
@@ -577,7 +577,7 @@ impl TunnelManager {
         // Check for sudo privileges before attempting tunnel operations
         if !PrivilegeManager::has_sudo_privileges() {
             return Err(LabyrinthError::Message(
-                PrivilegeManager::create_sudo_error("Fullhouse mode"),
+                PrivilegeManager::create_sudo_error("Ariadne mode"),
             ));
         }
 
@@ -633,7 +633,7 @@ impl TunnelManager {
             ],
         )?;
 
-        let proxy_task = Self::spawn_linux_fullhouse_proxy(
+        let proxy_task = Self::spawn_linux_ariadne_proxy(
             server,
             agent_id.to_string(),
             agent_sender.clone(),
@@ -641,7 +641,7 @@ impl TunnelManager {
         )
         .await?;
         server
-            .register_fullhouse_listener(agent_id.to_string(), proxy_port, proxy_task)
+            .register_ariadne_listener(agent_id.to_string(), proxy_port, proxy_task)
             .await;
 
         println!(
@@ -706,7 +706,7 @@ impl TunnelManager {
     }
 
     #[cfg(target_os = "linux")]
-    async fn spawn_linux_fullhouse_proxy(
+    async fn spawn_linux_ariadne_proxy(
         server: &LabyrinthServer,
         agent_id: String,
         agent_sender: tokio::sync::mpsc::Sender<Message>,
@@ -722,7 +722,7 @@ impl TunnelManager {
                 let (client_socket, client_addr) = match listener.accept().await {
                     Ok(accepted) => accepted,
                     Err(e) => {
-                        warn!("Fullhouse proxy accept error on {}: {}", proxy_port, e);
+                        warn!("Ariadne proxy accept error on {}: {}", proxy_port, e);
                         break;
                     }
                 };
@@ -736,7 +736,7 @@ impl TunnelManager {
                 let agent_sender = agent_sender.clone();
                 let agent_id = agent_id.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = Self::bridge_fullhouse_connection(
+                    if let Err(e) = Self::bridge_ariadne_connection(
                         server,
                         agent_id,
                         agent_sender,
@@ -747,7 +747,7 @@ impl TunnelManager {
                     )
                     .await
                     {
-                        warn!("Fullhouse proxy bridge failed: {}", e);
+                        warn!("Ariadne proxy bridge failed: {}", e);
                     }
                 });
             }
@@ -781,7 +781,7 @@ impl TunnelManager {
     }
 
     #[cfg(target_os = "linux")]
-    async fn bridge_fullhouse_connection(
+    async fn bridge_ariadne_connection(
         server: Arc<LabyrinthServer>,
         agent_id: String,
         agent_sender: tokio::sync::mpsc::Sender<Message>,
@@ -808,7 +808,7 @@ impl TunnelManager {
             .track_existing_connection(connection_id, client_addr, mapping.clone())
             .await
             .map_err(|e| {
-                LabyrinthError::Message(format!("Failed to track Fullhouse connection: {}", e))
+                LabyrinthError::Message(format!("Failed to track Ariadne connection: {}", e))
             })?;
         server
             .register_connection_owner(connection_id, agent_id.clone())
@@ -835,7 +835,7 @@ impl TunnelManager {
                 let _ = connection_manager.cleanup_connection(&connection_id).await;
                 let _ = server.unregister_connection_owner(&connection_id).await;
                 return Err(LabyrinthError::Message(format!(
-                    "Failed to create QUIC Fullhouse stream: {}",
+                    "Failed to create QUIC Ariadne stream: {}",
                     e
                 )));
             }
@@ -849,7 +849,7 @@ impl TunnelManager {
             let _ = connection_manager.cleanup_connection(&connection_id).await;
             let _ = server.unregister_connection_owner(&connection_id).await;
             return Err(LabyrinthError::Message(format!(
-                "Failed to create Fullhouse stream: {}",
+                "Failed to create Ariadne stream: {}",
                 e
             )));
         }
@@ -865,7 +865,7 @@ impl TunnelManager {
             let _ = connection_manager.cleanup_connection(&connection_id).await;
             let _ = server.unregister_connection_owner(&connection_id).await;
             return Err(LabyrinthError::Message(format!(
-                "Failed to send Fullhouse setup to agent: {}",
+                "Failed to send Ariadne setup to agent: {}",
                 e
             )));
         }
@@ -915,7 +915,7 @@ impl TunnelManager {
             tun_name, subnet
         );
 
-        if let Some(proxy_port) = server.stop_fullhouse_listener(agent_id).await {
+        if let Some(proxy_port) = server.stop_ariadne_listener(agent_id).await {
             let _ = Self::run_command(
                 "iptables",
                 &[

@@ -1,5 +1,5 @@
 use crate::protocol::{AgentKind, InternetAccess};
-use crate::server::core::{ConnectedAgent, FullhouseSnapshot, PortForwardSnapshot};
+use crate::server::core::{AriadneSnapshot, ConnectedAgent, PortalSnapshot};
 use crate::server::dweller_registry::DwellerRegistry;
 use crate::server::topology::{AgentRoute, SharedRouteGroup, TopologySnapshot};
 use colored::Colorize;
@@ -12,8 +12,8 @@ impl NetworkMapRenderer {
         agents: &HashMap<String, ConnectedAgent>,
         dwellers: &DwellerRegistry,
         topology: &TopologySnapshot,
-        port_forwards: &[PortForwardSnapshot],
-        fullhouse: &[FullhouseSnapshot],
+        port_forwards: &[PortalSnapshot],
+        ariadne: &[AriadneSnapshot],
     ) -> String {
         let mut lines = Vec::new();
         lines.push(format!(
@@ -51,7 +51,7 @@ impl NetworkMapRenderer {
 
         let by_agent_routes = Self::routes_by_agent(&topology.routes);
         let by_agent_forwards = Self::port_forwards_by_agent(port_forwards);
-        let by_agent_fullhouse = Self::fullhouse_by_agent(fullhouse);
+        let by_agent_ariadne = Self::ariadne_by_agent(ariadne);
 
         let mut agent_list: Vec<_> = agents.values().collect();
         agent_list.sort_by(|left, right| {
@@ -75,22 +75,22 @@ impl NetworkMapRenderer {
                 Self::agent_status(agent)
             ));
 
-            if let Some(route) = by_agent_fullhouse.get(&agent.id) {
+            if let Some(route) = by_agent_ariadne.get(&agent.id) {
                 lines.push(format!(
-                    "  │  {} fullhouse tunnel local/unenc → tun/{} proxy:{}",
+                    "  │  {} ariadne tunnel local/unenc → tun/{} proxy:{}",
                     "├─".bright_black(),
                     Self::agent_transport_label(agent).cyan(),
                     route.proxy_port.to_string().cyan()
                 ));
-            } else if agent.tunnel_active && !Self::is_room_transport(agent) {
+            } else if agent.tunnel_active && !Self::is_portal_transport(agent) {
                 lines.push(format!(
-                    "  │  {} fullhouse tunnel local/unenc → tun/{}",
+                    "  │  {} ariadne tunnel local/unenc → tun/{}",
                     "├─".bright_black(),
                     Self::agent_transport_label(agent).cyan()
                 ));
             } else if agent.tunnel_active {
                 lines.push(format!(
-                    "  │  {} active room transport {}",
+                    "  │  {} active portal transport {}",
                     "├─".bright_black(),
                     Self::agent_transport_label(agent).cyan()
                 ));
@@ -165,9 +165,9 @@ impl NetworkMapRenderer {
     }
 
     fn port_forwards_by_agent(
-        port_forwards: &[PortForwardSnapshot],
-    ) -> BTreeMap<String, Vec<&PortForwardSnapshot>> {
-        let mut by_agent: BTreeMap<String, Vec<&PortForwardSnapshot>> = BTreeMap::new();
+        port_forwards: &[PortalSnapshot],
+    ) -> BTreeMap<String, Vec<&PortalSnapshot>> {
+        let mut by_agent: BTreeMap<String, Vec<&PortalSnapshot>> = BTreeMap::new();
         for forward in port_forwards {
             by_agent
                 .entry(forward.agent_id.clone())
@@ -177,8 +177,8 @@ impl NetworkMapRenderer {
         by_agent
     }
 
-    fn fullhouse_by_agent(fullhouse: &[FullhouseSnapshot]) -> BTreeMap<String, &FullhouseSnapshot> {
-        fullhouse
+    fn ariadne_by_agent(ariadne: &[AriadneSnapshot]) -> BTreeMap<String, &AriadneSnapshot> {
+        ariadne
             .iter()
             .map(|snapshot| (snapshot.agent_id.clone(), snapshot))
             .collect()
@@ -279,7 +279,7 @@ impl NetworkMapRenderer {
         &agent.transport_label
     }
 
-    fn is_room_transport(agent: &ConnectedAgent) -> bool {
+    fn is_portal_transport(agent: &ConnectedAgent) -> bool {
         agent
             .tunnel_subnet
             .as_deref()
@@ -354,7 +354,7 @@ mod tests {
             &agents,
             &DwellerRegistry::default(),
             &topology,
-            &[PortForwardSnapshot {
+            &[PortalSnapshot {
                 local_port: 8080,
                 agent_id: "agent-a".to_string(),
                 target_host: "10.10.1.20".to_string(),
@@ -389,6 +389,8 @@ mod tests {
             last_connected: None,
             callback_servers: Vec::new(),
             path: Vec::new(),
+            hibernation: crate::protocol::DwellerHibernationConfig::default(),
+            tasks: Vec::new(),
         });
 
         let output = NetworkMapRenderer::render(

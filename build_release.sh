@@ -215,7 +215,7 @@ echo "• *-x86_64-unknown-linux-gnu: Standard Linux binary (requires glibc)"
 echo "• *-x86_64-unknown-linux-musl: Static Linux binary"
 echo "• *-x86_64-pc-windows-gnu.exe: Windows x64 executable"
 echo "• *-i686-pc-windows-gnu.exe: Windows x86 executable"
-echo "• Windows Fullhouse mode requires wintun.dll next to the executable"
+echo "• Windows Ariadne mode requires wintun.dll next to the executable"
 echo
 
 if [ ${#failed_targets[@]} -gt 0 ]; then

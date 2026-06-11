@@ -43,13 +43,13 @@ portable-pty = "0.9.0"
 crossterm = "0.27.0"
 quinn = { version = "0.11.6", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 
-# Optional: userland TCP/IP stack for Fullhouse (server-side)
+# Optional: userland TCP/IP stack for Ariadne (server-side)
 # Enable with: `--features netstack_smoltcp`
 smoltcp = { version = "0.11.0", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "socket-tcp"], optional = true }
 
 [features]
 default = []
-# Fullhouse userland stack on server
+# Ariadne userland stack on server
 netstack_smoltcp = ["smoltcp"]
 
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -138,18 +138,18 @@ impl AgentManager {
             shell_events: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
+        server
+            .agents()
+            .write()
+            .await
+            .insert(agent_id.clone(), agent);
+
         tokio::spawn(handle_writer(writer, rx));
         tokio::spawn(handle_reader(
             tokio::io::BufReader::new(reader),
             server.clone(),
             agent_id.clone(),
         ));
-
-        server
-            .agents()
-            .write()
-            .await
-            .insert(agent_id.clone(), agent);
 
         if matches!(agent_info.kind, AgentKind::Dweller) {
             let mut registry = server.dweller_registry().write().await;

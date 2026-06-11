@@ -1,4 +1,4 @@
-//! Windows Wintun-backed NetstackBridge for Fullhouse.
+//! Windows Wintun-backed NetstackBridge for Ariadne.
 
 use crate::protocol::Message;
 use crate::streaming::models::{ConnectionId, DataDirection, PortMapping, StreamMessage};
@@ -87,7 +87,7 @@ impl WindowsNetstackBridge {
     }
 
     async fn run(self, session: Arc<Session>) {
-        info!("Fullhouse: WindowsNetstackBridge running (Wintun)");
+        info!("Ariadne: WindowsNetstackBridge running (Wintun)");
 
         let (packet_tx, mut packet_rx) = mpsc::channel::<Vec<u8>>(2048);
         std::thread::spawn(move || loop {

@@ -21,30 +21,31 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
   `labyrinth-dweller` entry points.
 - `src/lib.rs` - library exports used by integration tests and benches.
 - `src/server/mod.rs` - server startup, transport listener setup, interactive
-  CLI, command dispatch, headless mode, and Room streaming orchestration.
+  CLI, command dispatch, headless mode, and Portal streaming orchestration.
 - `src/server/chain_manager.rs` - smart access planning for terminal-first
   multi-hop workflows across agents, active tunnels, and remembered dwellers.
 - `src/server/core.rs` - `LabyrinthServer` state: connected agents, selected
-  agent, auth, streaming managers, port-forward listeners, Fullhouse listeners,
+  agent, auth, streaming managers, port-forward listeners, Ariadne listeners,
   and dweller registry.
 - `src/server/agent_manager.rs` and `src/server/agent_connection.rs` - agent
   registration/authentication and protocol message routing.
-- `src/server/tunnel_manager.rs` - Fullhouse/TUN setup and teardown.
+- `src/server/tunnel_manager.rs` - Ariadne/TUN setup and teardown.
 - `src/server/topology.rs` - agent route inference, route ownership snapshots,
   shared-network detection, and conflict detection for multi-hop planning.
 - `src/server/network_map.rs` - read-only terminal map renderer for agents,
-  dwellers, detected networks, tunnels, Room forwards, and shared routes.
+  dwellers, detected networks, tunnels, Portal forwards, and shared routes.
 - `src/server/dashboard.rs` - browser visualization server and JSON snapshot
   API for the live network map and smart access suggestions.
-- `src/server/reverse_port_forward.rs` - Room reverse port-forwarding support.
+- `src/server/reverse_port_forward.rs` - Portal reverse port-forwarding support.
 - `src/server/dweller_manager.rs` and `src/server/dweller_registry.rs` -
-  dweller install, connect, callback configuration, remembered path metadata,
-  persistence, and `dwellers.json`.
+  dweller install, connect, runtime callback/hibernation configuration,
+  remembered path metadata, queued task persistence, and `dwellers.json`.
 - `src/server/certificate.rs`, `src/server/privileges.rs`, `src/server/ui.rs` -
   certificate handling, privilege checks, and display helpers.
 - `src/server/netstack_bridge_windows.rs` - Windows-only netstack bridge.
 - `src/agent/core.rs` - agent and dweller runtime loops, low-noise outbound
-  reachability reporting, dweller callback check-ins, and message handling.
+  reachability reporting, hibernating dweller task polling, callback check-ins,
+  and message handling.
 - `src/agent/connection.rs` and `src/agent/tls_config.rs` - TCP/TLS,
   QUIC/UDP, SOCKS connection setup, and certificate verification. SOCKS proxy
   mode applies to TCP/TLS only.
@@ -97,17 +98,18 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
   dedicated server, agent, and dweller artifacts.
 
 There is no current `--enable-streaming` CLI flag; streaming support is enabled
-by default in config and used by Room mode. The server accepts `--interface` and
+by default in config and used by Portal mode. The server accepts `--interface` and
 `--route` for headless compatibility, but verify the implementation before
 relying on automatic tunnel startup from those flags.
 
 ## Runtime Behavior Notes
 - Interactive server commands include `help`, `agents`, `dwellers`, `select`,
-  `connect-dweller`, `drop-dweller`, `configure-dweller`, `forget-dweller`, `info`, `plan
-  <ip|cidr>`, `access <ip|cidr>`, `chain status`, `chain doctor [ip|cidr]`,
-  `tunnel` / `fullhouse`, `topology` / `routes`, `map` / `network-map`,
-  `forward` / `room`, `commands` / `cmd`, `upload`, `download`, `status`,
-  `cert`, `stop`, and `exit`.
+  `connect-dweller`, `drop-dweller`, `configure-dweller`, `task-dweller`,
+  `dweller-tasks`, `forget-dweller`, `info`, `plan <ip|cidr>`, `access
+  <ip|cidr>`, `chain status`, `chain doctor [ip|cidr]`, `tunnel` / `ariadne`,
+  `topology` / `routes`, `map` / `network-map`, `forward` / `portal`,
+  `commands` / `cmd`, `upload`, `download`, `status`, `cert`, `stop`, and
+  `exit`.
 - Smart access is terminal-first. `plan` must be read-only. `access` must show
   the chosen path and require confirmation before mutating tunnels or dweller
   connections. Keep this path idempotent: reuse active tunnels, do not duplicate
@@ -122,7 +124,7 @@ relying on automatic tunnel startup from those flags.
   explicit token protection.
 - `--transport tcp` is the default server-agent transport. `--transport quic`
   runs the server-agent control stream over QUIC/UDP using the same certificate
-  fingerprint trust model. For QUIC-connected agents, Room and Linux Fullhouse
+  fingerprint trust model. For QUIC-connected agents, Portal and Linux Ariadne
   accepted TCP flows open native per-connection QUIC bidirectional streams
   instead of carrying payloads as JSON stream messages on the control stream.
   Keep transport changes behind `TransportMode` and do not remove the TCP/TLS
@@ -132,13 +134,13 @@ relying on automatic tunnel startup from those flags.
   the remote PTY and uses `Ctrl-]` as the local detach sequence.
 - `LABYRINTH_AUTH_KEY` is required by default for server-agent authentication.
   Agents read the same environment variable through collected system info.
-- Fullhouse auto-detects candidate IPv4 routes from the selected agent's
+- Ariadne auto-detects candidate IPv4 routes from the selected agent's
   `NetworkInterface.addresses`, normalizes host CIDRs to network CIDRs, skips
   loopback/link-local ranges, and uses the best route as the prompt default.
 - `cert.pem` and `key.pem` are loaded from the working directory or generated on
   first server start. The `cert` command prints the fingerprint and base64 cert
   for agent verification.
-- Fullhouse requires elevated privileges for TUN setup. Treat privilege warnings
+- Ariadne requires elevated privileges for TUN setup. Treat privilege warnings
   as expected when running without root/admin rights.
 - Dweller state is persisted in `dwellers.json` in the server working directory.
 - Dwellers are persistent remembered listeners for future access. Smart access
@@ -148,6 +150,15 @@ relying on automatic tunnel startup from those flags.
   during drop, such as `C via B via A`. Treat the stored path as operator
   context; active routing decisions must still be based on live topology and
   active tunnel state.
+- Dwellers default to hibernating callback mode with configurable sleep, jitter,
+  and task batch size. TCP/TLS and QUIC callbacks use the existing framed control
+  protocol. HTTP, HTTPS, and DNS are accepted as explicit callback transport
+  labels for configuration/planning, but need dedicated listeners before they can
+  carry task traffic.
+- Hibernating dweller work is pull-based: the server queues multiple tasks in
+  `dwellers.json`, the dweller claims a bounded batch on check-in, executes each
+  task, returns results, and sleeps again. Long-lived tunnels and port forwards
+  should keep `hibernation=false` so the control channel remains online.
 - Agent and dweller registrations include a low-noise outbound reachability
   report. The built-in check uses local route-table inspection and a short TCP
   check to the configured Labyrinth server only.
@@ -189,7 +200,7 @@ relying on automatic tunnel startup from those flags.
 ## Commit & Pull Request Guidelines
 - Prefer Conventional Commits, for example:
   `feat(dweller): persist installed listeners`,
-  `fix(server): clean up room listener on disconnect`,
+  `fix(server): clean up portal listener on disconnect`,
   `test(streaming): cover connection recovery`.
 - PRs should include the problem, approach, user-visible behavior changes, and
   exact verification commands.
