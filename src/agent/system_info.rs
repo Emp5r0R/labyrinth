@@ -1,11 +1,29 @@
-use crate::protocol::{AgentInfo, AgentKind, NetworkInterface};
+use crate::protocol::{AgentInfo, AgentKind, ConnectivityReport, InternetAccess, NetworkInterface};
+use std::net::{IpAddr, SocketAddr};
+use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
 
 /// Single Responsibility: System information gathering
 pub struct SystemInfoCollector;
 
 impl SystemInfoCollector {
     pub fn get_system_info() -> AgentInfo {
-        Self::build_agent_info(AgentKind::Generic, None, None, None, None)
+        Self::build_agent_info(
+            AgentKind::Generic,
+            None,
+            None,
+            None,
+            None,
+            ConnectivityReport::default(),
+        )
+    }
+
+    pub async fn get_system_info_for_server(
+        server_addr: Option<&str>,
+        direct_transport: bool,
+    ) -> AgentInfo {
+        let connectivity = Self::collect_connectivity(server_addr, direct_transport).await;
+        Self::build_agent_info(AgentKind::Generic, None, None, None, None, connectivity)
     }
 
     pub fn build_agent_info(
@@ -14,6 +32,7 @@ impl SystemInfoCollector {
         listener_addr: Option<String>,
         listener_port: Option<u16>,
         name_override: Option<String>,
+        connectivity: ConnectivityReport,
     ) -> AgentInfo {
         let hostname = hostname::get()
             .unwrap_or_else(|_| "unknown".into())
@@ -37,7 +56,100 @@ impl SystemInfoCollector {
             stable_id,
             listener_addr,
             listener_port,
+            connectivity,
         }
+    }
+
+    pub async fn collect_connectivity(
+        server_addr: Option<&str>,
+        direct_transport: bool,
+    ) -> ConnectivityReport {
+        let default_route = Self::has_default_route();
+        let mut report = ConnectivityReport {
+            internet_access: InternetAccess::Unknown,
+            default_route,
+            server_reachable: false,
+            checked_target: server_addr.map(str::to_string),
+            note: "local route table plus configured server TCP check only".to_string(),
+        };
+
+        if let Some(target) = server_addr.filter(|_| direct_transport) {
+            report.server_reachable = Self::tcp_connect_quick(target).await;
+        }
+
+        report.internet_access = match (
+            report.default_route,
+            report.server_reachable,
+            server_addr.and_then(Self::parse_public_socket_ip),
+        ) {
+            (_, true, Some(true)) => InternetAccess::Confirmed,
+            (_, true, _) => InternetAccess::ServerReachable,
+            (true, false, _) => InternetAccess::RouteOnly,
+            (false, false, _) => InternetAccess::Unreachable,
+        };
+
+        report
+    }
+
+    async fn tcp_connect_quick(target: &str) -> bool {
+        timeout(Duration::from_millis(900), TcpStream::connect(target))
+            .await
+            .map(|result| result.is_ok())
+            .unwrap_or(false)
+    }
+
+    fn parse_public_socket_ip(target: &str) -> Option<bool> {
+        let socket = target.parse::<SocketAddr>().ok()?;
+        Some(Self::is_public_ip(socket.ip()))
+    }
+
+    fn is_public_ip(ip: IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(ip) => {
+                !(ip.is_private()
+                    || ip.is_loopback()
+                    || ip.is_link_local()
+                    || ip.is_broadcast()
+                    || ip.is_documentation()
+                    || ip.is_unspecified())
+            }
+            IpAddr::V6(ip) => !(ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local()),
+        }
+    }
+
+    fn has_default_route() -> bool {
+        if cfg!(target_os = "windows") {
+            return std::process::Command::new("route")
+                .args(["print", "0.0.0.0"])
+                .output()
+                .map(|output| {
+                    let body = String::from_utf8_lossy(&output.stdout);
+                    output.status.success() && body.contains("0.0.0.0")
+                })
+                .unwrap_or(false);
+        }
+
+        if let Ok(output) = std::process::Command::new("ip")
+            .args(["route", "show", "default"])
+            .output()
+        {
+            if output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+            {
+                return true;
+            }
+        }
+
+        std::process::Command::new("route")
+            .args(["-n"])
+            .output()
+            .map(|output| {
+                let body = String::from_utf8_lossy(&output.stdout);
+                output.status.success()
+                    && body
+                        .lines()
+                        .any(|line| line.split_whitespace().next() == Some("0.0.0.0"))
+            })
+            .unwrap_or(false)
     }
 
     fn get_network_interfaces() -> Vec<NetworkInterface> {

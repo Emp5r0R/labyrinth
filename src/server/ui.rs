@@ -1,5 +1,5 @@
 use crate::error::{LabyrinthError, Result};
-use crate::protocol::AgentKind;
+use crate::protocol::{AgentKind, InternetAccess};
 use crate::server::core::LabyrinthServer;
 use crate::server::network_map::NetworkMapRenderer;
 use crate::server::topology::TopologyManager;
@@ -70,6 +70,10 @@ impl ServerUI {
             println!(
                 "{}",
                 styling::format_field("Status:", &styling::format_status_badge("Online", true))
+            );
+            println!(
+                "{}",
+                styling::format_field("Internet:", &Self::connectivity_label(agent))
             );
 
             // Tunnel status with color coding
@@ -234,6 +238,10 @@ impl ServerUI {
                     "{}",
                     styling::format_field("Connection:", &connection_status)
                 );
+                println!(
+                    "{}",
+                    styling::format_field("Internet:", &Self::connectivity_label(agent))
+                );
 
                 // Network Interfaces section
                 println!(
@@ -311,6 +319,23 @@ impl ServerUI {
             );
         }
         Ok(())
+    }
+
+    fn connectivity_label(agent: &crate::server::core::ConnectedAgent) -> String {
+        let report = &agent.info.connectivity;
+        let state = match report.internet_access {
+            InternetAccess::Confirmed => "internet confirmed".green(),
+            InternetAccess::ServerReachable => "server reachable".cyan(),
+            InternetAccess::RouteOnly => "route only".yellow(),
+            InternetAccess::Unreachable => "no outbound route".red(),
+            InternetAccess::Unknown => "unknown".bright_black(),
+        };
+        format!(
+            "{} (default route: {}, server: {})",
+            state,
+            yes_no(report.default_route),
+            yes_no(report.server_reachable)
+        )
     }
 
     pub async fn show_status(server: &LabyrinthServer) {
@@ -458,5 +483,13 @@ impl ServerUI {
             NetworkMapRenderer::render(&agents, &dwellers, &topology, &port_forwards, &fullhouse)
         );
         println!();
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
     }
 }

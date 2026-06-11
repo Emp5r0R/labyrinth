@@ -38,11 +38,13 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
   API for the live network map and smart access suggestions.
 - `src/server/reverse_port_forward.rs` - Room reverse port-forwarding support.
 - `src/server/dweller_manager.rs` and `src/server/dweller_registry.rs` -
-  dweller install, connect, forget, persistence, and `dwellers.json`.
+  dweller install, connect, callback configuration, remembered path metadata,
+  persistence, and `dwellers.json`.
 - `src/server/certificate.rs`, `src/server/privileges.rs`, `src/server/ui.rs` -
   certificate handling, privilege checks, and display helpers.
 - `src/server/netstack_bridge_windows.rs` - Windows-only netstack bridge.
-- `src/agent/core.rs` - agent and dweller runtime loops plus message handling.
+- `src/agent/core.rs` - agent and dweller runtime loops, low-noise outbound
+  reachability reporting, dweller callback check-ins, and message handling.
 - `src/agent/connection.rs` and `src/agent/tls_config.rs` - TCP/TLS,
   QUIC/UDP, SOCKS connection setup, and certificate verification. SOCKS proxy
   mode applies to TCP/TLS only.
@@ -101,7 +103,7 @@ relying on automatic tunnel startup from those flags.
 
 ## Runtime Behavior Notes
 - Interactive server commands include `help`, `agents`, `dwellers`, `select`,
-  `connect-dweller`, `drop-dweller`, `forget-dweller`, `info`, `plan
+  `connect-dweller`, `drop-dweller`, `configure-dweller`, `forget-dweller`, `info`, `plan
   <ip|cidr>`, `access <ip|cidr>`, `chain status`, `chain doctor [ip|cidr]`,
   `tunnel` / `fullhouse`, `topology` / `routes`, `map` / `network-map`,
   `forward` / `room`, `commands` / `cmd`, `upload`, `download`, `status`,
@@ -142,6 +144,13 @@ relying on automatic tunnel startup from those flags.
 - Dwellers are persistent remembered listeners for future access. Smart access
   may connect a remembered dweller automatically after a parent tunnel makes its
   listen address reachable, then refresh topology and continue planning.
+- Dweller records also store callback server targets and the parent path observed
+  during drop, such as `C via B via A`. Treat the stored path as operator
+  context; active routing decisions must still be based on live topology and
+  active tunnel state.
+- Agent and dweller registrations include a low-noise outbound reachability
+  report. The built-in check uses local route-table inspection and a short TCP
+  check to the configured Labyrinth server only.
 
 ## Coding Style & Naming Conventions
 - Use Rust 2021 and 4-space indentation.

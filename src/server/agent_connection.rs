@@ -150,6 +150,19 @@ async fn process_message(
                 }
             }
         }
+        Message::ConfigureDwellerResponse { success, message } => {
+            if let Some(agent) = server.agents().read().await.get(agent_id) {
+                let mut command_response = agent.command_response.lock().await;
+                if let Some(sender) = command_response.take() {
+                    if sender
+                        .send(Message::ConfigureDwellerResponse { success, message })
+                        .is_err()
+                    {
+                        error!("Failed to send dweller config response to waiting UI task.");
+                    }
+                }
+            }
+        }
         Message::FileDownloadResponse {
             success,
             message,

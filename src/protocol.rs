@@ -1,6 +1,51 @@
 use crate::streaming::models::StreamMessage;
 use serde::{Deserialize, Serialize};
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub enum InternetAccess {
+    Confirmed,
+    ServerReachable,
+    RouteOnly,
+    Unreachable,
+    #[default]
+    Unknown,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConnectivityReport {
+    #[serde(default)]
+    pub internet_access: InternetAccess,
+    #[serde(default)]
+    pub default_route: bool,
+    #[serde(default)]
+    pub server_reachable: bool,
+    #[serde(default)]
+    pub checked_target: Option<String>,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct DwellerServerEndpoint {
+    pub address: String,
+    pub fingerprint: Option<String>,
+    pub transport: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct DwellerPathHop {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub address: String,
+    pub cidr: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct DwellerRuntimeConfig {
+    #[serde(default)]
+    pub callback_servers: Vec<DwellerServerEndpoint>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NetworkInterface {
     pub name: String,
@@ -28,6 +73,8 @@ pub struct AgentInfo {
     pub stable_id: Option<String>,
     pub listener_addr: Option<String>,
     pub listener_port: Option<u16>,
+    #[serde(default)]
+    pub connectivity: ConnectivityReport,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -42,6 +89,10 @@ pub struct DwellerInstallRequest {
     pub install_path: String,
     pub config_dir: String,
     pub service_name: String,
+    #[serde(default)]
+    pub callback_servers: Vec<DwellerServerEndpoint>,
+    #[serde(default)]
+    pub parent_path: Vec<DwellerPathHop>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -57,6 +108,10 @@ pub struct DwellerInstallReceipt {
     pub install_path: String,
     pub config_dir: String,
     pub service_name: String,
+    #[serde(default)]
+    pub callback_servers: Vec<DwellerServerEndpoint>,
+    #[serde(default)]
+    pub parent_path: Vec<DwellerPathHop>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -68,6 +123,15 @@ pub enum Message {
     /// Server initiates an authenticated dweller session
     DwellerHello {
         auth_key: String,
+    },
+    /// Server updates a connected dweller's future callback server list
+    ConfigureDweller {
+        callback_servers: Vec<DwellerServerEndpoint>,
+    },
+    /// Dweller acknowledges callback server configuration
+    ConfigureDwellerResponse {
+        success: bool,
+        message: String,
     },
     /// Server requests to start tunnel for specific subnet
     StartTunnel {

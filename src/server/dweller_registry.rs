@@ -1,5 +1,5 @@
 use crate::error::{LabyrinthError, Result};
-use crate::protocol::DwellerInstallReceipt;
+use crate::protocol::{DwellerInstallReceipt, DwellerPathHop, DwellerServerEndpoint};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -22,6 +22,10 @@ pub struct DwellerRecord {
     pub config_dir: String,
     pub service_name: String,
     pub last_connected: Option<String>,
+    #[serde(default)]
+    pub callback_servers: Vec<DwellerServerEndpoint>,
+    #[serde(default)]
+    pub path: Vec<DwellerPathHop>,
 }
 
 impl DwellerRecord {
@@ -40,6 +44,8 @@ impl DwellerRecord {
             config_dir: receipt.config_dir,
             service_name: receipt.service_name,
             last_connected: None,
+            callback_servers: receipt.callback_servers,
+            path: receipt.parent_path,
         }
     }
 
@@ -114,6 +120,8 @@ mod tests {
             install_path: "/usr/local/bin/alpha".to_string(),
             config_dir: "/etc/labyrinth/alpha".to_string(),
             service_name: "labyrinth-dweller-alpha".to_string(),
+            callback_servers: Vec::new(),
+            parent_path: Vec::new(),
         }
     }
 

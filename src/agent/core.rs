@@ -5,7 +5,10 @@ use crate::agent::command_executor::{CommandExecutor, OSDetector};
 use crate::agent::pty_shell::PtyShellManager;
 use crate::agent::system_info::SystemInfoCollector;
 use crate::error::{LabyrinthError, Result};
-use crate::protocol::{AgentKind, DwellerInstallReceipt, DwellerInstallRequest, Message};
+use crate::protocol::{
+    AgentInfo, AgentKind, DwellerInstallReceipt, DwellerInstallRequest, DwellerRuntimeConfig,
+    DwellerServerEndpoint, Message,
+};
 use crate::security::SecurityManager;
 
 use crate::streaming::models::{CloseReason, ConnectionId, DataDirection, StreamMessage};
@@ -15,6 +18,7 @@ use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
@@ -24,6 +28,30 @@ use tracing::{error, info, warn};
 
 /// Single Responsibility: Main agent logic and message handling
 pub struct AgentCore;
+
+#[derive(Debug, Clone)]
+pub struct DwellerRunConfig {
+    pub listen_addr: String,
+    pub cert_path: String,
+    pub key_path: String,
+    pub dweller_id: String,
+    pub name: Option<String>,
+    pub auth_key: String,
+    pub config_file: Option<String>,
+    pub callback_servers: Vec<DwellerServerEndpoint>,
+}
+
+#[derive(Debug, Clone)]
+struct DwellerRuntimeContext {
+    dweller_id: String,
+    listen_addr: String,
+    name: Option<String>,
+    config_file: Option<String>,
+}
+
+static DWELLER_CONTEXT: OnceLock<DwellerRuntimeContext> = OnceLock::new();
+static DWELLER_CALLBACKS: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    OnceLock::new();
 
 impl AgentCore {
     pub async fn run_agent(
@@ -36,8 +64,9 @@ impl AgentCore {
     ) -> Result<()> {
         info!("{} Starting Labyrinth agent...", styling::SUCCESS_INDICATOR);
 
-        // Get system information
-        let agent_info = SystemInfoCollector::get_system_info();
+        let agent_info =
+            SystemInfoCollector::get_system_info_for_server(Some(server_addr), proxy.is_none())
+                .await;
         info!(
             "{} Agent info: {} on {}/{}",
             styling::SUCCESS_INDICATOR,
@@ -46,6 +75,27 @@ impl AgentCore {
             agent_info.arch
         );
 
+        Self::run_registered_client(
+            agent_info,
+            server_addr,
+            server_cert_b64,
+            accept_fingerprint,
+            proxy,
+            transport,
+            retry,
+        )
+        .await
+    }
+
+    async fn run_registered_client(
+        agent_info: AgentInfo,
+        server_addr: &str,
+        server_cert_b64: Option<String>,
+        accept_fingerprint: Option<String>,
+        proxy: Option<String>,
+        transport: TransportMode,
+        retry: bool,
+    ) -> Result<()> {
         loop {
             // Establish control connection to server
             let control_connection =
@@ -192,18 +242,19 @@ impl AgentCore {
         Ok(())
     }
 
-    pub async fn run_dweller(
-        listen_addr: &str,
-        cert_path: &str,
-        key_path: &str,
-        dweller_id: &str,
-        name: Option<String>,
-        auth_key: String,
-    ) -> Result<()> {
-        let cert_pem = tokio::fs::read_to_string(cert_path)
+    pub async fn run_dweller(config: DwellerRunConfig) -> Result<()> {
+        let context = DwellerRuntimeContext {
+            dweller_id: config.dweller_id.clone(),
+            listen_addr: config.listen_addr.clone(),
+            name: config.name.clone(),
+            config_file: config.config_file.clone(),
+        };
+        let _ = DWELLER_CONTEXT.set(context);
+
+        let cert_pem = tokio::fs::read_to_string(&config.cert_path)
             .await
             .map_err(LabyrinthError::Io)?;
-        let key_pem = tokio::fs::read_to_string(key_path)
+        let key_pem = tokio::fs::read_to_string(&config.key_path)
             .await
             .map_err(LabyrinthError::Io)?;
 
@@ -219,28 +270,33 @@ impl AgentCore {
             .pop()
             .ok_or_else(|| LabyrinthError::Message("No private key found".to_string()))?;
 
-        let config = rustls::ServerConfig::builder()
+        let tls_config = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(certs, key.into())?;
-        let acceptor = TlsAcceptor::from(Arc::new(config));
-        let listener = TcpListener::bind(listen_addr)
+        let acceptor = TlsAcceptor::from(Arc::new(tls_config));
+        let listener = TcpListener::bind(&config.listen_addr)
             .await
             .map_err(LabyrinthError::Io)?;
 
         info!(
             "{} Dweller {} listening on {}",
             styling::SUCCESS_INDICATOR,
-            dweller_id,
-            listen_addr
+            config.dweller_id,
+            config.listen_addr
         );
+
+        let callbacks =
+            Self::load_dweller_callbacks(config.config_file.as_deref(), config.callback_servers)
+                .await;
+        Self::spawn_dweller_callbacks(callbacks);
 
         loop {
             let (stream, _addr) = listener.accept().await.map_err(LabyrinthError::Io)?;
             let acceptor = acceptor.clone();
-            let auth_key = auth_key.clone();
-            let dweller_id = dweller_id.to_string();
-            let listen_addr = listen_addr.to_string();
-            let name = name.clone();
+            let auth_key = config.auth_key.clone();
+            let dweller_id = config.dweller_id.clone();
+            let listen_addr = config.listen_addr.clone();
+            let name = config.name.clone();
             tokio::spawn(async move {
                 if let Err(e) = Self::handle_dweller_client(
                     acceptor,
@@ -256,6 +312,137 @@ impl AgentCore {
                 }
             });
         }
+    }
+
+    async fn load_dweller_callbacks(
+        config_file: Option<&str>,
+        mut cli_callbacks: Vec<DwellerServerEndpoint>,
+    ) -> Vec<DwellerServerEndpoint> {
+        if let Some(path) = config_file {
+            match tokio::fs::read_to_string(path).await {
+                Ok(body) => match serde_json::from_str::<DwellerRuntimeConfig>(&body) {
+                    Ok(config) => cli_callbacks.extend(config.callback_servers),
+                    Err(e) => warn!(
+                        "{} Failed to parse dweller config {}: {}",
+                        styling::WARNING_INDICATOR,
+                        path,
+                        e
+                    ),
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => warn!(
+                    "{} Failed to read dweller config {}: {}",
+                    styling::WARNING_INDICATOR,
+                    path,
+                    e
+                ),
+            }
+        }
+        Self::dedupe_callbacks(cli_callbacks)
+    }
+
+    fn dedupe_callbacks(callbacks: Vec<DwellerServerEndpoint>) -> Vec<DwellerServerEndpoint> {
+        let mut seen = std::collections::HashSet::new();
+        let mut deduped = Vec::new();
+        for callback in callbacks {
+            if callback.address.trim().is_empty() {
+                continue;
+            }
+            let key = format!("{}|{}", callback.address, callback.transport);
+            if seen.insert(key) {
+                deduped.push(callback);
+            }
+        }
+        deduped
+    }
+
+    fn spawn_dweller_callbacks(callbacks: Vec<DwellerServerEndpoint>) {
+        if callbacks.is_empty() {
+            return;
+        }
+
+        let seen = DWELLER_CALLBACKS.get_or_init(|| std::sync::Mutex::new(Default::default()));
+        for callback in callbacks {
+            let key = format!("{}|{}", callback.address, callback.transport);
+            if !seen
+                .lock()
+                .expect("dweller callback tracker poisoned")
+                .insert(key)
+            {
+                continue;
+            }
+            tokio::spawn(async move {
+                if let Err(e) = Self::run_dweller_callback(callback).await {
+                    warn!(
+                        "{} Dweller callback supervisor stopped: {}",
+                        styling::WARNING_INDICATOR,
+                        e
+                    );
+                }
+            });
+        }
+    }
+
+    async fn run_dweller_callback(endpoint: DwellerServerEndpoint) -> Result<()> {
+        let context = DWELLER_CONTEXT.get().cloned().ok_or_else(|| {
+            LabyrinthError::Message("Dweller runtime context missing".to_string())
+        })?;
+        let transport = match endpoint.transport.to_ascii_lowercase().as_str() {
+            "quic" | "quic/udp" => TransportMode::Quic,
+            _ => TransportMode::Tcp,
+        };
+        let port = context
+            .listen_addr
+            .rsplit(':')
+            .next()
+            .and_then(|value| value.parse::<u16>().ok());
+        let connectivity =
+            SystemInfoCollector::collect_connectivity(Some(&endpoint.address), true).await;
+        let info = SystemInfoCollector::build_agent_info(
+            AgentKind::Dweller,
+            Some(context.dweller_id.clone()),
+            Some(context.listen_addr.clone()),
+            port,
+            context.name.clone(),
+            connectivity,
+        );
+
+        info!(
+            "{} Dweller callback enabled for {}",
+            styling::SUCCESS_INDICATOR,
+            endpoint.address
+        );
+        Self::run_registered_client(
+            info,
+            &endpoint.address,
+            None,
+            endpoint.fingerprint,
+            None,
+            transport,
+            true,
+        )
+        .await
+    }
+
+    async fn persist_dweller_callbacks(
+        config_file: Option<&str>,
+        callback_servers: Vec<DwellerServerEndpoint>,
+    ) -> Result<()> {
+        let Some(path) = config_file else {
+            return Ok(());
+        };
+        let config = DwellerRuntimeConfig {
+            callback_servers: Self::dedupe_callbacks(callback_servers),
+        };
+        if let Some(parent) = Path::new(path).parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(LabyrinthError::Io)?;
+        }
+        let body = serde_json::to_string_pretty(&config)?;
+        tokio::fs::write(path, body)
+            .await
+            .map_err(LabyrinthError::Io)
     }
 
     async fn handle_dweller_client(
@@ -286,12 +473,14 @@ impl AgentCore {
             .rsplit(':')
             .next()
             .and_then(|value| value.parse::<u16>().ok());
+        let connectivity = SystemInfoCollector::collect_connectivity(None, true).await;
         let info = SystemInfoCollector::build_agent_info(
             AgentKind::Dweller,
             Some(dweller_id.clone()),
             Some(listen_addr.clone()),
             port,
             name,
+            connectivity,
         );
         Self::write_message(&mut tls_writer, &Message::AgentRegister(info)).await?;
 
@@ -414,6 +603,38 @@ impl AgentCore {
                 let pong_str = serde_json::to_string(&pong_msg)?;
 
                 tls_writer.write_all(pong_str.as_bytes()).await?;
+                tls_writer.write_all(b"\n").await?;
+            }
+            Message::ConfigureDweller { callback_servers } => {
+                let response = if let Some(context) = DWELLER_CONTEXT.get() {
+                    let callbacks = Self::dedupe_callbacks(callback_servers);
+                    match Self::persist_dweller_callbacks(
+                        context.config_file.as_deref(),
+                        callbacks.clone(),
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            Self::spawn_dweller_callbacks(callbacks);
+                            Message::ConfigureDwellerResponse {
+                                success: true,
+                                message: "Dweller callback server configuration updated"
+                                    .to_string(),
+                            }
+                        }
+                        Err(e) => Message::ConfigureDwellerResponse {
+                            success: false,
+                            message: e.to_string(),
+                        },
+                    }
+                } else {
+                    Message::ConfigureDwellerResponse {
+                        success: false,
+                        message: "Connected endpoint is not running as a dweller".to_string(),
+                    }
+                };
+                let response_str = serde_json::to_string(&response)?;
+                tls_writer.write_all(response_str.as_bytes()).await?;
                 tls_writer.write_all(b"\n").await?;
             }
             Message::RoomPortForward {
@@ -691,8 +912,16 @@ impl AgentCore {
         tokio::fs::write(&key_path, &request.key_pem)
             .await
             .map_err(LabyrinthError::Io)?;
+        let config_path = config_dir.join("dweller-config.json");
+        let runtime_config = DwellerRuntimeConfig {
+            callback_servers: request.callback_servers.clone(),
+        };
+        tokio::fs::write(&config_path, serde_json::to_string_pretty(&runtime_config)?)
+            .await
+            .map_err(LabyrinthError::Io)?;
 
-        Self::install_dweller_service(&request, &install_path, &cert_path, &key_path).await?;
+        Self::install_dweller_service(&request, &install_path, &cert_path, &key_path, &config_path)
+            .await?;
         Self::verify_dweller_listening(&request.listen_addr, request.listen_port).await?;
 
         Ok(DwellerInstallReceipt {
@@ -710,6 +939,8 @@ impl AgentCore {
             install_path: request.install_path,
             config_dir: request.config_dir,
             service_name: request.service_name,
+            callback_servers: request.callback_servers,
+            parent_path: request.parent_path,
         })
     }
 
@@ -748,12 +979,13 @@ impl AgentCore {
         install_path: &Path,
         cert_path: &Path,
         key_path: &Path,
+        config_path: &Path,
     ) -> Result<()> {
         #[cfg(target_os = "linux")]
         {
             let unit_path = format!("/etc/systemd/system/{}.service", request.service_name);
             let unit = format!(
-                "[Unit]\nDescription=Labyrinth Dweller {}\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={} dweller --listen {}:{} --cert-file {} --key-file {} --id {} --name '{}' --auth-key '{}'\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+                "[Unit]\nDescription=Labyrinth Dweller {}\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={} dweller --listen {}:{} --cert-file {} --key-file {} --id {} --name '{}' --auth-key '{}' --config-file {}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
                 request.dweller_name,
                 shell_escape(install_path),
                 request.listen_addr,
@@ -762,7 +994,8 @@ impl AgentCore {
                 shell_escape(key_path),
                 request.dweller_id,
                 request.dweller_name.replace('"', ""),
-                request.auth_key
+                request.auth_key,
+                shell_escape(config_path)
             );
             tokio::fs::write(&unit_path, unit)
                 .await
@@ -774,7 +1007,7 @@ impl AgentCore {
         #[cfg(target_os = "windows")]
         {
             let quoted_install = format!(
-                "\"{}\" dweller --listen {}:{} --cert-file \"{}\" --key-file \"{}\" --id {} --name \"{}\" --auth-key \"{}\"",
+                "\"{}\" dweller --listen {}:{} --cert-file \"{}\" --key-file \"{}\" --id {} --name \"{}\" --auth-key \"{}\" --config-file \"{}\"",
                 install_path.display(),
                 request.listen_addr,
                 request.listen_port,
@@ -783,6 +1016,7 @@ impl AgentCore {
                 request.dweller_id,
                 request.dweller_name,
                 request.auth_key,
+                config_path.display(),
             );
 
             let _ = Self::run_local_command("sc", &["stop", &request.service_name]);
@@ -1136,15 +1370,8 @@ pub async fn run_agent(
     .await
 }
 
-pub async fn run_dweller(
-    listen_addr: &str,
-    cert_path: &str,
-    key_path: &str,
-    dweller_id: &str,
-    name: Option<String>,
-    auth_key: String,
-) -> Result<()> {
-    AgentCore::run_dweller(listen_addr, cert_path, key_path, dweller_id, name, auth_key).await
+pub async fn run_dweller(config: DwellerRunConfig) -> Result<()> {
+    AgentCore::run_dweller(config).await
 }
 
 #[cfg(target_os = "linux")]

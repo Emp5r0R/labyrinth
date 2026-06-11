@@ -574,6 +574,7 @@ mod tests {
                 stable_id: None,
                 listener_addr: None,
                 listener_port: None,
+                connectivity: Default::default(),
             },
             sender,
             transport_label: "tcp/tls".to_string(),

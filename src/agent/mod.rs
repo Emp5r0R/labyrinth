@@ -7,4 +7,4 @@ pub mod streaming_manager;
 pub mod system_info;
 pub mod tls_config;
 
-pub use core::{run_agent, run_dweller};
+pub use core::{run_agent, run_dweller, DwellerRunConfig};

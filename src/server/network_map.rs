@@ -1,4 +1,4 @@
-use crate::protocol::AgentKind;
+use crate::protocol::{AgentKind, InternetAccess};
 use crate::server::core::{ConnectedAgent, FullhouseSnapshot, PortForwardSnapshot};
 use crate::server::dweller_registry::DwellerRegistry;
 use crate::server::topology::{AgentRoute, SharedRouteGroup, TopologySnapshot};
@@ -265,7 +265,14 @@ impl NetworkMapRenderer {
         } else {
             "transport idle".bright_black().to_string()
         };
-        format!("{} {}", kind.bright_white(), tunnel)
+        let internet = match agent.info.connectivity.internet_access {
+            InternetAccess::Confirmed => "internet confirmed".green().to_string(),
+            InternetAccess::ServerReachable => "server reachable".cyan().to_string(),
+            InternetAccess::RouteOnly => "route only".yellow().to_string(),
+            InternetAccess::Unreachable => "no outbound".red().to_string(),
+            InternetAccess::Unknown => "internet unknown".bright_black().to_string(),
+        };
+        format!("{} {} {}", kind.bright_white(), tunnel, internet)
     }
 
     fn agent_transport_label(agent: &ConnectedAgent) -> &str {
@@ -321,6 +328,7 @@ mod tests {
                 stable_id: None,
                 listener_addr: None,
                 listener_port: None,
+                connectivity: Default::default(),
             },
             sender,
             transport_label: "tcp/tls".to_string(),
@@ -379,6 +387,8 @@ mod tests {
             config_dir: r"C:\ProgramData\Labyrinth\delta".to_string(),
             service_name: "LabyrinthDweller_delta".to_string(),
             last_connected: None,
+            callback_servers: Vec::new(),
+            path: Vec::new(),
         });
 
         let output = NetworkMapRenderer::render(
