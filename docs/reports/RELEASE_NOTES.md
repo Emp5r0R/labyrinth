@@ -1,6 +1,29 @@
+# Labyrinth v1.1.0 Release Notes
+
+## Major Update: Automated BloodHound Collection
+
+**Version:** 1.1.0  
+**Author:** Emp5r0R  
+**Release Date:** June 11, 2026
+
+---
+
+## What's New
+
+### Automated BloodHound Collection
+- **Zero-Touch Provisioning**: Automatically locates `SharpHound.exe` in Kali defaults or downloads the latest version from GitHub if missing.
+- **Smart Execution**: Uploads, executes with robust collection flags (`All,GPOLocations`), retrieves results to `labyrinth-artifacts/`, and performs a full remote cleanup.
+- **Integrated Workflow**: Available via the `bloodhound` command in the main CLI or `!bloodhound` within interactive shells.
+
+### Enhanced Reliability
+- **Command Timeouts**: Implemented extended 20-minute timeouts for long-running AD collection tasks.
+- **Path Normalization**: Improved remote path handling for uploads and downloads on Windows targets.
+
+---
+
 # Labyrinth v1.0.0 Release Notes
 
-##  Major Release: Complete UI Redesign
+## Major Release: Complete UI Redesign
 
 **Version:** 1.0.0  
 **Author:** Emp5r0R  

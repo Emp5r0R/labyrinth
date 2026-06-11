@@ -113,9 +113,9 @@ relying on automatic tunnel startup from those flags.
 - Interactive server commands include `help`, `agents`, `dwellers`, `select`,
   `connect-dweller`, `drop-dweller`, `configure-dweller`, `task-dweller`,
   `dweller-tasks`, `forget-dweller`, `info`, `plan <ip|cidr>`, `access
-  <ip|cidr>`, `chain status`, `chain doctor [ip|cidr]`, `tunnel` / `ariadne`,
+  `chain status`, `chain doctor [ip|cidr]`, `tunnel` / `ariadne`,
   `topology` / `routes`, `map` / `network-map`, `forward` / `portal`,
-  `commands` / `cmd`, `upload`, `download`, `status`, `cert`, `stop`, and
+  `commands` / `cmd`, `bloodhound`, `upload`, `download`, `status`, `cert`, `stop`, and
   `exit`.
 - Smart access is terminal-first. `plan` must be read-only. `access` must show
   the chosen path and require confirmation before mutating tunnels or dweller

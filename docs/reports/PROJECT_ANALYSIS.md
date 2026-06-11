@@ -31,6 +31,12 @@
 - Multiple port mappings supported
 - Easier to deploy and configure
 
+#### 3. **BloodHound Collection** (AD Enumeration)
+- Automated SharpHound discovery and provisioning
+- Secure execution and result retrieval
+- Remote target cleanup after collection
+- Main CLI and shell integration
+
 ## [!] Issues Found & Status
 
 ### [+] **Fixed Critical Issues**
