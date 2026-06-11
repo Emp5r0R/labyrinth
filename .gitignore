@@ -1,22 +1,55 @@
+# Rust build output
 /target/
-
-# Build artifacts
 **/*.rlib
 **/*.rmeta
 
-# Release bundles
+# Release bundles and generated binaries
 /releases/
+/labyrinth
+/labyrinth-server
+/labyrinth-agent
+/labyrinth-dweller
+*.exe
 
 # Local runtime/output files
 *.log
 /server.log
+/command_outputs/
+/shell_sessions/
+/dwellers.json
+/dwellers.json.tmp
 
-# Local secrets and machine-specific config
+# Local certificates, keys, and machine-specific config
 .env
 .env.*
 *.pem
 *.key
+cert_b64.txt
+*.p12
+*.pfx
+*.crt
+*.csr
+*.der
+*.srl
+
+# Generated dweller payload/config output
+/dweller*.json
+/dweller*.toml
+/dweller*.yaml
+/dweller*.yml
+/dweller*.bin
+/dweller*.dll
+/dweller*.so
+/dweller*.dylib
+/generated-dwellers/
 
 # Editor/OS noise
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Benchmark reports
+/criterion/
