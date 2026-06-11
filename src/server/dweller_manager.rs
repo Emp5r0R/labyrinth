@@ -1,9 +1,13 @@
 use crate::error::{LabyrinthError, Result};
-use crate::protocol::{AgentInfo, AgentKind, DwellerInstallRequest, Message};
+use crate::protocol::{
+    AgentInfo, AgentKind, DwellerInstallRequest, DwellerPathHop, DwellerServerEndpoint, Message,
+};
 use crate::security::SecurityManager;
 use crate::server::agent_manager::AgentManager;
+use crate::server::certificate::CertificateManager;
 use crate::server::core::LabyrinthServer;
 use crate::server::dweller_registry::{DwellerRecord, DwellerRegistry};
+use crate::server::topology::TopologyManager;
 use crate::styling;
 use colored::Colorize;
 use dialoguer::{Input, Select};
@@ -15,6 +19,18 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
 pub struct DwellerManager;
+
+struct DwellerInstallConfig {
+    agent_os: String,
+    dweller_id: String,
+    dweller_name: String,
+    listen_addr: String,
+    listen_port: u16,
+    auth_key: String,
+    cert: crate::security::GeneratedCertificate,
+    callback_servers: Vec<DwellerServerEndpoint>,
+    parent_path: Vec<DwellerPathHop>,
+}
 
 impl DwellerManager {
     pub async fn load_registry(server: &LabyrinthServer) -> Result<()> {
@@ -56,6 +72,31 @@ impl DwellerManager {
                 "{}",
                 styling::format_field("Status:", if online { "Online" } else { "Offline" })
             );
+            let callbacks = if record.callback_servers.is_empty() {
+                "not configured".to_string()
+            } else {
+                record
+                    .callback_servers
+                    .iter()
+                    .map(|endpoint| format!("{} ({})", endpoint.address, endpoint.transport))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            println!("{}", styling::format_field("Callback:", &callbacks));
+            if !record.path.is_empty() {
+                let path = record
+                    .path
+                    .iter()
+                    .map(|hop| {
+                        hop.cidr
+                            .as_ref()
+                            .map(|cidr| format!("{} via {}", hop.agent_name, cidr))
+                            .unwrap_or_else(|| hop.agent_name.clone())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                println!("{}", styling::format_field("Path:", &path));
+            }
             if index + 1 < registry.dwellers.len() {
                 println!(
                     "{}{}",
@@ -79,6 +120,97 @@ impl DwellerManager {
                 )
             );
         }
+        Ok(())
+    }
+
+    pub async fn configure_dweller(server: Arc<LabyrinthServer>) -> Result<()> {
+        let Some(record) = Self::select_record(&server, "Configure which dweller?").await? else {
+            return Ok(());
+        };
+        let callback_server: String = Input::new()
+            .with_prompt("Callback server address")
+            .default(
+                record
+                    .callback_servers
+                    .first()
+                    .map(|endpoint| endpoint.address.clone())
+                    .unwrap_or_default(),
+            )
+            .allow_empty(true)
+            .interact_text()
+            .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+        let callback_servers = if callback_server.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![DwellerServerEndpoint {
+                address: callback_server.trim().to_string(),
+                fingerprint: Self::current_server_fingerprint().ok(),
+                transport: "tcp".to_string(),
+            }]
+        };
+
+        {
+            let mut registry = server.dweller_registry().write().await;
+            if let Some(existing) = registry.dwellers.get_mut(&record.dweller_id) {
+                existing.callback_servers = callback_servers.clone();
+            }
+            registry.save()?;
+        }
+
+        let online_sender = {
+            let agents = server.agents().read().await;
+            agents
+                .get(&record.dweller_id)
+                .map(|agent| (agent.sender.clone(), agent.command_response.clone()))
+        };
+        if let Some((sender, command_response)) = online_sender {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            *command_response.lock().await = Some(tx);
+            sender
+                .send(Message::ConfigureDweller {
+                    callback_servers: callback_servers.clone(),
+                })
+                .await
+                .map_err(|e| {
+                    LabyrinthError::Message(format!("Failed to send dweller config: {}", e))
+                })?;
+            match tokio::time::timeout(Duration::from_secs(10), rx).await {
+                Ok(Ok(Message::ConfigureDwellerResponse { success, message })) if success => {
+                    println!(
+                        "{}",
+                        styling::format_success_msg(styling::SUCCESS_INDICATOR, &message)
+                    );
+                }
+                Ok(Ok(Message::ConfigureDwellerResponse { message, .. })) => {
+                    return Err(LabyrinthError::Message(message));
+                }
+                Ok(Ok(other)) => {
+                    return Err(LabyrinthError::Message(format!(
+                        "Unexpected dweller config response: {:?}",
+                        other
+                    )));
+                }
+                Ok(Err(e)) => {
+                    return Err(LabyrinthError::Message(format!(
+                        "Dweller config response channel closed: {}",
+                        e
+                    )));
+                }
+                Err(_) => {
+                    return Err(LabyrinthError::Message(
+                        "Timed out waiting for dweller config response".to_string(),
+                    ));
+                }
+            }
+        } else {
+            println!(
+                "{}",
+                styling::format_hint(
+                    "Dweller is offline; callback server was saved and will be used after reconnect/reinstall."
+                )
+            );
+        }
+
         Ok(())
     }
 
@@ -202,17 +334,19 @@ impl DwellerManager {
             ));
         };
 
-        let (agent_name, agent_os, agent_sender, command_response, kind) = {
+        let (agent_name, agent_os, agent_sender, command_response, kind, parent_path) = {
             let agents = server.agents().read().await;
             let agent = agents
                 .get(&agent_id)
                 .ok_or_else(|| LabyrinthError::Message("Selected agent not found".to_string()))?;
+            let parent_path = vec![Self::path_hop_for_agent(agent)];
             (
                 agent.info.name.clone(),
                 agent.info.os.clone(),
                 agent.sender.clone(),
                 agent.command_response.clone(),
                 agent.info.kind.clone(),
+                parent_path,
             )
         };
 
@@ -237,19 +371,36 @@ impl DwellerManager {
             .default(45454)
             .interact_text()
             .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+        let callback_server: String = Input::new()
+            .with_prompt("Optional dweller callback server")
+            .default(String::new())
+            .allow_empty(true)
+            .interact_text()
+            .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+        let callback_servers = if callback_server.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![DwellerServerEndpoint {
+                address: callback_server.trim().to_string(),
+                fingerprint: Self::current_server_fingerprint().ok(),
+                transport: "tcp".to_string(),
+            }]
+        };
 
         let dweller_id = Self::generate_id();
         let auth_key = Self::generate_secret();
         let cert = SecurityManager::generate_self_signed_certificate(&dweller_name)?;
-        let request = Self::build_install_request(
-            &agent_os,
+        let request = Self::build_install_request(DwellerInstallConfig {
+            agent_os,
             dweller_id,
             dweller_name,
             listen_addr,
             listen_port,
-            auth_key.clone(),
+            auth_key: auth_key.clone(),
             cert,
-        )?;
+            callback_servers,
+            parent_path,
+        })?;
 
         let response =
             Self::send_drop_request(&agent_sender, &command_response, request.clone()).await?;
@@ -349,47 +500,63 @@ impl DwellerManager {
         Ok(Some(records[selection].clone()))
     }
 
-    fn build_install_request(
-        agent_os: &str,
-        dweller_id: String,
-        dweller_name: String,
-        listen_addr: String,
-        listen_port: u16,
-        auth_key: String,
-        cert: crate::security::GeneratedCertificate,
-    ) -> Result<DwellerInstallRequest> {
-        let normalized = agent_os.to_lowercase();
+    fn build_install_request(config: DwellerInstallConfig) -> Result<DwellerInstallRequest> {
+        let normalized = config.agent_os.to_lowercase();
         let (install_path, config_dir, service_name) = if normalized.contains("windows") {
             (
-                format!(r"C:\ProgramData\Labyrinth\{}.exe", dweller_name),
-                format!(r"C:\ProgramData\Labyrinth\{}", dweller_name),
-                format!("LabyrinthDweller_{}", &dweller_id[..8]),
+                format!(r"C:\ProgramData\Labyrinth\{}.exe", config.dweller_name),
+                format!(r"C:\ProgramData\Labyrinth\{}", config.dweller_name),
+                format!("LabyrinthDweller_{}", &config.dweller_id[..8]),
             )
         } else if normalized.contains("linux") {
             (
-                format!("/usr/local/bin/{}", dweller_name),
-                format!("/etc/labyrinth/{}", dweller_name),
-                format!("labyrinth-dweller-{}", &dweller_id[..8]),
+                format!("/usr/local/bin/{}", config.dweller_name),
+                format!("/etc/labyrinth/{}", config.dweller_name),
+                format!("labyrinth-dweller-{}", &config.dweller_id[..8]),
             )
         } else {
             return Err(LabyrinthError::Message(format!(
                 "Drop Dweller is not implemented for remote OS '{}'",
-                agent_os
+                config.agent_os
             )));
         };
 
         Ok(DwellerInstallRequest {
-            dweller_id,
-            dweller_name,
-            listen_addr,
-            listen_port,
-            auth_key,
-            cert_pem: cert.cert_pem,
-            key_pem: cert.key_pem,
+            dweller_id: config.dweller_id,
+            dweller_name: config.dweller_name,
+            listen_addr: config.listen_addr,
+            listen_port: config.listen_port,
+            auth_key: config.auth_key,
+            cert_pem: config.cert.cert_pem,
+            key_pem: config.cert.key_pem,
             install_path,
             config_dir,
             service_name,
+            callback_servers: config.callback_servers,
+            parent_path: config.parent_path,
         })
+    }
+
+    fn path_hop_for_agent(agent: &crate::server::core::ConnectedAgent) -> DwellerPathHop {
+        let best_route = TopologyManager::best_route_for_agent(&agent.info.interfaces);
+        DwellerPathHop {
+            agent_id: agent.id.clone(),
+            agent_name: agent.info.name.clone(),
+            address: agent
+                .info
+                .interfaces
+                .iter()
+                .flat_map(|iface| iface.addresses.iter())
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string()),
+            cidr: best_route.map(|route| route.cidr),
+        }
+    }
+
+    fn current_server_fingerprint() -> Result<String> {
+        let cert_pem = std::fs::read_to_string("cert.pem").map_err(LabyrinthError::Io)?;
+        CertificateManager::get_fingerprint_from_pem(&cert_pem)
     }
 
     fn validate_dweller_identity(record: &DwellerRecord, info: &AgentInfo) -> Result<()> {
@@ -446,6 +613,8 @@ mod tests {
                 install_path: "/usr/local/bin/alpha".to_string(),
                 config_dir: "/etc/labyrinth/alpha".to_string(),
                 service_name: "labyrinth-dweller-alpha".to_string(),
+                callback_servers: Vec::new(),
+                parent_path: Vec::new(),
             },
             "secret".to_string(),
         )
@@ -469,21 +638,24 @@ mod tests {
             stable_id: stable_id.map(str::to_string),
             listener_addr: Some("10.10.10.10".to_string()),
             listener_port: Some(45454),
+            connectivity: Default::default(),
         }
     }
 
     #[test]
     fn build_install_request_for_linux_uses_system_paths() {
         let cert = SecurityManager::generate_self_signed_certificate("alpha").unwrap();
-        let request = DwellerManager::build_install_request(
-            "linux",
-            "abcdef1234567890".to_string(),
-            "alpha".to_string(),
-            "0.0.0.0".to_string(),
-            45454,
-            "secret".to_string(),
+        let request = DwellerManager::build_install_request(DwellerInstallConfig {
+            agent_os: "linux".to_string(),
+            dweller_id: "abcdef1234567890".to_string(),
+            dweller_name: "alpha".to_string(),
+            listen_addr: "0.0.0.0".to_string(),
+            listen_port: 45454,
+            auth_key: "secret".to_string(),
             cert,
-        )
+            callback_servers: Vec::new(),
+            parent_path: Vec::new(),
+        })
         .unwrap();
 
         assert_eq!(request.install_path, "/usr/local/bin/alpha");
@@ -495,15 +667,17 @@ mod tests {
     #[test]
     fn build_install_request_for_windows_uses_programdata_paths() {
         let cert = SecurityManager::generate_self_signed_certificate("alpha").unwrap();
-        let request = DwellerManager::build_install_request(
-            "windows",
-            "abcdef1234567890".to_string(),
-            "alpha".to_string(),
-            "0.0.0.0".to_string(),
-            45454,
-            "secret".to_string(),
+        let request = DwellerManager::build_install_request(DwellerInstallConfig {
+            agent_os: "windows".to_string(),
+            dweller_id: "abcdef1234567890".to_string(),
+            dweller_name: "alpha".to_string(),
+            listen_addr: "0.0.0.0".to_string(),
+            listen_port: 45454,
+            auth_key: "secret".to_string(),
             cert,
-        )
+            callback_servers: Vec::new(),
+            parent_path: Vec::new(),
+        })
         .unwrap();
 
         assert_eq!(request.install_path, r"C:\ProgramData\Labyrinth\alpha.exe");
@@ -514,15 +688,17 @@ mod tests {
     #[test]
     fn build_install_request_rejects_unknown_os() {
         let cert = SecurityManager::generate_self_signed_certificate("alpha").unwrap();
-        let err = DwellerManager::build_install_request(
-            "solaris",
-            "abcdef1234567890".to_string(),
-            "alpha".to_string(),
-            "0.0.0.0".to_string(),
-            45454,
-            "secret".to_string(),
+        let err = DwellerManager::build_install_request(DwellerInstallConfig {
+            agent_os: "solaris".to_string(),
+            dweller_id: "abcdef1234567890".to_string(),
+            dweller_name: "alpha".to_string(),
+            listen_addr: "0.0.0.0".to_string(),
+            listen_port: 45454,
+            auth_key: "secret".to_string(),
             cert,
-        )
+            callback_servers: Vec::new(),
+            parent_path: Vec::new(),
+        })
         .unwrap_err();
 
         assert!(err.to_string().contains("not implemented"));

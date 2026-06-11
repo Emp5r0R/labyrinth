@@ -1,3 +1,4 @@
+use crate::protocol::DwellerServerEndpoint;
 use crate::transport::TransportMode;
 use crate::{agent, server, styling};
 use clap::{Args, Parser, Subcommand};
@@ -115,6 +116,18 @@ pub struct DwellerArgs {
     /// Shared dweller auth key used by the server to authenticate
     #[arg(long)]
     pub auth_key: String,
+    /// Optional dweller runtime config path
+    #[arg(long)]
+    pub config_file: Option<String>,
+    /// Optional server endpoint this dweller should check in to when reachable
+    #[arg(long = "callback-server")]
+    pub callback_servers: Vec<String>,
+    /// Certificate fingerprint for callback server verification
+    #[arg(long = "callback-fingerprint")]
+    pub callback_fingerprint: Option<String>,
+    /// Transport used for dweller callback check-ins
+    #[arg(long = "callback-transport", default_value = "tcp")]
+    pub callback_transport: String,
 }
 
 pub async fn run_labyrinth_cli() -> anyhow::Result<()> {
@@ -215,14 +228,24 @@ async fn run_agent(args: AgentArgs) -> anyhow::Result<()> {
 async fn run_dweller(args: DwellerArgs) -> anyhow::Result<()> {
     init_logging(Level::INFO);
     info!("Starting dweller listener on {}", args.listen);
-    agent::run_dweller(
-        &args.listen,
-        &args.cert_file,
-        &args.key_file,
-        &args.id,
-        args.name,
-        args.auth_key,
-    )
+    agent::run_dweller(agent::DwellerRunConfig {
+        listen_addr: args.listen,
+        cert_path: args.cert_file,
+        key_path: args.key_file,
+        dweller_id: args.id,
+        name: args.name,
+        auth_key: args.auth_key,
+        config_file: args.config_file,
+        callback_servers: args
+            .callback_servers
+            .into_iter()
+            .map(|address| DwellerServerEndpoint {
+                address,
+                fingerprint: args.callback_fingerprint.clone(),
+                transport: args.callback_transport.clone(),
+            })
+            .collect(),
+    })
     .await?;
     Ok(())
 }

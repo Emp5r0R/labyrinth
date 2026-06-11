@@ -216,6 +216,7 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
         "select",
         "connect-dweller",
         "drop-dweller",
+        "configure-dweller",
         "forget-dweller",
         "info",
         "show",
@@ -285,6 +286,10 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                             "  {}  Drop and persist a dweller via the selected agent",
                             "drop-dweller".cyan()
                         );
+                        println!(
+                            "  {}  Configure a remembered dweller callback server",
+                            "configure-dweller".cyan()
+                        );
                         println!("  {}  Forget a remembered dweller", "forget-dweller".cyan());
                         println!("  {}  Show detailed agent information", "info".cyan());
                         println!(
@@ -351,6 +356,17 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                                 styling::format_error_msg(
                                     styling::ERROR_INDICATOR,
                                     &format!("Drop Dweller failed: {}", e)
+                                )
+                            );
+                        }
+                    }
+                    "configure-dweller" => {
+                        if let Err(e) = DwellerManager::configure_dweller(server.clone()).await {
+                            println!(
+                                "{}",
+                                styling::format_error_msg(
+                                    styling::ERROR_INDICATOR,
+                                    &format!("Configure Dweller failed: {}", e)
                                 )
                             );
                         }

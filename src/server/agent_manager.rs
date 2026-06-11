@@ -151,6 +151,25 @@ impl AgentManager {
             .await
             .insert(agent_id.clone(), agent);
 
+        if matches!(agent_info.kind, AgentKind::Dweller) {
+            let mut registry = server.dweller_registry().write().await;
+            if let Some(record) = registry.dwellers.get_mut(&agent_id) {
+                record.last_connected = Some(chrono_like_now());
+                if record.path.is_empty() {
+                    record.path.push(crate::protocol::DwellerPathHop {
+                        agent_id: agent_id.clone(),
+                        agent_name: agent_info.name.clone(),
+                        address: agent_info
+                            .listener_addr
+                            .clone()
+                            .unwrap_or_else(|| remote_addr.clone()),
+                        cidr: None,
+                    });
+                }
+                let _ = registry.save();
+            }
+        }
+
         let label = match agent_info.kind {
             AgentKind::Dweller => "Dweller",
             AgentKind::Generic => "Agent",
@@ -167,6 +186,10 @@ impl AgentManager {
 
         Ok(())
     }
+}
+
+fn chrono_like_now() -> String {
+    format!("{:?}", std::time::SystemTime::now())
 }
 
 #[cfg(test)]
@@ -193,6 +216,7 @@ mod tests {
             stable_id: None,
             listener_addr: None,
             listener_port: None,
+            connectivity: Default::default(),
         }
     }
 

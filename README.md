@@ -313,6 +313,11 @@ plan after confirmation. If a remembered dweller is only reachable after a
 parent tunnel comes up, Labyrinth starts the parent tunnel first and then
 connects the dweller.
 
+Dwellers also remember the parent path observed when they were dropped, for
+example `C via B via A`. That path is displayed as operator context while live
+planning still uses current routes, active tunnels, and online dweller
+registrations.
+
 #### Browser Network Map - Web UI
 ```bash
 open http://127.0.0.1:44777
@@ -625,6 +630,15 @@ LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent --retry --server IP:44
 | `--id` | Stable dweller identifier | `--id branch-01` |
 | `--name` | Optional display name | `--name branch-host` |
 | `--auth-key` | Server/dweller shared secret | `--auth-key <secret>` |
+| `--config-file` | Persistent dweller runtime config | `--config-file /etc/labyrinth/branch/dweller-config.json` |
+| `--callback-server` | Server the dweller should check in to when reachable | `--callback-server 203.0.113.10:44344` |
+| `--callback-fingerprint` | Certificate fingerprint for callback server | `--callback-fingerprint a1b2c3...` |
+| `--callback-transport` | Callback transport, `tcp` or `quic` | `--callback-transport tcp` |
+
+Agents and dwellers report a low-noise outbound reachability status during
+registration. The check uses the local default route and a short TCP check to
+the configured Labyrinth server only; it does not probe unrelated public
+services by default.
 
 ### Interactive Commands
 | Command | What it does |
@@ -635,6 +649,7 @@ LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent --retry --server IP:44
 | `select` | Choose machine to control |
 | `connect-dweller` | Connect to a remembered dweller |
 | `drop-dweller` | Install a persistent dweller through the selected agent |
+| `configure-dweller` | Change a remembered dweller callback server |
 | `forget-dweller` | Remove a remembered dweller |
 | `info` | Show machine details |
 | `topology` or `routes` | Show route ownership, shared networks, and conflicts |
