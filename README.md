@@ -1,800 +1,192 @@
 # Labyrinth v1.0.0
 
 ```
- )   _ ( _        _ o  _  _)_ ( _  
-(__ (_( )_) (_(  )  ( ) ) (_   ) ) 
+ )   _ ( _        _ o  _  _)_ ( _
+(__ (_( )_) (_(  )  ( ) ) (_   ) )
               _)
 
                  by Emp5r0R
 ```
 
-> **Navigate the network maze with precision**
+Labyrinth is a Rust network access and visualization toolkit for authorized
+security testing. It provides an operator server, outbound agents, persistent
+dwellers, IP tunneling, reverse port forwarding, interactive shells, QUIC
+streaming, and read-only network map visualization.
 
-A powerful network tunneling tool that lets you access remote networks securely. Think of it as your digital tunnel through firewalls and network barriers.
+Use it only on systems and networks where you have explicit authorization.
 
-## 🚀 Quick Start
+## Current Capabilities
 
-### 1. Download Labyrinth
+- Server, agent, and dweller modes through dedicated binaries or the
+  compatibility wrapper.
+- TCP/TLS transport by default, with optional QUIC/UDP transport for native
+  per-connection streams.
+- Certificate fingerprint or base64 certificate verification for agent and
+  dweller trust.
+- Ariadne IP tunneling with automatic route candidate detection from connected
+  agent interfaces.
+- Portal reverse port forwarding for service-specific access.
+- Smart multi-hop planning with `plan`, `access`, and `chain doctor`.
+- Remembered dwellers with callback server configuration, observed parent path
+  metadata, low-noise outbound reachability status, hibernation, jitter, and
+  queued task polling.
+- Interactive remote shells with raw PTY mode and a control shell that uses
+  `!` local commands so `/usr/bin`, `/tmp`, and other slash-prefixed remote
+  paths pass through unchanged.
+- Read-only browser network map on `127.0.0.1:44777` by default, showing
+  agents, dwellers, networks, active tunnels, port forwards, encrypted edges,
+  local edges, shared networks, route conflicts, and status summaries.
+- Linux and Windows agent and dweller support. Linux Ariadne uses TUN support;
+  Windows bridge work is isolated under the Windows netstack module.
 
-Choose the right version for your system:
-- **`labyrinth-server-v1.0.0-x86_64-unknown-linux-gnu`** - Server for most Linux systems
-- **`labyrinth-agent-v1.0.0-x86_64-unknown-linux-gnu`** - Outbound agent for most Linux systems
-- **`labyrinth-dweller-v1.0.0-x86_64-unknown-linux-gnu`** - Persistent dweller listener for most Linux systems
-- **`*-x86_64-unknown-linux-musl`** - Static Linux builds
-- **`labyrinth-v1.0.0-*`** - Compatibility wrapper with `server`, `agent`, and `dweller` subcommands
+## Documentation
+
+- [Usage guide](docs/usage.md): install, quick start, CLI flags, interactive
+  commands, dweller behavior, shell behavior, examples, and troubleshooting.
+- [Architecture guide](docs/architecture.md): server, agent, dweller,
+  streaming, transport, topology, and dashboard boundaries.
+- [Operations guide](docs/operations.md): build, test, release, git hygiene,
+  generated files, and security handling.
+- [Agent instructions](AGENTS.md): contributor rules and module map for coding
+  agents.
+- [Historical reports](docs/reports/): previous summaries and validation notes.
+
+## Quick Start
+
+Build from source:
 
 ```bash
-# Make Linux binaries executable
-chmod +x labyrinth-server-v1.0.0-x86_64-unknown-linux-musl
-chmod +x labyrinth-agent-v1.0.0-x86_64-unknown-linux-musl
-chmod +x labyrinth-dweller-v1.0.0-x86_64-unknown-linux-musl
+cargo build --release --bins
 ```
 
-### 2. Start the Server (Your Control Center)
+Start the server:
 
 ```bash
-# Start the server (you need root permissions)
 sudo LABYRINTH_AUTH_KEY="change-this-secret" \
-    ./labyrinth-server-v1.0.0-x86_64-unknown-linux-musl
+  ./target/release/labyrinth-server \
+  --listen-addr 0.0.0.0:44344
 ```
 
-You'll see:
-```
- )   _ ( _        _ o  _  _)_ ( _  
-(__ (_( )_) (_(  )  ( ) ) (_   ) ) 
-              _)
-
-                 by Emp5r0R
-
-[+] Server started on 0.0.0.0:44344 (tcp/tls)
-[+] Web UI: http://127.0.0.1:44777
-
-[+] Labyrinth Control Interface
-Navigate the network maze with precision
-
-labyrinth → 
-```
-
-Open `http://127.0.0.1:44777` on the server host for the read-only browser
-network map. It updates automatically as agents, dwellers, Ariadne tunnels,
-Portal port forwards, and detected networks change.
-
-> [!IMPORTANT]
-> **Get the fingerprint!** Use the `cert` command to see the certificate fingerprint you'll need for secure agent connections.
-
-> [!WARNING]
-> **Running without sudo?** You'll see a warning about limited functionality. Ariadne mode requires root privileges for TUN interface creation.
-
-### 3. Connect an Agent (On Target Machine)
+The server prints a certificate fingerprint. Use that fingerprint when starting
+agents:
 
 ```bash
-# Connect to your server
 LABYRINTH_AUTH_KEY="change-this-secret" \
-./labyrinth-agent-v1.0.0-x86_64-unknown-linux-musl \
-    --server YOUR_SERVER_IP:44344 \
-    --fingerprint a1b2c3d4e5f6789abcdef...
+  ./target/release/labyrinth-agent \
+  --server SERVER_IP:44344 \
+  --fingerprint SHA256_FINGERPRINT \
+  --retry
 ```
 
-### 4. Start Tunneling
+Open the visualization dashboard on the server host:
 
-Back on your server, you'll see the agent connected. Now you can:
+```text
+http://127.0.0.1:44777
+```
+
+Useful first commands in the server console:
+
+```text
+labyrinth -> agents
+labyrinth -> select
+labyrinth -> info
+labyrinth -> map
+labyrinth -> plan 10.10.0.0/24
+labyrinth -> access 10.10.0.0/24
+labyrinth -> commands
+```
+
+## QUIC Transport
+
+QUIC avoids the usual TCP-over-TCP behavior for proxied internal connections by
+running the server-agent control channel over UDP and opening a lightweight QUIC
+bidirectional stream for each Portal or supported Ariadne flow.
+
+Server:
 
 ```bash
-labyrinth → agents          # See connected machines
-labyrinth → select          # Choose which machine to work with
-labyrinth → plan 10.10.0.0/24
-labyrinth → access 10.10.0.0/24
-labyrinth → map             # Visualize agents, dwellers, networks, tunnels, and forwards
-labyrinth → ariadne       # Start Ariadne Mode (IP Tunneling)
-labyrinth → portal            # Start Portal Mode (Port Forwarding)
+sudo LABYRINTH_AUTH_KEY="change-this-secret" \
+  ./target/release/labyrinth-server \
+  --transport quic \
+  --listen-addr 0.0.0.0:44344
 ```
 
-Ariadne automatically detects likely target CIDRs from the selected agent's
-interface addresses. The `agents`, `info`, and `status` commands show the best
-auto route, and the `ariadne` prompt uses it as the default. Type a different
-CIDR if you need to pivot through another client network.
+Agent:
 
-For chained environments, prefer `plan <ip|cidr>` and `access <ip|cidr>`.
-`plan` shows the server-selected path without changing state. `access` previews
-the same plan, asks for confirmation, then reuses active tunnels, starts the
-needed Ariadne tunnel, and connects remembered dwellers when they become
-reachable through an active parent route.
-
-## 📖 How to Use Every Feature
-
-### 🖥️ Server Commands
-
-#### Start Server (Basic)
 ```bash
-sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server
+LABYRINTH_AUTH_KEY="change-this-secret" \
+  ./target/release/labyrinth-agent \
+  --transport quic \
+  --server SERVER_IP:44344 \
+  --fingerprint SHA256_FINGERPRINT
 ```
-**What it does:** Starts your control center on port 44344
 
-#### Start Server (Custom Port)
+SOCKS proxy mode applies to TCP/TLS only because QUIC uses UDP.
+
+## Dweller Quick Start
+
+Dwellers are remembered access points for future connectivity. They can listen
+for inbound server connections or check in to configured callback servers when
+reachable.
+
 ```bash
-sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server --listen-addr 0.0.0.0:8080
+./target/release/labyrinth-dweller \
+  --listen 0.0.0.0:45454 \
+  --cert-file cert.pem \
+  --key-file key.pem \
+  --id branch-01 \
+  --name branch-host \
+  --auth-key "change-this-secret" \
+  --callback-server SERVER_IP:44344 \
+  --callback-fingerprint SHA256_FINGERPRINT \
+  --sleep 60 \
+  --jitter 50 \
+  --task-batch-size 10
 ```
-**What it does:** Starts server on port 8080 instead
 
-#### Start Server (QUIC Transport)
+Default dweller callback behavior is hibernating task polling:
+
+```text
+sleep
+check for queued tasks
+run claimed tasks
+send results
+sleep again
+```
+
+Use `--hibernation false` for dwellers that must keep long-lived tunnels or
+port forwards online.
+
+## Security Defaults
+
+- Set `LABYRINTH_AUTH_KEY` unless you are doing local-only testing.
+- Do not use `--no-auth` outside isolated tests.
+- Pin server identity with `--fingerprint` or `--cert`.
+- Keep generated certificates, keys, logs, command output, shell captures,
+  dwellers, and release binaries out of git.
+- Keep the browser dashboard bound to localhost unless you add explicit access
+  control around it.
+
+## Verification
+
+Before submitting changes:
+
 ```bash
-sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server \
-    --transport quic \
-    --listen-addr 0.0.0.0:44344
+cargo fmt -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+git diff --check
 ```
-**What it does:** Listens for agents over QUIC/UDP instead of the default
-TCP/TLS transport. Use this with agents started with `--transport quic`. For
-QUIC agents, Portal and Linux Ariadne open a separate QUIC bidirectional stream
-for each proxied TCP connection.
 
-#### Start Server (Browser Map Address)
+For streaming-specific changes:
+
 ```bash
-sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server \
-    --web-ui-addr 127.0.0.1:44777
-```
-**What it does:** Starts the read-only browser visualization on the selected
-address. Use `--no-web-ui` to disable the browser dashboard. The dashboard binds
-to localhost by default and exposes only visualization endpoints.
-
-#### Start Server (No Security - Testing Only)
-```bash
-sudo ./labyrinth-server --no-auth
-```
-**What it does:** Disables password protection (dangerous!)
-
-> [!WARNING]
-> Only use `--no-auth` for testing. Never in real scenarios!
-
-#### Start Server (Headless Mode)
-```bash
-sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server --headless
-```
-**What it does:** Runs without interactive interface (for scripts)
-
-#### Start Server (Advanced Options)
-```bash
-sudo LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-server \
-    --interface labyrinth \
-    --route 192.168.1.0/24 \
-    --domain example.com \
-    --web-ui-addr 127.0.0.1:44777
-```
-**What it does:** 
-- `--interface`: Set custom TUN interface name for tunneling (headless mode only)
-- `--route`: Pre-configure target subnet to route (headless mode only)
-- `--domain`: Set custom domain for TLS certificate
-- `--transport`: Select `tcp` (default) or `quic` for server-agent control
-  connections
-- `--web-ui-addr`: Set the read-only browser map address
-- `--no-web-ui`: Disable the browser map
-
----
-
-### 🤖 Agent Commands
-
-#### Basic Connection
-```bash
-LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent --server 192.168.1.100:44344
-```
-**What it does:** Connects to server at IP 192.168.1.100
-
-#### Secure Connection (Recommended)
-```bash
-LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
-    --server 192.168.1.100:44344 \
-    --fingerprint a1b2c3d4e5f6789abcdef...
-```
-**What it does:** Connects with certificate verification for security
-
-#### Connection with Auto-Retry
-```bash
-LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
-    --server 192.168.1.100:44344 \
-    --fingerprint a1b2c3d4e5f6789abcdef... \
-    --retry
-```
-**What it does:** Automatically reconnects if connection drops
-
-#### QUIC Connection
-```bash
-LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
-    --transport quic \
-    --server 192.168.1.100:44344 \
-    --fingerprint a1b2c3d4e5f6789abcdef...
-```
-**What it does:** Connects to a QUIC-enabled server over UDP. This keeps the
-same certificate fingerprint verification model as TCP/TLS and enables native
-per-connection QUIC streams for Portal and Linux Ariadne traffic.
-
-#### Connection Through Proxy
-```bash
-LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
-    --server 192.168.1.100:44344 \
-    --proxy socks5://127.0.0.1:1080 \
-    --fingerprint a1b2c3d4e5f6789abcdef...
-```
-**What it does:** Connects through a SOCKS5 proxy
-
-> [!NOTE]
-> SOCKS5 proxy mode is TCP/TLS-only. QUIC uses UDP and does not use `--proxy`.
-
-#### Connection with Custom Certificate
-```bash
-LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent \
-    --server 192.168.1.100:44344 \
-    --cert "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t..."
-```
-**What it does:** Connects using a base64-encoded certificate for verification
-
----
-
-### 🎮 Interactive Server Commands
-
-Once your server is running, you can use these commands:
-
-#### `help` - Show All Commands
-```bash
-labyrinth → help
-```
-**What it shows:** List of all available commands
-
-#### `agents` - List Connected Machines
-```bash
-labyrinth → agents
-```
-**What you'll see:**
-```
-Connected Agents
-─────────────────
-Agent 1
-  ID:      abc12345
-  Name:    target-host
-  System:  Linux/x86_64
-  Status:  Online
-  Ariadne (Tunnel): Inactive
-  ───────────────────────
-Agent 2
-  ID:      def67890
-  Name:    web-server
-  System:  Windows/amd64
-  Status:  Online
-  Ariadne (Tunnel): Active (192.168.1.0/24)
+cargo test --test integration_streaming -- --nocapture
+cargo bench
 ```
 
-#### `select` - Choose a Machine to Work With
-```bash
-labyrinth → select
-```
-**What it does:** Shows menu to pick which connected machine to control
-
-#### `info` - Show Machine Details
-```bash
-labyrinth → info
-```
-**What you'll see:**
-```
-Agent Profile
-────────────
-ID:        abc12345
-Name:      target-host
-Host:      ubuntu-server
-System:    Linux/x86_64
-Connection: Connected
-
-Network Interfaces
-─────────────────
-[1]: eth0 (00:11:22:33:44:55)
-    192.168.1.50
-    fe80::211:22ff:fe33:4455
-
-[2]: wlan0 (aa:bb:cc:dd:ee:ff)
-    10.0.0.100
-```
-
-#### `map` or `network-map` - Visualize Network State
-```bash
-labyrinth → map
-```
-**What it shows:** A read-only BloodHound-style terminal graph of connected
-agents, dwellers, detected networks, active Ariadne tunnels, Portal port
-forwards, shared multi-network pivots, and route conflicts. Edges are labeled
-with transport context such as `tls/enc` and `local/unenc`.
-
-#### `plan`, `access`, and `chain` - Smart Multi-Hop Access
-```bash
-labyrinth → plan 172.16.20.0/24
-labyrinth → access 172.16.20.25
-labyrinth → chain status
-labyrinth → chain doctor 172.16.20.25
-```
-**What it does:** Builds a server-side route plan from connected agents,
-remembered dwellers, active tunnels, and detected CIDRs. `access` applies the
-plan after confirmation. If a remembered dweller is only reachable after a
-parent tunnel comes up, Labyrinth starts the parent tunnel first and then
-connects the dweller.
-
-Dwellers also remember the parent path observed when they were dropped, for
-example `C via B via A`. That path is displayed as operator context while live
-planning still uses current routes, active tunnels, and online dweller
-registrations.
-
-#### Browser Network Map - Web UI
-```bash
-open http://127.0.0.1:44777
-```
-**What it shows:** A live browser visualization of the same server snapshot:
-connection status, agents, dwellers, detected CIDRs, multi-network pivots,
-route conflicts, Ariadne tunnels, Portal forwards, and encrypted versus
-local/unencrypted edges. The map supports pan, zoom, fit-to-view, node
-selection, and smart access suggestions. Mutation actions remain terminal-first
-in this version.
-
-#### `tunnel` or `ariadne` - Start Ariadne Mode (IP Tunneling)
-```bash
-labyrinth → tunnel
-# or
-labyrinth → ariadne
-```
-**What it asks:**
-- Target subnet (auto-detected from the selected agent when possible)
-- Interface name (like `labyrinth`)
-
-**What it does:** Creates a tunnel so you can access the entire network
-
-#### `forward` or `portal` - Start Portal Mode (Port Forwarding)
-```bash
-labyrinth → forward
-# or
-labyrinth → portal
-```
-**What it asks:**
-- Port mappings (like `8080:192.168.1.50:80`)
-- Type `done` when finished
-
-**What it does:** Forwards specific ports bidirectionally between your machine and the target
-
-#### `status` - Show Current Status
-```bash
-labyrinth → status
-```
-**What you'll see:**
-```
-Labyrinth Status
-───────────────
-Server:              Running
-Security:            Authentication Enabled
-Agents:              2
-Active connections:  1
-
-Selected Agent
-──────────────
-Agent:               target-host (abc12345)
-Ariadne (Tunnel):  Active - 192.168.1.0/24
-System:              Linux/x86_64
-```
-
-#### `commands` or `cmd` - Execute System Commands
-```bash
-labyrinth → commands
-# or
-labyrinth → cmd
-```
-**What it does:** Execute system commands on the selected agent based on its operating system
-
-**What you'll see:**
-- **Linux systems**: Options to run `ifconfig`, `ss -tunlp`
-- **Windows systems**: Options to run `ipconfig`, `netstat -aon`
-- **Shell**: Choose either an SSH/WinRM-style raw terminal or the Labyrinth
-  control shell with slash commands
-- **Unknown systems**: No commands available message
-
-**Example output:**
-```
-Commands Mode
-─────────────
-[+] Linux system identified
-
-Available commands:
-  1. ifconfig
-  2. ss -tunlp
-  3. Back
-
-Select a command to execute
-> 1
-
-[+] Executing command: ifconfig
-[+] Command sent to agent. Waiting for response...
-
-[+] Command Output:
-  eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
-        inet 192.168.1.100  netmask 255.255.255.0  broadcast 192.168.1.255
-        ether 00:11:22:33:44:55  txqueuelen 1000  (Ethernet)
-```
-
-**Features:**
-- **Interactive terminal**: Raw PTY streaming supports arrows, Ctrl-C,
-  full-screen terminal programs, PowerShell, and shell prompts. Press `Ctrl-]`
-  to detach.
-- **Control shell fallback**: Use slash commands such as `/upload`,
-  `/download`, `/sysenum`, `/network`, and `/resize` while keeping the same
-  remote PTY session model.
-- **30-second timeout**: Commands automatically timeout if they take too long
-- **Real-time feedback**: See command execution status and results immediately
-- **Error handling**: Clear error messages if commands fail
-- **Formatted output**: Clean, readable command results with proper indentation
-
-#### `stop` - Stop Current Tunnel
-```bash
-labyrinth → stop
-```
-**What it does:** Stops the active tunnel or port forwarding
-
-#### `cert` - Show Certificate Info
-```bash
-labyrinth → cert
-```
-**What you'll see:**
-```
-Server Certificate Information
-─────────────────────────────
-
-Fingerprint (SHA-256)
-  Readable:     a1:b2:c3:d4:e5:f6:78:9a:bc:de:f0:12:34:56:78:9a:bc:de:f0:12:34:56:78:9a:bc:de:f0:12:34:56:78:9a
-  Copy-friendly: a1b2c3d4e5f6789abcdef012345678abcdef012345678abcdef012345678abcdef0123456789a
-
-Certificate (Base64)
-  LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t...
-```
-
-> [!TIP]
-> **Easy Fingerprint Copying**: Use the "Copy-friendly" format (without colons) for agent connections!
-
-#### `clear` - Clear Screen
-```bash
-labyrinth → clear
-```
-**What it does:** Clears the screen
-
-#### `exit` - Quit Server
-```bash
-labyrinth → exit
-```
-**What it does:** Shuts down the server
-
----
-
----
-
-## 💡 Real-World Examples
-
-### Example 1: Access Office Network from Home
-
-**Scenario:** You want to access your office network (192.168.1.0/24) from home.
-
-**Step 1:** Set up server at home
-```bash
-sudo ./labyrinth server
-# Note the fingerprint: a1b2c3d4e5f6...
-```
-
-**Step 2:** Run agent on office computer
-```bash
-./labyrinth agent \
-    --server YOUR_HOME_IP:44344 \
-    --fingerprint a1b2c3d4e5f6...
-```
-
-**Step 3:** Create tunnel
-```bash
-labyrinth → agents          # See office computer
-labyrinth → select          # Choose it
-labyrinth → ariadne       # Start tunnel
-# Enter: 192.168.1.0/24
-# Enter: office
-```
-
-**Step 4:** Access office network
-```bash
-# Now you can access office machines
-ping 192.168.1.10
-ssh user@192.168.1.20
-```
-
-### Example 2: Access Web Server Behind Firewall
-
-**Scenario:** Access a web server at 192.168.1.50:80 through a compromised machine.
-
-**Step 1:** Start server
-```bash
-sudo ./labyrinth server
-```
-
-**Step 2:** Connect agent
-```bash
-./labyrinth agent --server YOUR_IP:44344 --fingerprint a1b2c3d4e5f6...
-```
-
-**Step 3:** Set up port forwarding
-```bash
-labyrinth → portal
-# Enter: 8080:192.168.1.50:80
-# Enter: done
-```
-
-**Step 4:** Access the web server
-```bash
-# Open browser to http://localhost:8080
-# It will show the web server at 192.168.1.50:80
-```
-
-### Example 3: Secure Connection with Password
-
-**Step 1:** Set password on server
-```bash
-export LABYRINTH_AUTH_KEY="my-super-secret-password-2024"
-sudo ./labyrinth server
-```
-
-**Step 2:** Connect with same password
-```bash
-export LABYRINTH_AUTH_KEY="my-super-secret-password-2024"
-./labyrinth agent \
-    --server SERVER_IP:44344 \
-    --fingerprint a1b2c3d4e5f6...
-```
-
----
-
-## ⚠️ Security Tips
-
-> [!TIP]
-> **Always use fingerprint verification** in real scenarios:
-> ```bash
-> --fingerprint a1b2c3d4e5f6789abcdef...
-> ```
-
-> [!WARNING]
-> **Never use these in production:**
-> - `--no-auth` (no password protection)
-
-> [!NOTE]
-> **Use strong passwords:**
-> ```bash
-> export LABYRINTH_AUTH_KEY="VeryLongAndComplexPassword2024!"
-> ```
-
----
-
-## 🐛 Troubleshooting
-
-### "Permission denied" when starting server
-```bash
-# You need root permissions for network tunneling
-sudo ./labyrinth server
-```
-
-### "Connection refused"
-```bash
-# Check if server is running
-netstat -tlnp | grep 44344
-
-# Try with retry flag
-./labyrinth agent --retry --server IP:44344
-```
-
-### "Certificate verification failed"
-```bash
-# Use the exact fingerprint from server startup
-./labyrinth agent --fingerprint EXACT_FINGERPRINT_HERE
-```
-
-### Agent keeps disconnecting
-```bash
-# Use auto-retry
-LABYRINTH_AUTH_KEY="change-this-secret" ./labyrinth-agent --retry --server IP:44344
-```
-
----
-
-## 📋 Command Reference
-
-### Server Options
-| Option | Description | Example |
-|--------|-------------|---------|
-| `--listen-addr` | Change server port | `--listen-addr 0.0.0.0:8080` |
-| `--no-auth` | Disable password | `--no-auth` |
-| `--headless` | No interactive mode | `--headless` |
-| `--interface` | Custom TUN interface name | `--interface labyrinth` |
-| `--route` | Pre-configure target subnet | `--route 192.168.1.0/24` |
-| `--domain` | Custom domain for TLS cert | `--domain example.com` |
-| `--transport` | Agent transport, `tcp` or `quic` | `--transport quic` |
-| `--web-ui-addr` | Browser map address | `--web-ui-addr 127.0.0.1:44777` |
-| `--no-web-ui` | Disable browser map | `--no-web-ui` |
-
-### Agent Options
-| Option | Description | Example |
-|--------|-------------|---------|
-| `--server` | Server to connect to | `--server 192.168.1.100:44344` |
-| `--fingerprint` | Verify certificate | `--fingerprint a1b2c3...` |
-| `--cert` | Use base64 certificate | `--cert "LS0tLS1..."` |
-| `--retry` | Auto-reconnect | `--retry` |
-| `--proxy` | Use SOCKS5 proxy with TCP/TLS | `--proxy socks5://127.0.0.1:1080` |
-| `--transport` | Agent transport, `tcp` or `quic` | `--transport quic` |
-
-### Dweller Options
-| Option | Description | Example |
-|--------|-------------|---------|
-| `--listen` | Inbound listen address | `--listen 0.0.0.0:45454` |
-| `--cert-file` | TLS certificate PEM path | `--cert-file cert.pem` |
-| `--key-file` | TLS key PEM path | `--key-file key.pem` |
-| `--id` | Stable dweller identifier | `--id branch-01` |
-| `--name` | Optional display name | `--name branch-host` |
-| `--auth-key` | Server/dweller shared secret | `--auth-key <secret>` |
-| `--config-file` | Persistent dweller runtime config | `--config-file /etc/labyrinth/branch/dweller-config.json` |
-| `--callback-server` | Server the dweller should check in to when reachable | `--callback-server 203.0.113.10:44344` |
-| `--callback-fingerprint` | Certificate fingerprint for callback server | `--callback-fingerprint a1b2c3...` |
-| `--callback-transport` | Callback transport label, `tcp`, `quic`, `http`, `https`, or `dns` | `--callback-transport tcp` |
-| `--hibernation` | Enable or disable sleep/poll mode for callback check-ins | `--hibernation false` |
-| `--sleep` | Base hibernation sleep interval in seconds | `--sleep 60` |
-| `--jitter` | Hibernation jitter percentage, clamped to 0-100 | `--jitter 50` |
-| `--task-batch-size` | Maximum queued tasks claimed per check-in | `--task-batch-size 10` |
-
-Agents and dwellers report a low-noise outbound reachability status during
-registration. The check uses the local default route and a short TCP check to
-the configured Labyrinth server only; it does not probe unrelated public
-services by default.
-
-Dwellers default to hibernation mode when they have callback servers. A
-hibernating dweller sleeps, checks in to the configured server, claims queued
-tasks, sends results, then sleeps again. The default policy is `sleep=60s`,
-`jitter=50%`, and `task-batch-size=10`; `--hibernation false` keeps the
-callback connection online for long-lived tunnels and port forwards. TCP/TLS
-and QUIC callbacks use the current Labyrinth control protocol. HTTP, HTTPS, and
-DNS are accepted as runtime transport labels for planning/configuration, but
-they require dedicated server listeners before task transport is active.
-
-### Interactive Commands
-| Command | What it does |
-|---------|--------------|
-| `help` | Show all commands |
-| `agents` | List connected machines |
-| `dwellers` | List remembered dwellers |
-| `select` | Choose machine to control |
-| `connect-dweller` | Connect to a remembered dweller |
-| `drop-dweller` | Install a persistent dweller through the selected agent |
-| `configure-dweller` | Change callback server, transport, sleep, jitter, and hibernation |
-| `task-dweller` | Queue a command task for a hibernating dweller |
-| `dweller-tasks` | Show queued dweller tasks and results |
-| `forget-dweller` | Remove a remembered dweller |
-| `info` | Show machine details |
-| `topology` or `routes` | Show route ownership, shared networks, and conflicts |
-| `plan <ip\|cidr>` | Preview the smart access path to a target |
-| `access <ip\|cidr>` | Apply the smart access path after confirmation |
-| `chain status` | Show active tunnels, remembered dwellers, and reachability |
-| `chain doctor [ip\|cidr]` | Diagnose why a target or dweller is unreachable |
-| `map` or `network-map` | Show a read-only network graph with tunnels, dwellers, and forwards |
-| `tunnel` or `ariadne` | Start Ariadne mode (IP tunneling) |
-| `forward` or `portal` | Start Portal mode (Port forwarding) |
-| `commands` or `cmd` | Execute system commands on agent |
-| `upload` | Upload file to selected agent |
-| `download` | Download file from selected agent |
-| `status` | Show current status |
-| `stop` | Stop active tunnel/forwarding |
-| `cert` | Show certificate |
-| `exit` | Quit server |
-
----
-
-## 🎯 What Makes Labyrinth Special
-
-- **Easy to Use**: Simple commands, clear feedback
-- **Secure by Default**: TLS encryption, certificate verification
-- **Two Modes**: Interactive for exploration, direct commands for automation
-- **Cross-Platform**: Works on any Linux system
-- **No Dependencies**: Static binary needs nothing else
-- **Professional**: Clean interface, reliable operation
-- **SOLID Architecture**: Modular, maintainable, and extensible codebase
-- **Smart UX**: Copy-friendly fingerprints, sudo warnings, clear error messages
-
-## 🏗️ Architecture & Design
-
-Labyrinth follows **SOLID principles** for clean, maintainable code:
-
-### 📁 Project Structure
-```
-labyrinth/src/
-├── main.rs                # Compatibility wrapper CLI
-├── cli.rs                 # Shared CLI args and role dispatch
-├── bin/
-│   ├── labyrinth-server.rs
-│   ├── labyrinth-agent.rs
-│   └── labyrinth-dweller.rs
-├── agent/                    # Agent-side components
-│   ├── command_executor.rs  # OS-aware command workflows
-│   ├── connection.rs        # Connection management
-│   ├── core.rs             # Agent and dweller runtime loops
-│   ├── pty_shell.rs        # Interactive PTY shell sessions
-│   ├── reverse_port_forward.rs # Agent-side port forwarding
-│   ├── streaming_manager.rs # Agent-side streaming support
-│   ├── system_info.rs      # System information collection
-│   └── tls_config.rs       # TLS configuration
-├── server/                  # Server-side components
-│   ├── agent_connection.rs # Protocol routing for connected agents
-│   ├── agent_manager.rs    # Agent registration & management
-│   ├── certificate.rs      # Certificate management
-│   ├── core.rs            # Server state management
-│   ├── dweller_manager.rs # Dweller install/connect workflows
-│   ├── dweller_registry.rs # Persisted dweller registry
-│   ├── netstack_bridge_windows.rs # Windows Ariadne bridge
-│   ├── privileges.rs      # Sudo privilege detection
-│   ├── reverse_port_forward.rs # Portal port forwarding
-│   ├── tunnel_manager.rs  # Tunnel operations
-│   └── ui.rs              # User interface operations
-├── streaming/              # Streaming architecture
-│   ├── connection_manager.rs # Connection lifecycle management
-│   ├── errors.rs          # Streaming error types
-│   ├── metrics.rs         # Metrics and health checks
-│   ├── models.rs          # Data structures
-│   ├── recovery.rs        # Error recovery coordinator
-│   ├── resource_manager.rs # Test-only resource management
-│   ├── stream_manager.rs   # Bidirectional stream handling
-│   ├── test_interfaces.rs # Test-only stream interfaces
-│   └── traits.rs          # Core streaming interfaces
-├── config.rs               # Configuration structures
-├── error.rs               # Error types and handling
-├── protocol.rs            # Network protocol definitions
-├── security.rs            # TLS/fingerprint helpers
-└── styling.rs             # UI styling and formatting
-```
-
-### 🎯 SOLID Principles Implementation
-
-- **Single Responsibility**: Each module has one clear purpose
-- **Open/Closed**: Extensible without modification
-- **Liskov Substitution**: Proper trait implementations
-- **Interface Segregation**: Clean, focused interfaces
-- **Dependency Inversion**: Abstractions over concretions
-
-### 🔧 UX Improvements
-
-- **Copy-Friendly Fingerprints**: No more manual colon removal!
-- **Sudo Warnings**: Clear notifications about privilege requirements
-- **Enhanced Error Messages**: Actionable guidance for common issues
-- **Command Organization**: Primary (server/agent) vs secondary commands
-- **Smart Agent Management**: Automatic disconnection detection with grace periods for new connections
-- **Topology Awareness**: Route ownership and shared-network detection for multi-hop planning
-- **Improved Port Forwarding**: Enhanced reliability and proper traffic routing
-- **OS-Aware Commands**: Automatic detection of Linux/Windows systems with appropriate command sets
-- **Clean Terminology**: "Ariadne" for tunneling, "Portal" for port forwarding
-
----
-
-## 📞 Need Help?
-
-- **Found a bug?** Open an issue on GitHub
-- **Need a feature?** Create a feature request
-- **Security concern?** Contact Emp5r0R directly
-
----
-
-**Made with ❤️ by Emp5r0R**
-
-*Navigate the network maze with precision*
- 
----
-
-## 🌐 Ariadne Netstack (Server-Only)
-
-Labyrinth’s Ariadne mode is designed for L3 access without requiring root on the agent. To complete TCP handshakes and route arbitrary flows originating from the TUN, the server can run a small userland TCP/IP stack and bridge payloads to the agent over the streaming channel.
-
-- Implementation: `src/server/netstack_bridge_windows.rs` on Windows; Linux
-  Ariadne remains in `src/server/tunnel_manager.rs`.
-- Build with smoltcp backend:
-  - Build: `cargo build --features netstack_smoltcp --bins`
-  - Run wrapper: `cargo run --features netstack_smoltcp --bin labyrinth -- server`
-  - Run dedicated server: `cargo run --features netstack_smoltcp --bin labyrinth-server`
-- Behavior:
-  - Server owns the TUN and userland stack.
-  - New TCP flows from the TUN trigger `Stream.Setup {connection_id, mapping}` to the agent.
-  - Data flows via `Stream.Data` (TargetToClient / ClientToTarget).
-  - On close, `Stream.Close` cleans up both sides.
+## License and Responsibility
+
+This repository does not grant permission to test third-party systems. Operators
+are responsible for authorization, scope control, logging requirements, and
+local law.

@@ -64,6 +64,8 @@ use crate::streaming::{
     ErrorRecoveryCoordinator, MetricsCollector,
 };
 
+const SHELL_LOCAL_COMMAND_PREFIX: char = '!';
+
 fn resolve_auth_key(no_auth: bool) -> Result<Option<String>> {
     if no_auth {
         return Ok(None);
@@ -1070,8 +1072,20 @@ mod tests {
     #[test]
     fn shell_local_commands_use_prefixed_tokens() {
         assert_eq!(
-            shell_local_command_token(CommandsOs::Linux, "/sysenum"),
+            shell_local_command_token(CommandsOs::Linux, "!sysenum"),
             Some("linux:sysenum".to_string())
+        );
+    }
+
+    #[test]
+    fn shell_slash_commands_are_remote_input() {
+        assert_eq!(
+            shell_local_command_token(CommandsOs::Linux, "/usr/bin/id"),
+            None
+        );
+        assert_eq!(
+            shell_local_command_token(CommandsOs::Linux, "/sysenum"),
+            None
         );
     }
 
@@ -1127,14 +1141,20 @@ mod tests {
     }
 
     #[test]
-    fn shell_helper_only_completes_local_slash_commands() {
-        let helper = ShellHelper::new(vec!["/help", "/history", "/exit"]);
-        let (_start, matches) = helper.complete_local_command("/h", 2);
+    fn shell_helper_only_completes_local_bang_commands() {
+        let helper = ShellHelper::new(vec!["!help", "!history", "!exit"]);
+        let (_start, matches) = helper.complete_local_command("!h", 2);
         let replacements: Vec<String> = matches.into_iter().map(|pair| pair.replacement).collect();
         assert_eq!(
             replacements,
-            vec!["/help".to_string(), "/history".to_string()]
+            vec!["!help".to_string(), "!history".to_string()]
         );
+    }
+
+    #[test]
+    fn shell_helper_does_not_complete_slash_paths() {
+        assert!(!ShellHelper::should_complete_local_command("/usr/bin/id"));
+        assert!(ShellHelper::should_complete_local_command("!help"));
     }
 
     #[test]
@@ -1234,6 +1254,10 @@ impl ShellHelper {
         }
     }
 
+    fn should_complete_local_command(line: &str) -> bool {
+        line.starts_with(SHELL_LOCAL_COMMAND_PREFIX)
+    }
+
     fn complete_local_command(&self, line: &str, pos: usize) -> (usize, Vec<Pair>) {
         let typed = &line[..pos];
         let command = typed.split_whitespace().next().unwrap_or(typed);
@@ -1262,7 +1286,7 @@ impl Hinter for ShellHelper {
     type Hint = String;
 
     fn hint(&self, line: &str, pos: usize, _ctx: &RustyContext<'_>) -> Option<String> {
-        if !line.starts_with('/') {
+        if !Self::should_complete_local_command(line) {
             return None;
         }
 
@@ -1284,7 +1308,7 @@ impl Completer for ShellHelper {
         pos: usize,
         _ctx: &RustyContext<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        if line.starts_with('/') {
+        if Self::should_complete_local_command(line) {
             Ok(self.complete_local_command(line, pos))
         } else {
             Ok((pos, Vec::new()))
@@ -1859,7 +1883,7 @@ async fn start_shell_mode(
 
     let choices = vec![
         "Interactive terminal (SSH/WinRM style)",
-        "Control shell (Labyrinth slash commands)",
+        "Control shell (Labyrinth ! commands)",
         "Back",
     ];
     let selection = Select::new()
@@ -1896,7 +1920,7 @@ async fn start_control_shell_mode(
         styling::format_section_title("Control Shell", "stateful operator session")
     );
     println!("{}", "────────────────".bright_black());
-    println!("{}", styling::format_hint("Local commands use a '/' prefix so nested prompts like mysql, python, and powershell stay fully interactive."));
+    println!("{}", styling::format_hint("Local commands use a '!' prefix so paths like /usr/bin/tool and nested prompts stay fully interactive."));
 
     let transcript = create_shell_transcript(agent_name)?;
     println!(
@@ -1911,19 +1935,19 @@ async fn start_control_shell_mode(
         .map_err(|e| LabyrinthError::Message(format!("Failed to start shell prompt: {}", e)))?;
 
     rl.set_helper(Some(ShellHelper::new(vec![
-        "/help",
-        "/clear",
-        "/history",
-        "/upload",
-        "/download",
-        "/sysenum",
-        "/network",
-        "/autoenum",
-        "/privesc",
-        "/resize",
-        "/exit",
-        "/quit",
-        "/back",
+        "!help",
+        "!clear",
+        "!history",
+        "!upload",
+        "!download",
+        "!sysenum",
+        "!network",
+        "!autoenum",
+        "!privesc",
+        "!resize",
+        "!exit",
+        "!quit",
+        "!back",
     ])));
 
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -1974,30 +1998,30 @@ async fn start_control_shell_mode(
         }
         let _ = rl.add_history_entry(line.as_str());
 
-        if matches!(line.as_str(), "/exit" | "/back" | "/quit") {
+        if matches!(line.as_str(), "!exit" | "!back" | "!quit") {
             break;
         }
 
-        if line == "/help" {
+        if line == "!help" {
             println!("{}", "Shell Built-ins:".yellow().bold());
-            println!("  {}  exit shell", "/exit".cyan());
-            println!("  {}  clear local terminal", "/clear".cyan());
-            println!("  {}  show local shell history", "/history".cyan());
+            println!("  {}  exit shell", "!exit".cyan());
+            println!("  {}  clear local terminal", "!clear".cyan());
+            println!("  {}  show local shell history", "!history".cyan());
             println!(
                 "  {}  upload file to target",
-                "/upload [local remote]".cyan()
+                "!upload [local remote]".cyan()
             );
             println!(
                 "  {}  download file from target",
-                "/download [remote local]".cyan()
+                "!download [remote local]".cyan()
             );
             println!(
                 "  {}  run Labyrinth presets",
-                "/sysenum | /network | /autoenum | /privesc".cyan()
+                "!sysenum | !network | !autoenum | !privesc".cyan()
             );
             println!(
                 "  {}  resize the remote PTY",
-                "/resize <cols> <rows>".cyan()
+                "!resize <cols> <rows>".cyan()
             );
             println!(
                 "  {}  send raw input to the current program prompt",
@@ -2006,20 +2030,20 @@ async fn start_control_shell_mode(
             continue;
         }
 
-        if line == "/clear" {
+        if line == "!clear" {
             print!("\x1B[2J\x1B[H");
             let _ = std::io::stdout().flush();
             continue;
         }
 
-        if line == "/history" {
+        if line == "!history" {
             for (idx, entry) in rl.history().iter().enumerate() {
                 println!("{:>4}  {}", idx + 1, entry);
             }
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix("/resize ") {
+        if let Some(rest) = line.strip_prefix("!resize ") {
             let mut parts = rest.split_whitespace();
             let cols = parts.next().and_then(|v| v.parse::<u16>().ok());
             let rows = parts.next().and_then(|v| v.parse::<u16>().ok());
@@ -2050,7 +2074,7 @@ async fn start_control_shell_mode(
                     "{}",
                     styling::format_warning_msg(
                         styling::WARNING_INDICATOR,
-                        "Usage: /resize <cols> <rows>"
+                        "Usage: !resize <cols> <rows>"
                     )
                 ),
             }
@@ -2059,7 +2083,7 @@ async fn start_control_shell_mode(
 
         append_shell_transcript(&transcript, &format!("> {}", line));
 
-        if line == "/upload" {
+        if line == "!upload" {
             let local_path: String = Input::new()
                 .with_prompt("Local file path")
                 .interact_text()
@@ -2092,7 +2116,7 @@ async fn start_control_shell_mode(
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix("/upload ") {
+        if let Some(rest) = line.strip_prefix("!upload ") {
             let mut parts = rest.splitn(2, ' ');
             let local = parts.next().unwrap_or("").trim();
             let remote = parts.next().unwrap_or("").trim();
@@ -2101,7 +2125,7 @@ async fn start_control_shell_mode(
                     "{}",
                     styling::format_warning_msg(
                         styling::WARNING_INDICATOR,
-                        "Usage: /upload <local_path> <remote_path>"
+                        "Usage: !upload <local_path> <remote_path>"
                     )
                 );
                 continue;
@@ -2119,7 +2143,7 @@ async fn start_control_shell_mode(
             continue;
         }
 
-        if line == "/download" {
+        if line == "!download" {
             let remote_path: String = Input::new()
                 .with_prompt("Remote file path")
                 .interact_text()
@@ -2153,7 +2177,7 @@ async fn start_control_shell_mode(
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix("/download ") {
+        if let Some(rest) = line.strip_prefix("!download ") {
             let mut parts = rest.splitn(2, ' ');
             let remote = parts.next().unwrap_or("").trim();
             let local = parts.next().unwrap_or("").trim();
@@ -2162,7 +2186,7 @@ async fn start_control_shell_mode(
                     "{}",
                     styling::format_warning_msg(
                         styling::WARNING_INDICATOR,
-                        "Usage: /download <remote_path> <local_path>"
+                        "Usage: !download <remote_path> <local_path>"
                     )
                 );
                 continue;
@@ -2322,17 +2346,17 @@ async fn start_raw_shell_mode(
 fn shell_local_command_token(selected_os: CommandsOs, input: &str) -> Option<String> {
     match selected_os {
         CommandsOs::Linux => match input {
-            "/sysenum" => Some("linux:sysenum".to_string()),
-            "/network" | "/network summary" => Some("linux:network_summary".to_string()),
-            "/autoenum" => Some("linux:autoenum".to_string()),
-            "/privesc" => Some("linux:privesc_placeholder".to_string()),
+            "!sysenum" => Some("linux:sysenum".to_string()),
+            "!network" | "!network summary" => Some("linux:network_summary".to_string()),
+            "!autoenum" => Some("linux:autoenum".to_string()),
+            "!privesc" => Some("linux:privesc_placeholder".to_string()),
             _ => None,
         },
         CommandsOs::Windows => match input {
-            "/sysenum" => Some("windows:sysenum".to_string()),
-            "/network" | "/network summary" => Some("windows:network_summary".to_string()),
-            "/autoenum" => Some("windows:autoenum".to_string()),
-            "/privesc" => Some("windows:privesc_placeholder".to_string()),
+            "!sysenum" => Some("windows:sysenum".to_string()),
+            "!network" | "!network summary" => Some("windows:network_summary".to_string()),
+            "!autoenum" => Some("windows:autoenum".to_string()),
+            "!privesc" => Some("windows:privesc_placeholder".to_string()),
             _ => None,
         },
     }

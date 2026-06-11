@@ -14,8 +14,8 @@
 
 ### Technical Implementation
 ```
-Agent ←→ TLS/TCP ←→ Server
-  ↓                    ↓
+Agent <-> TLS/TCP <-> Server
+  v                    v
 Local Apps         Target Apps
 ```
 

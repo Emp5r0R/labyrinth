@@ -62,6 +62,10 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
 - Tests: `tests/integration_streaming.rs`.
 - Benches: `benches/streaming_benchmarks.rs`.
 - Assets: `assets/peas/` fallback PEAS scripts used by command workflows.
+- Docs: `README.md` stays concise; `docs/usage.md` holds operator workflows,
+  `docs/architecture.md` holds module/design boundaries, `docs/operations.md`
+  holds build/test/release and git hygiene, and `docs/reports/` holds older
+  validation summaries.
 - Releases/tooling: `releases/`, `build_release.sh`, and generated
   `command_outputs/` or `shell_sessions/` artifacts.
 
@@ -96,6 +100,9 @@ user-facing behavior in `README.md` aligned when CLI behavior changes.
 - Benches: `cargo bench`
 - Release binaries: `./build_release.sh` builds the compatibility wrapper plus
   dedicated server, agent, and dweller artifacts.
+- Docs sanity: keep `README.md`, `docs/usage.md`, `docs/architecture.md`, and
+  `docs/operations.md` aligned with CLI and runtime behavior when features or
+  flags change.
 
 There is no current `--enable-streaming` CLI flag; streaming support is enabled
 by default in config and used by Portal mode. The server accepts `--interface` and
@@ -192,6 +199,9 @@ relying on automatic tunnel startup from those flags.
 - Do not use `--no-auth` outside local testing.
 - Do not commit real certificates, keys, auth keys, generated dwellers, command
   outputs, or shell session captures.
+- Keep generated artifacts ignored: `target/`, `releases/`, `command_outputs/`,
+  `shell_sessions/`, `dwellers.json`, local certificates, local keys, logs, and
+  generated dweller payload/config output should not be tracked.
 - Keep `LABYRINTH_AUTH_KEY` high-entropy in real deployments.
 - Use certificate fingerprint or base64 certificate verification for agents.
 - Review command execution, upload/download, PTY shell, PEAS, and dweller changes

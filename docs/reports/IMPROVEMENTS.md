@@ -18,46 +18,46 @@ Labyrinth is a sophisticated network tunneling tool written in Rust that provide
 ## Critical Issues Found & Fixed
 
 ### 1. **Compilation Errors**
-- ❌ **Move semantics violations**: Fixed cloning issues in agent module
-- ❌ **Unused variables**: Removed underscore prefixes where variables are used
-- ❌ **Unused imports**: Cleaned up import statements
+- [issue] **Move semantics violations**: Fixed cloning issues in agent module
+- [issue] **Unused variables**: Removed underscore prefixes where variables are used
+- [issue] **Unused imports**: Cleaned up import statements
 
 ### 2. **Security Vulnerabilities**
-- ⚠️ **Weak certificate validation**: Custom verifiers bypass security
-- ⚠️ **No connection limits**: Server can be overwhelmed
-- ⚠️ **No authentication**: Anyone can connect to the server
+- [warning] **Weak certificate validation**: Custom verifiers bypass security
+- [warning] **No connection limits**: Server can be overwhelmed
+- [warning] **No authentication**: Anyone can connect to the server
 
 ### 3. **Resource Management Issues**
-- ❌ **TUN interface leaks**: Cleanup only happens on signals
-- ❌ **iptables rule persistence**: Rules may persist after crashes
-- ❌ **No connection pooling**: Each connection creates new resources
+- [issue] **TUN interface leaks**: Cleanup only happens on signals
+- [issue] **iptables rule persistence**: Rules may persist after crashes
+- [issue] **No connection pooling**: Each connection creates new resources
 
 ### 4. **Error Handling Problems**
-- ❌ **Silent failures**: Many errors are logged but not propagated
-- ❌ **Inconsistent error types**: Mix of anyhow and custom errors
-- ❌ **No graceful degradation**: Hard failures on network issues
+- [issue] **Silent failures**: Many errors are logged but not propagated
+- [issue] **Inconsistent error types**: Mix of anyhow and custom errors
+- [issue] **No graceful degradation**: Hard failures on network issues
 
 ## Improvements Implemented
 
 ### 1. **Configuration Management**
-- ✅ Added centralized configuration system
-- ✅ Support for config files and environment variables
-- ✅ Structured logging configuration
+- [done] Added centralized configuration system
+- [done] Support for config files and environment variables
+- [done] Structured logging configuration
 
 ### 2. **Enhanced Error Handling**
-- ✅ Comprehensive error types with context
-- ✅ Better error propagation and recovery
-- ✅ Structured logging with tracing
+- [done] Comprehensive error types with context
+- [done] Better error propagation and recovery
+- [done] Structured logging with tracing
 
 ### 3. **Security Enhancements**
-- 🔄 Certificate pinning improvements
-- 🔄 Connection rate limiting
-- 🔄 Authentication mechanisms
+- [todo] Certificate pinning improvements
+- [todo] Connection rate limiting
+- [todo] Authentication mechanisms
 
 ### 4. **Resource Management**
-- 🔄 Proper cleanup on all exit paths
-- 🔄 Connection pooling and reuse
-- 🔄 Memory usage optimization
+- [todo] Proper cleanup on all exit paths
+- [todo] Connection pooling and reuse
+- [todo] Memory usage optimization
 
 ## Recommended Next Steps
 

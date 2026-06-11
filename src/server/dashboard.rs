@@ -470,6 +470,211 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       font-weight: 600;
     }
 
+    .dweller-section {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+
+    .dweller-section-title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin: 14px 0 8px;
+      display: flex;
+      align-items: center;
+      font-weight: 700;
+    }
+
+    .dweller-section-title::after {
+      content: '';
+      flex-grow: 1;
+      height: 1px;
+      background: var(--border);
+      margin-left: 8px;
+    }
+
+    .path-hop-chain {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 10px;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 6px;
+      font-size: 11px;
+      border: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+
+    .path-hop-node {
+      font-weight: 600;
+    }
+
+    .path-hop-node.server { color: var(--server); }
+    .path-hop-node.agent { color: var(--agent); }
+    .path-hop-node.dweller { color: var(--dweller); }
+
+    .path-hop-arrow {
+      color: var(--faint);
+      font-weight: bold;
+    }
+
+    .hibernation-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .hibernation-card {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px;
+      text-align: center;
+    }
+
+    .hibernation-card .val {
+      font-family: 'Outfit', sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .hibernation-card .lbl {
+      font-size: 8.5px;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+
+    .task-status-badge {
+      display: inline-block;
+      font-size: 8.5px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    .task-status-badge.pending {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .task-status-badge.running {
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .task-status-badge.completed {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .task-status-badge.failed {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .task-list {
+      display: grid;
+      gap: 6px;
+      max-height: 250px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .task-item {
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 11px;
+    }
+
+    .task-item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+
+    .task-id-text {
+      font-family: monospace;
+      color: var(--muted);
+      font-size: 9.5px;
+    }
+
+    .task-kind-title {
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .task-kind-detail {
+      font-family: monospace;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 3px 5px;
+      border-radius: 4px;
+      font-size: 9.5px;
+      margin-top: 4px;
+      word-break: break-all;
+      color: var(--muted);
+      border: 1px solid rgba(255, 255, 255, 0.02);
+    }
+
+    .task-meta-row {
+      display: flex;
+      justify-content: space-between;
+      color: var(--faint);
+      font-size: 9px;
+      margin-top: 6px;
+      border-top: 1px dashed var(--border);
+      padding-top: 4px;
+    }
+
+    .task-output-toggle {
+      background: none;
+      border: none;
+      color: var(--accent);
+      cursor: pointer;
+      font-size: 9.5px;
+      padding: 0;
+      margin-top: 4px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-weight: 600;
+    }
+
+    .task-output-toggle:hover {
+      text-decoration: underline;
+    }
+
+    .task-output-content {
+      margin-top: 6px;
+      background: #020617;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-family: monospace;
+      font-size: 9.5px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 100px;
+      overflow-y: auto;
+      color: #cbd5e1;
+    }
+
+
     .section-title {
       font-family: 'Outfit', sans-serif;
       font-size: 12px;
@@ -850,9 +1055,15 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
     <header>
       <div class="brand">
         <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="20" height="20">
-            <path d="M4 8h5v5H4zM15 4h5v5h-5zM15 15h5v5h-5z" fill="none" stroke="#60a5fa" stroke-width="1.8" stroke-linejoin="round"/>
-            <path d="M9 10.5h3.5V6.5H15M9 10.5h3.5V17.5H15" fill="none" stroke="#34d399" stroke-width="1.8" stroke-linecap="round"/>
+          <svg viewBox="0 0 24 24" width="24" height="24" style="filter: drop-shadow(0 0 3px rgba(96, 165, 250, 0.6));">
+            <path d="M 2 2 H 22 V 22 H 14 M 10 22 H 2 V 6 H 18 V 18 H 6 V 10 H 14 V 14" fill="none" stroke="url(#logo-gradient)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <circle cx="10" cy="14" r="1.5" fill="#34d399" style="filter: drop-shadow(0 0 2px #34d399);" />
+            <defs>
+              <linearGradient id="logo-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#60a5fa" />
+                <stop offset="100%" stop-color="#a855f7" />
+              </linearGradient>
+            </defs>
           </svg>
         </div>
         <div>
@@ -1057,6 +1268,20 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       return String(value ?? '').replace(/[&<>"']/g, (char) => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
       }[char]));
+    }
+
+    function toggleTaskOutput(contentId, toggleId) {
+      const el = document.getElementById(contentId);
+      const btn = document.getElementById(toggleId);
+      if (el && btn) {
+        if (el.style.display === 'none') {
+          el.style.display = 'block';
+          btn.innerHTML = '<span>&or; Hide output</span>';
+        } else {
+          el.style.display = 'none';
+          btn.innerHTML = '<span>&gt; Show output</span>';
+        }
+      }
     }
 
     function updateDimensions() {
@@ -1647,6 +1872,204 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
         properties += `<tr><td>Detail</td><td>${escapeHtml(selected.detail)}</td></tr>`;
       }
 
+      let dwellerHtml = '';
+      if (selected.kind === 'dweller') {
+        let dwellerProps = '';
+        if (selected.hostname) dwellerProps += `<tr><td>Hostname</td><td>${escapeHtml(selected.hostname)}</td></tr>`;
+        if (selected.os) dwellerProps += `<tr><td>OS</td><td>${escapeHtml(selected.os)}</td></tr>`;
+        if (selected.listen_addr) dwellerProps += `<tr><td>Listen Address</td><td>${escapeHtml(selected.listen_addr)}</td></tr>`;
+        if (selected.install_path) dwellerProps += `<tr><td>Install Path</td><td>${escapeHtml(selected.install_path)}</td></tr>`;
+        if (selected.service_name) dwellerProps += `<tr><td>Service Name</td><td>${escapeHtml(selected.service_name)}</td></tr>`;
+
+        let pathChainHtml = '';
+        if (selected.path && selected.path.length > 0) {
+          pathChainHtml = `
+            <div class="dweller-section-title">Parent Path Hops</div>
+            <div class="path-hop-chain">
+              <span class="path-hop-node server">Server</span>
+          `;
+          selected.path.forEach(hop => {
+            const label = hop.cidr ? `${hop.agent_name} (${hop.cidr})` : hop.agent_name;
+            pathChainHtml += `
+              <span class="path-hop-arrow">&rarr;</span>
+              <span class="path-hop-node agent" title="Agent ID: ${hop.agent_id}">${escapeHtml(label)}</span>
+            `;
+          });
+          pathChainHtml += `
+              <span class="path-hop-arrow">&rarr;</span>
+              <span class="path-hop-node dweller">${escapeHtml(selected.label)}</span>
+            </div>
+          `;
+        }
+
+        let callbacksHtml = '';
+        if (selected.callback_servers && selected.callback_servers.length > 0) {
+          callbacksHtml = `
+            <div class="dweller-section-title">Callback Endpoints</div>
+            <div style="font-size: 11px; margin-bottom: 12px; display: grid; gap: 4px;">
+          `;
+          selected.callback_servers.forEach(endpoint => {
+            callbacksHtml += `
+              <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border); padding: 4px 8px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-family: monospace; font-weight:600;">${escapeHtml(endpoint.address)}</span>
+                <span class="pill-badge" style="font-size:8px; text-transform: uppercase;">${escapeHtml(endpoint.transport)}</span>
+              </div>
+            `;
+          });
+          callbacksHtml += `</div>`;
+        }
+
+        let hibernationHtml = '';
+        if (selected.hibernation) {
+          const config = selected.hibernation;
+          if (config.enabled) {
+            hibernationHtml = `
+              <div class="dweller-section-title">Hibernation settings</div>
+              <div class="hibernation-grid">
+                <div class="hibernation-card">
+                  <div class="val">${config.sleep_seconds}s</div>
+                  <div class="lbl">Sleep</div>
+                </div>
+                <div class="hibernation-card">
+                  <div class="val">${config.jitter_percent}%</div>
+                  <div class="lbl">Jitter</div>
+                </div>
+                <div class="hibernation-card">
+                  <div class="val">${config.task_batch_size}</div>
+                  <div class="lbl">Batch</div>
+                </div>
+              </div>
+            `;
+          } else {
+            hibernationHtml = `
+              <div class="dweller-section-title">Hibernation settings</div>
+              <div style="font-size: 11px; margin-bottom: 12px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); padding: 6px 10px; border-radius: 4px; color: var(--ok); font-weight: 600;">
+                Persistent Connection Mode (Hibernation Disabled)
+              </div>
+            `;
+          }
+        }
+
+        let tasksHtml = '';
+        if (selected.tasks) {
+          const tasks = selected.tasks;
+          const total = tasks.length;
+
+          if (total === 0) {
+            tasksHtml = `
+              <div class="dweller-section-title">Queued Tasks (0)</div>
+              <div class="empty-state" style="padding: 12px; font-size: 11px;">No tasks queued.</div>
+            `;
+          } else {
+            const pending = tasks.filter(t => t.status === 'Pending').length;
+            const running = tasks.filter(t => t.status === 'Running').length;
+            const completed = tasks.filter(t => t.status === 'Completed').length;
+            const failed = tasks.filter(t => t.status === 'Failed').length;
+
+            tasksHtml = `
+              <div class="dweller-section-title">Queued Tasks (${total})</div>
+              <div style="font-size: 10px; color: var(--muted); margin-bottom: 8px; display: flex; gap: 6px;">
+                <span>Pending: ${pending}</span> |
+                <span>Running: ${running}</span> |
+                <span>Completed: ${completed}</span> |
+                <span>Failed: ${failed}</span>
+              </div>
+              <div class="task-list">
+            `;
+
+            const sortedTasks = [...tasks].reverse();
+
+            sortedTasks.forEach((task, idx) => {
+              const statusLower = task.status.toLowerCase();
+              let kindTitle = 'Unknown Task';
+              let kindDetail = '';
+
+              if (task.kind) {
+                if (task.kind.Command) {
+                  kindTitle = 'Execute Command';
+                  kindDetail = task.kind.Command.command;
+                } else if (task.kind.StartTunnel) {
+                  kindTitle = 'Start Ariadne Tunnel';
+                  kindDetail = `Subnet: ${task.kind.StartTunnel.subnet} | TUN: ${task.kind.StartTunnel.tun_name}`;
+                } else if (task.kind.StopTunnel !== undefined) {
+                  kindTitle = 'Stop Ariadne Tunnel';
+                } else if (task.kind.PortalPortForward) {
+                  kindTitle = 'Portal Port Forward';
+                  kindDetail = `Local port: ${task.kind.PortalPortForward.local_port} &rarr; ${task.kind.PortalPortForward.target_addr}`;
+                }
+              }
+
+              const attemptsText = task.attempts > 0 ? ` | Attempts: ${task.attempts}` : '';
+              const timeText = task.created_at ? task.created_at.split('T')[1]?.slice(0, 8) || task.created_at : '';
+
+              let outputHtml = '';
+              if (task.result) {
+                const res = task.result;
+                const outStr = res.output || '';
+                const errStr = res.error || '';
+                const successText = res.success ? 'Success' : 'Failure';
+                const successColor = res.success ? 'var(--ok)' : 'var(--bad)';
+
+                outputHtml = `
+                  <div class="task-meta-row" style="margin-top: 4px; padding-top: 2px;">
+                    <span style="color: ${successColor}; font-weight: 600;">Result: ${successText}</span>
+                    <span>Finished: ${res.finished_at ? res.finished_at.split('T')[1]?.slice(0, 8) || res.finished_at : ''}</span>
+                  </div>
+                `;
+
+                if (outStr || errStr) {
+                  const combined = [
+                    outStr ? `[STDOUT]\n${outStr}` : '',
+                    errStr ? `[STDERR]\n${errStr}` : ''
+                  ].filter(Boolean).join('\n\n');
+
+                  const toggleId = `task-out-toggle-${selected.id}-${task.task_id}-${idx}`;
+                  const contentId = `task-out-content-${selected.id}-${task.task_id}-${idx}`;
+
+                  outputHtml += `
+                    <button class="task-output-toggle" id="${toggleId}" onclick="toggleTaskOutput('${contentId}', '${toggleId}')">
+                      <span>&gt; Show output</span>
+                    </button>
+                    <div class="task-output-content" id="${contentId}" style="display: none;">${escapeHtml(combined)}</div>
+                  `;
+                }
+              }
+
+              tasksHtml += `
+                <div class="task-item">
+                  <div class="task-item-header">
+                    <span class="task-kind-title">${escapeHtml(kindTitle)}</span>
+                    <span class="task-status-badge ${statusLower}">${task.status}</span>
+                  </div>
+                  <div class="task-id-text">ID: ${task.task_id.slice(0, 8)}...</div>
+                  ${kindDetail ? `<div class="task-kind-detail">${escapeHtml(kindDetail)}</div>` : ''}
+                  <div class="task-meta-row">
+                    <span>Created: ${timeText}${attemptsText}</span>
+                  </div>
+                  ${outputHtml}
+                </div>
+              `;
+            });
+
+            tasksHtml += `</div>`;
+          }
+        }
+
+        dwellerHtml = `
+          <div class="dweller-section">
+            <table class="inspect-prop-table" style="margin-bottom: 12px;">
+              <tbody>
+                ${dwellerProps}
+              </tbody>
+            </table>
+            ${pathChainHtml}
+            ${callbacksHtml}
+            ${hibernationHtml}
+            ${tasksHtml}
+          </div>
+        `;
+      }
+
       let neighborsHtml = '';
       if (connectedEdges.length > 0) {
         neighborsHtml = `<div class="section-title">Connected Links (${connectedEdges.length})</div><div class="list-container">`;
@@ -1679,6 +2102,7 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
               ${properties}
             </tbody>
           </table>
+          ${dwellerHtml}
           ${neighborsHtml}
         </div>
       `;
@@ -1963,13 +2387,31 @@ struct DashboardSummary {
     route_conflicts: usize,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
 struct DashboardNode {
     id: String,
     label: String,
     kind: String,
     status: String,
     detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    os: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    listen_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    callback_servers: Option<Vec<crate::protocol::DwellerServerEndpoint>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hibernation: Option<crate::protocol::DwellerHibernationConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tasks: Option<Vec<crate::protocol::DwellerTask>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<Vec<crate::protocol::DwellerPathHop>>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -2073,6 +2515,7 @@ impl DashboardServer {
             kind: "server".to_string(),
             status: "online".to_string(),
             detail: "Labyrinth proxy/control server".to_string(),
+            ..Default::default()
         }];
         let mut edges = Vec::new();
 
@@ -2086,7 +2529,12 @@ impl DashboardServer {
 
         for agent in sorted_agents {
             let agent_node_id = agent_node_id(&agent.id);
-            nodes.push(agent_dashboard_node(agent).await);
+            let dweller_record = if matches!(agent.info.kind, AgentKind::Dweller) {
+                dwellers.dwellers.get(&agent.id)
+            } else {
+                None
+            };
+            nodes.push(agent_dashboard_node(agent, dweller_record).await);
             edges.push(DashboardEdge {
                 source: "server".to_string(),
                 target: agent_node_id.clone(),
@@ -2315,6 +2763,7 @@ fn append_route_nodes(
                 kind: "network".to_string(),
                 status: "detected".to_string(),
                 detail: "CIDR inferred from agent interfaces".to_string(),
+                ..Default::default()
             });
         }
         edges.push(DashboardEdge {
@@ -2341,6 +2790,7 @@ fn append_port_forward_nodes(
             kind: "port_forward".to_string(),
             status: "active".to_string(),
             detail: format!("{}:{}", forward.target_host, forward.target_port),
+            ..Default::default()
         });
         edges.push(DashboardEdge {
             source: "server".to_string(),
@@ -2400,6 +2850,15 @@ fn append_offline_dweller_nodes(
                 task_summary(&record.tasks),
                 path_summary(&record.path)
             ),
+            hostname: Some(record.hostname.clone()),
+            os: Some(record.os.clone()),
+            install_path: Some(record.install_path.clone()),
+            service_name: Some(record.service_name.clone()),
+            listen_addr: Some(record.socket_addr()),
+            callback_servers: Some(record.callback_servers.clone()),
+            hibernation: Some(record.hibernation.clone()),
+            tasks: Some(record.tasks.clone()),
+            path: Some(record.path.clone()),
         });
         edges.push(DashboardEdge {
             source: "server".to_string(),
@@ -2411,7 +2870,10 @@ fn append_offline_dweller_nodes(
     }
 }
 
-async fn agent_dashboard_node(agent: &ConnectedAgent) -> DashboardNode {
+async fn agent_dashboard_node(
+    agent: &ConnectedAgent,
+    dweller_record: Option<&DwellerRecord>,
+) -> DashboardNode {
     let elapsed = agent.last_seen.lock().await.elapsed().as_secs();
     let kind = match agent.info.kind {
         AgentKind::Generic => "agent",
@@ -2426,18 +2888,40 @@ async fn agent_dashboard_node(agent: &ConnectedAgent) -> DashboardNode {
     } else {
         "online".to_string()
     };
-    DashboardNode {
-        id: agent_node_id(&agent.id),
-        label: agent.info.name.clone(),
-        kind: kind.to_string(),
-        status,
-        detail: format!(
+    let detail = if let Some(record) = dweller_record {
+        format!(
+            "{} {} / callback: {} / hibernation: {} / tasks: {} / path: {}",
+            record.socket_addr(),
+            record.os,
+            callback_summary(&record.callback_servers),
+            hibernation_summary(&record.hibernation),
+            task_summary(&record.tasks),
+            path_summary(&record.path)
+        )
+    } else {
+        format!(
             "{} / {} / {} / last seen {}s ago",
             agent.info.hostname,
             agent.info.os,
             connectivity_summary(agent),
             elapsed
-        ),
+        )
+    };
+    DashboardNode {
+        id: agent_node_id(&agent.id),
+        label: agent.info.name.clone(),
+        kind: kind.to_string(),
+        status,
+        detail,
+        hostname: Some(agent.info.hostname.clone()),
+        os: Some(agent.info.os.clone()),
+        install_path: dweller_record.map(|r| r.install_path.clone()),
+        service_name: dweller_record.map(|r| r.service_name.clone()),
+        listen_addr: dweller_record.map(|r| r.socket_addr()),
+        callback_servers: dweller_record.map(|r| r.callback_servers.clone()),
+        hibernation: dweller_record.map(|r| r.hibernation.clone()),
+        tasks: dweller_record.map(|r| r.tasks.clone()),
+        path: dweller_record.map(|r| r.path.clone()),
     }
 }
 

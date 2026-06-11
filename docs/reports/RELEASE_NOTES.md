@@ -1,6 +1,6 @@
 # Labyrinth v1.0.0 Release Notes
 
-## 🎉 Major Release: Complete UI Redesign
+##  Major Release: Complete UI Redesign
 
 **Version:** 1.0.0  
 **Author:** Emp5r0R  
@@ -8,22 +8,22 @@
 
 ---
 
-## ✨ What's New
+##  What's New
 
-### 🎨 Complete UI Transformation
+###  Complete UI Transformation
 - **Unique Visual Identity**: Distinctive ASCII logo with "by Emp5r0R" branding
 - **Vertical Data Presentation**: Clean, structured information display
 - **Consistent Color Scheme**: Professional cyan/yellow/green color palette
 - **Uniform Indicators**: Replaced emojis with consistent [+], [-], [!] symbols
 
-### 🚀 Enhanced Command System
+###  Enhanced Command System
 - **New Commands**: 
   - `ariadne` - IP tunneling (branded as "Ariadne Mode")
   - `portal` - Port forwarding (branded as "Portal Mode")
 - **Backward Compatibility**: Legacy `tunnel` and `forward` commands still work
 - **Improved Help**: Clear descriptions with Labyrinth-specific terminology
 
-### 🔧 Technical Improvements
+###  Technical Improvements
 - **Zero Compile Warnings**: Clean, optimized codebase
 - **Enhanced Error Handling**: Clear, formatted error messages
 - **Input Validation**: Visual feedback with checkmarks/crosses
@@ -31,7 +31,7 @@
 
 ---
 
-## 📦 Available Binaries
+##  Available Binaries
 
 ### Linux x86_64 Builds
 - **`labyrinth-v1.0.0-x86_64-unknown-linux-gnu`** (5.8M)
@@ -44,7 +44,7 @@
 
 ---
 
-## 🎯 Key Features
+##  Key Features
 
 ### Agent Management
 - **Vertical Agent Listing**: Clean card-based display
@@ -64,18 +64,18 @@
 
 ---
 
-## 🔄 Backward Compatibility
+## [todo] Backward Compatibility
 
 All existing functionality is preserved:
-- ✅ Legacy `tunnel` command → `ariadne`
-- ✅ Legacy `forward` command → `portal`
-- ✅ All CLI arguments and options
-- ✅ Configuration file formats
-- ✅ Network protocols and agent communication
+- [done] Legacy `tunnel` command -> `ariadne`
+- [done] Legacy `forward` command -> `portal`
+- [done] All CLI arguments and options
+- [done] Configuration file formats
+- [done] Network protocols and agent communication
 
 ---
 
-## 🛠️ Build Information
+##  Build Information
 
 **Compiler:** Rust 1.x  
 **Optimization:** Full release optimization with LTO  
@@ -84,7 +84,7 @@ All existing functionality is preserved:
 
 ---
 
-## 📋 Requirements
+##  Requirements
 
 ### System Requirements
 - **OS**: Linux (any distribution)
@@ -98,7 +98,7 @@ All existing functionality is preserved:
 
 ---
 
-## 🚀 Quick Start
+##  Quick Start
 
 ```bash
 # Download and make executable
@@ -116,7 +116,7 @@ chmod +x labyrinth-v1.0.0-x86_64-unknown-linux-musl
 
 ---
 
-## 🎨 Visual Preview
+##  Visual Preview
 
 ```
  )   _ ( _        _ o  _  _)_ ( _  
@@ -129,7 +129,7 @@ chmod +x labyrinth-v1.0.0-x86_64-unknown-linux-musl
 Navigate the network maze with precision
 
 Connected Agents
-─────────────────
+-----------------
 Agent 1
 ID:                  abc12345
 Name:                target-host
@@ -140,7 +140,7 @@ Tunnel:              Active (192.168.1.0/24)
 
 ---
 
-## 🔧 Development
+##  Development
 
 ### Build from Source
 ```bash
@@ -156,7 +156,7 @@ cargo build --release
 
 ---
 
-## 📝 Changelog
+##  Changelog
 
 ### v1.0.0 (2025-07-21)
 - **BREAKING**: Complete UI redesign with new visual identity
@@ -172,14 +172,14 @@ cargo build --release
 
 ---
 
-## 👨‍💻 Author
+##  Author
 
 **Emp5r0R**  
 *Network Security Tools Developer*
 
 ---
 
-## 📄 License
+##  License
 
 This project maintains its original licensing terms.
 

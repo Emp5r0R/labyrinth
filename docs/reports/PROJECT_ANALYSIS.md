@@ -7,13 +7,13 @@
 ### Core Components
 
 ```
-┌─────────────────┐    TLS/TCP    ┌─────────────────┐
-│     Agent       │◄─────────────►│     Server      │
-│                 │               │                 │
-│ ┌─────────────┐ │               │ ┌─────────────┐ │
-│ │ Local Apps  │ │               │ │ Target Apps │ │
-│ └─────────────┘ │               │ └─────────────┘ │
-└─────────────────┘               └─────────────────┘
++-----------------+    TLS/TCP    +-----------------+
+|     Agent       |<------------->|     Server      |
+|                 |               |                 |
+| +-------------+ |               | +-------------+ |
+| | Local Apps  | |               | | Target Apps | |
+| +-------------+ |               | +-------------+ |
++-----------------+               +-----------------+
 ```
 
 ### Operating Modes
@@ -36,31 +36,31 @@
 ### [+] **Fixed Critical Issues**
 
 1. **Compilation Errors**
-   - ❌ Move semantics violations in agent module → ✅ Fixed cloning issues
-   - ❌ Unused variables and imports → ✅ Cleaned up code
-   - ❌ Type mismatches → ✅ Resolved
+   - [issue] Move semantics violations in agent module -> [done] Fixed cloning issues
+   - [issue] Unused variables and imports -> [done] Cleaned up code
+   - [issue] Type mismatches -> [done] Resolved
 
 2. **Code Quality Issues**
-   - ❌ Inconsistent error handling → ✅ Improved with comprehensive error types
-   - ❌ Missing documentation → ✅ Added extensive comments and docs
-   - ❌ No configuration management → ✅ Added structured config system
+   - [issue] Inconsistent error handling -> [done] Improved with comprehensive error types
+   - [issue] Missing documentation -> [done] Added extensive comments and docs
+   - [issue] No configuration management -> [done] Added structured config system
 
 ### [!] **Security Vulnerabilities (Partially Addressed)**
 
 1. **Certificate Validation**
-   - ❌ `NoCertVerifier` bypasses all security checks
-   - ✅ Created `SecureCertVerifier` with proper validation
-   - 🔄 **Needs Integration**: Replace insecure verifiers
+   - [issue] `NoCertVerifier` bypasses all security checks
+   - [done] Created `SecureCertVerifier` with proper validation
+   - [todo] **Needs Integration**: Replace insecure verifiers
 
 2. **Authentication & Authorization**
-   - ❌ No authentication mechanism
-   - ✅ Created `AuthManager` with token-based auth
-   - 🔄 **Needs Integration**: Implement in connection handlers
+   - [issue] No authentication mechanism
+   - [done] Created `AuthManager` with token-based auth
+   - [todo] **Needs Integration**: Implement in connection handlers
 
 3. **Rate Limiting**
-   - ❌ No protection against DoS attacks
-   - ✅ Created `RateLimiter` for connection throttling
-   - 🔄 **Needs Integration**: Add to server accept loop
+   - [issue] No protection against DoS attacks
+   - [done] Created `RateLimiter` for connection throttling
+   - [todo] **Needs Integration**: Add to server accept loop
 
 ### [X] **Remaining Critical Issues**
 
