@@ -45,6 +45,8 @@ pub struct DwellerCli {
 
 #[derive(Args, Clone)]
 pub struct ServerArgs {
+    #[command(flatten)]
+    pub logging: LoggingArgs,
     /// Server listening address
     #[arg(short, long, default_value = "0.0.0.0:44344")]
     pub listen_addr: String,
@@ -76,6 +78,8 @@ pub struct ServerArgs {
 
 #[derive(Args, Clone)]
 pub struct AgentArgs {
+    #[command(flatten)]
+    pub logging: LoggingArgs,
     /// Server address to connect to
     #[arg(short, long)]
     pub server: String,
@@ -98,6 +102,8 @@ pub struct AgentArgs {
 
 #[derive(Args, Clone)]
 pub struct DwellerArgs {
+    #[command(flatten)]
+    pub logging: LoggingArgs,
     /// Listen address for inbound server connections
     #[arg(short, long, default_value = "0.0.0.0:45454")]
     pub listen: String,
@@ -142,6 +148,23 @@ pub struct DwellerArgs {
     pub task_batch_size: usize,
 }
 
+#[derive(Args, Clone, Copy, Default)]
+pub struct LoggingArgs {
+    /// Show verbose connection, request, info, warning, and debug logs
+    #[arg(short, long)]
+    pub verbose: bool,
+}
+
+impl LoggingArgs {
+    fn level(self) -> Level {
+        if self.verbose {
+            Level::DEBUG
+        } else {
+            Level::ERROR
+        }
+    }
+}
+
 pub async fn run_labyrinth_cli() -> anyhow::Result<()> {
     print_logo();
     let cli = LabyrinthCli::parse();
@@ -175,12 +198,7 @@ async fn run_command(command: LabyrinthCommand) -> anyhow::Result<()> {
 }
 
 async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
-    let log_level = if args.headless {
-        Level::INFO
-    } else {
-        Level::ERROR
-    };
-    init_logging(log_level);
+    init_logging(args.logging.level());
 
     if args.headless {
         println!(
@@ -223,7 +241,7 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
 }
 
 async fn run_agent(args: AgentArgs) -> anyhow::Result<()> {
-    init_logging(Level::INFO);
+    init_logging(args.logging.level());
     info!("Connecting agent to {}", args.server);
     agent::run_agent(
         &args.server,
@@ -238,7 +256,7 @@ async fn run_agent(args: AgentArgs) -> anyhow::Result<()> {
 }
 
 async fn run_dweller(args: DwellerArgs) -> anyhow::Result<()> {
-    init_logging(Level::INFO);
+    init_logging(args.logging.level());
     info!("Starting dweller listener on {}", args.listen);
     agent::run_dweller(agent::DwellerRunConfig {
         listen_addr: args.listen,

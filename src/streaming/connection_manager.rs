@@ -278,6 +278,15 @@ impl ConnectionManager for ServerConnectionManager {
             Some(connection_state) => {
                 let old_status = connection_state.status.clone();
 
+                if old_status == status {
+                    debug!(
+                        connection_id = %connection_id,
+                        status = ?status,
+                        "Connection status already current"
+                    );
+                    return Ok(());
+                }
+
                 // Validate status transition
                 if !Self::is_valid_status_transition(&old_status, &status) {
                     let error = StreamError::invalid_connection_state(
@@ -504,6 +513,39 @@ mod tests {
         // Verify active count decreased
         let stats = manager.get_connection_stats().await.unwrap();
         assert_eq!(stats.active_connections, 0);
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_status_update_is_idempotent() {
+        let manager = ServerConnectionManager::new();
+        let Some((connection, _)) = create_test_connection().await else {
+            return;
+        };
+        let mapping = create_test_mapping();
+
+        let connection_id = manager
+            .handle_new_connection(connection, mapping)
+            .await
+            .unwrap();
+
+        manager
+            .update_connection_status(&connection_id, ConnectionStatus::Active)
+            .await
+            .unwrap();
+        manager
+            .update_connection_status(&connection_id, ConnectionStatus::Active)
+            .await
+            .unwrap();
+
+        let state = manager
+            .get_connection_state(&connection_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.status, ConnectionStatus::Active);
+
+        let stats = manager.get_connection_stats().await.unwrap();
+        assert_eq!(stats.active_connections, 1);
     }
 
     #[tokio::test]
