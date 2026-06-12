@@ -6,11 +6,17 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send>>,
+}
+
+struct StartedPtySession {
+    session: PtySession,
+    reader: Box<dyn Read + Send>,
 }
 
 fn sessions() -> &'static tokio::sync::Mutex<HashMap<String, PtySession>> {
@@ -22,6 +28,33 @@ pub struct PtyShellManager;
 
 impl PtyShellManager {
     pub async fn start_session(session_id: String, cols: u16, rows: u16) -> Result<()> {
+        let startup = tokio::task::spawn_blocking(move || Self::start_session_blocking(cols, rows));
+        let started = tokio::time::timeout(Duration::from_secs(15), startup)
+            .await
+            .map_err(|_| LabyrinthError::Message("Timed out while starting PTY shell".to_string()))?
+            .map_err(|e| LabyrinthError::Message(format!("PTY startup task failed: {}", e)))??;
+
+        sessions()
+            .lock()
+            .await
+            .insert(session_id.clone(), started.session);
+
+        let (tx, _rx) = get_response_channel();
+        tx.send(Message::ShellSessionStarted {
+            session_id: session_id.clone(),
+            success: true,
+            message: "Interactive PTY session ready".to_string(),
+        })
+        .await
+        .map_err(|e| {
+            LabyrinthError::Message(format!("Failed to report shell session start: {}", e))
+        })?;
+
+        Self::spawn_reader(session_id, started.reader);
+        Ok(())
+    }
+
+    fn start_session_blocking(cols: u16, rows: u16) -> Result<StartedPtySession> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -40,7 +73,7 @@ impl PtyShellManager {
             .spawn_command(cmd)
             .map_err(|e| LabyrinthError::Message(format!("Failed to spawn PTY shell: {}", e)))?;
 
-        let mut reader = pair
+        let reader = pair
             .master
             .try_clone_reader()
             .map_err(|e| LabyrinthError::Message(format!("Failed to clone PTY reader: {}", e)))?;
@@ -55,17 +88,10 @@ impl PtyShellManager {
             child: Mutex::new(child),
         };
 
-        sessions().lock().await.insert(session_id.clone(), session);
+        Ok(StartedPtySession { session, reader })
+    }
 
-        let (tx, _rx) = get_response_channel();
-        let _ = tx
-            .send(Message::ShellSessionStarted {
-                session_id: session_id.clone(),
-                success: true,
-                message: "Interactive PTY session ready".to_string(),
-            })
-            .await;
-
+    fn spawn_reader(session_id: String, mut reader: Box<dyn Read + Send>) {
         let shell_session_id = session_id.clone();
         std::thread::spawn(move || {
             let (tx, _rx) = get_response_channel();
@@ -93,8 +119,6 @@ impl PtyShellManager {
                 }
             }
         });
-
-        Ok(())
     }
 
     pub async fn send_input(session_id: &str, data_b64: &str) -> Result<()> {

@@ -238,6 +238,7 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
         "portal",
         "commands",
         "cmd",
+        "bloodhound",
         "upload",
         "download",
         "status",
@@ -325,6 +326,10 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                         println!("  {}  Port Forwarding", "Portal".cyan());
                         println!("  {}  Stop active tunnel/forwarding", "stop".cyan());
                         println!("  {}  Execute system commands on agent", "commands".cyan());
+                        println!(
+                            "  {}  Run BloodHound collection on selected Windows agent",
+                            "bloodhound".cyan()
+                        );
                         println!("  {}  Upload file to selected agent", "upload".cyan());
                         println!("  {}  Download file from selected agent", "download".cyan());
                         println!("  {}  Show server status", "status".cyan());
@@ -1081,6 +1086,17 @@ mod tests {
     }
 
     #[test]
+    fn command_categories_show_bloodhound_only_for_windows() {
+        let windows_categories = command_categories_for(CommandsOs::Windows);
+        assert!(windows_categories.contains(&CommandCategory::BloodHound));
+        assert_eq!(windows_categories.last(), Some(&CommandCategory::Back));
+
+        let linux_categories = command_categories_for(CommandsOs::Linux);
+        assert!(!linux_categories.contains(&CommandCategory::BloodHound));
+        assert_eq!(linux_categories.last(), Some(&CommandCategory::Back));
+    }
+
+    #[test]
     fn shell_local_commands_use_prefixed_tokens() {
         assert_eq!(
             shell_local_command_token(CommandsOs::Linux, "!sysenum"),
@@ -1197,6 +1213,35 @@ mod tests {
 enum CommandsOs {
     Linux,
     Windows,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandCategory {
+    General,
+    Network,
+    AutoEnum,
+    PrivEsc,
+    BloodHound,
+    Shell,
+    Upload,
+    Download,
+    Back,
+}
+
+impl CommandCategory {
+    fn label(self) -> &'static str {
+        match self {
+            Self::General => "General checks",
+            Self::Network => "Network checks",
+            Self::AutoEnum => "AutoEnum",
+            Self::PrivEsc => "Privilege escalation checks",
+            Self::BloodHound => "BloodHound collection",
+            Self::Shell => "Shell",
+            Self::Upload => "Upload file",
+            Self::Download => "Download file",
+            Self::Back => "Back",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1429,17 +1474,15 @@ async fn start_bloodhound_collection(server: &LabyrinthServer) -> Result<()> {
     .await;
 
     // 3. Download the ZIP
-    println!(
-        "{} Downloading collected data...",
-        styling::INDENT_LEVEL_1
-    );
+    println!("{} Downloading collected data...", styling::INDENT_LEVEL_1);
     let artifacts_dir = PathBuf::from("labyrinth-artifacts");
     if !artifacts_dir.exists() {
         fs::create_dir_all(&artifacts_dir).map_err(|e| {
             LabyrinthError::Message(format!("Failed to create artifacts directory: {}", e))
         })?;
     }
-    let local_zip_path = artifacts_dir.join(format!("{}_{}.zip", sanitize_filename(&agent_name), ts));
+    let local_zip_path =
+        artifacts_dir.join(format!("{}_{}.zip", sanitize_filename(&agent_name), ts));
 
     if let Err(e) = perform_download(
         &agent_name,
@@ -1696,17 +1739,20 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
         };
 
         loop {
-            let category_choices = vec![
-                "General", "Network", "AutoEnum", "Priv esc", "Shell", "Upload", "Download", "Back",
-            ];
+            let category_choices = command_categories_for(selected_os);
+            let category_labels: Vec<&str> = category_choices
+                .iter()
+                .map(|category| category.label())
+                .collect();
             let category_selection = Select::new()
                 .with_prompt("Select category")
-                .items(&category_choices)
+                .items(&category_labels)
                 .interact()
                 .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
 
-            match category_selection {
-                0 => {
+            let selected_category = category_choices[category_selection];
+            match selected_category {
+                CommandCategory::General => {
                     let commands = general_commands_for(selected_os);
                     if !run_command_menu(&agent_name, &agent_sender, &command_response, &commands)
                         .await?
@@ -1714,7 +1760,7 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                         break;
                     }
                 }
-                1 => {
+                CommandCategory::Network => {
                     let commands = network_commands_for(selected_os);
                     if !run_command_menu(&agent_name, &agent_sender, &command_response, &commands)
                         .await?
@@ -1722,7 +1768,7 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                         break;
                     }
                 }
-                2 => {
+                CommandCategory::AutoEnum => {
                     let commands = autoenum_commands_for(selected_os);
                     if !run_command_menu(&agent_name, &agent_sender, &command_response, &commands)
                         .await?
@@ -1730,7 +1776,7 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                         break;
                     }
                 }
-                3 => {
+                CommandCategory::PrivEsc => {
                     let commands = priv_esc_commands_for(selected_os);
                     if !run_command_menu(&agent_name, &agent_sender, &command_response, &commands)
                         .await?
@@ -1738,7 +1784,18 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                         break;
                     }
                 }
-                4 => {
+                CommandCategory::BloodHound => {
+                    if let Err(e) = start_bloodhound_collection(server).await {
+                        println!(
+                            "{}",
+                            styling::format_error_msg(
+                                styling::ERROR_INDICATOR,
+                                &format!("BloodHound collection failed: {}", e)
+                            )
+                        );
+                    }
+                }
+                CommandCategory::Shell => {
                     if let Err(e) = start_shell_mode(
                         server,
                         &agent_name,
@@ -1758,7 +1815,7 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                         );
                     }
                 }
-                5 => {
+                CommandCategory::Upload => {
                     if let Err(e) = start_upload_mode_with_handles(
                         &agent_name,
                         &agent_sender,
@@ -1775,7 +1832,7 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                         );
                     }
                 }
-                6 => {
+                CommandCategory::Download => {
                     if let Err(e) = start_download_mode_with_handles(
                         &agent_name,
                         &agent_sender,
@@ -1792,12 +1849,38 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                         );
                     }
                 }
-                _ => break,
+                CommandCategory::Back => break,
             }
         }
     }
 
     Ok(())
+}
+
+fn command_categories_for(os: CommandsOs) -> Vec<CommandCategory> {
+    match os {
+        CommandsOs::Linux => vec![
+            CommandCategory::General,
+            CommandCategory::Network,
+            CommandCategory::AutoEnum,
+            CommandCategory::PrivEsc,
+            CommandCategory::Shell,
+            CommandCategory::Upload,
+            CommandCategory::Download,
+            CommandCategory::Back,
+        ],
+        CommandsOs::Windows => vec![
+            CommandCategory::General,
+            CommandCategory::Network,
+            CommandCategory::AutoEnum,
+            CommandCategory::PrivEsc,
+            CommandCategory::BloodHound,
+            CommandCategory::Shell,
+            CommandCategory::Upload,
+            CommandCategory::Download,
+            CommandCategory::Back,
+        ],
+    }
 }
 
 fn autoenum_commands_for(os: CommandsOs) -> Vec<(&'static str, &'static str)> {
@@ -2176,8 +2259,8 @@ async fn start_shell_mode(
     println!("{}", "────────────────".bright_black());
 
     let choices = vec![
-        "Interactive terminal (SSH/WinRM style)",
-        "Control shell (Labyrinth ! commands)",
+        "Operator shell (recommended)",
+        "Raw terminal (advanced; Ctrl-] detaches)",
         "Back",
     ];
     let selection = Select::new()
@@ -2187,8 +2270,7 @@ async fn start_shell_mode(
         .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
 
     match selection {
-        0 => start_raw_shell_mode(agent_name, agent_sender, shell_events).await,
-        1 => {
+        0 => {
             start_control_shell_mode(
                 server,
                 agent_name,
@@ -2199,6 +2281,7 @@ async fn start_shell_mode(
             )
             .await
         }
+        1 => start_raw_shell_mode(agent_name, agent_sender, shell_events).await,
         _ => Ok(()),
     }
 }
@@ -2255,6 +2338,10 @@ async fn start_control_shell_mode(
     }
 
     let (cols, rows) = local_terminal_size();
+    println!(
+        "{}",
+        styling::format_success_msg(styling::SUCCESS_INDICATOR, "Starting remote shell...")
+    );
     if let Err(e) =
         start_remote_shell_session(&session_id, agent_sender, &mut shell_rx, cols, rows).await
     {
@@ -2591,12 +2678,33 @@ async fn start_raw_shell_mode(
     }
 
     let (cols, rows) = local_terminal_size();
+    println!(
+        "{}",
+        styling::format_success_msg(styling::SUCCESS_INDICATOR, "Starting remote shell...")
+    );
     if let Err(e) =
         start_remote_shell_session(&session_id, agent_sender, &mut shell_rx, cols, rows).await
     {
         let mut sink = shell_events.lock().await;
         *sink = None;
         return Err(e);
+    }
+
+    let initial_output = collect_shell_output(
+        &session_id,
+        &mut shell_rx,
+        Duration::from_millis(800),
+        Duration::from_millis(120),
+    )
+    .await?;
+    if initial_output.is_empty() {
+        println!(
+            "{}",
+            styling::format_hint("Connected. If the prompt is blank, press Enter.")
+        );
+    } else {
+        print_shell_output(&initial_output);
+        append_shell_transcript(&transcript, &initial_output);
     }
 
     let _raw_guard = TerminalRawMode::enter()?;
