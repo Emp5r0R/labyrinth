@@ -93,7 +93,7 @@ cargo bench
 
 For dashboard changes:
 
-- Start the server with the dashboard enabled.
+- Start the server with the dashboard enabled via `--gui`.
 - Open `http://127.0.0.1:44777`.
 - Verify empty state, connected agent state, dweller state, active tunnel state,
   route conflicts, zoom, pan, fit-to-view, node selection, and responsive

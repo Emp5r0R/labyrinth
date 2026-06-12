@@ -80,7 +80,7 @@ LABYRINTH_AUTH_KEY="change-this-secret" \
   --retry
 ```
 
-Open the visualization dashboard on the server host:
+Open the visualization dashboard on the server host by starting the server with `--gui`:
 
 ```text
 http://127.0.0.1:44777

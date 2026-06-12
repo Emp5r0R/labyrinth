@@ -2643,8 +2643,8 @@ async fn handle_dashboard_connection(
         write_response(
             &mut stream,
             400,
-            "text/plain; charset=utf-8",
-            b"Bad Request",
+            ResponseBody::static_text("Bad Request"),
+            false,
         )
         .await?;
         return Ok(());
@@ -2654,8 +2654,8 @@ async fn handle_dashboard_connection(
         write_response(
             &mut stream,
             405,
-            "text/plain; charset=utf-8",
-            b"Method Not Allowed",
+            ResponseBody::static_text("Method Not Allowed"),
+            false,
         )
         .await?;
         return Ok(());
@@ -2666,7 +2666,7 @@ async fn handle_dashboard_connection(
         "/health" => ResponseBody::Static("text/plain; charset=utf-8", "ok\n"),
         "/api/network-map" => {
             let snapshot = DashboardServer::snapshot(&server).await;
-            let json = serde_json::to_string(&snapshot)?;
+            let json = serde_json::to_vec(&snapshot)?;
             ResponseBody::Owned("application/json; charset=utf-8", json)
         }
         _ => ResponseBody::Static("text/plain; charset=utf-8", "Not Found"),
@@ -2678,20 +2678,20 @@ async fn handle_dashboard_connection(
         404
     };
 
-    if method == "HEAD" {
-        write_response(&mut stream, status, body.content_type(), b"").await?;
-    } else {
-        write_response(&mut stream, status, body.content_type(), body.bytes()).await?;
-    }
+    write_response(&mut stream, status, body, method == "HEAD").await?;
     Ok(())
 }
 
 enum ResponseBody {
     Static(&'static str, &'static str),
-    Owned(&'static str, String),
+    Owned(&'static str, Vec<u8>),
 }
 
 impl ResponseBody {
+    fn static_text(message: &'static str) -> Self {
+        Self::Static("text/plain; charset=utf-8", message)
+    }
+
     fn content_type(&self) -> &'static str {
         match self {
             Self::Static(content_type, _) | Self::Owned(content_type, _) => content_type,
@@ -2701,13 +2701,21 @@ impl ResponseBody {
     fn bytes(&self) -> &[u8] {
         match self {
             Self::Static(_, body) => body.as_bytes(),
-            Self::Owned(_, body) => body.as_bytes(),
+            Self::Owned(_, body) => body.as_slice(),
+        }
+    }
+
+    fn cache_control(&self) -> &'static str {
+        match self {
+            Self::Static("text/html; charset=utf-8", _) => "private, max-age=300",
+            Self::Static(_, _) => "no-store",
+            Self::Owned(_, _) => "no-store",
         }
     }
 }
 
 async fn read_http_request(stream: &mut TcpStream) -> Result<String> {
-    let mut buffer = vec![0_u8; 8192];
+    let mut buffer = [0_u8; 8192];
     let read = timeout(Duration::from_secs(5), stream.read(&mut buffer))
         .await
         .map_err(|_| LabyrinthError::Message("dashboard request timed out".to_string()))??;
@@ -2725,8 +2733,8 @@ fn parse_request_line(request: &str) -> Option<(&str, &str)> {
 async fn write_response(
     stream: &mut TcpStream,
     status: u16,
-    content_type: &str,
-    body: &[u8],
+    body: ResponseBody,
+    head_only: bool,
 ) -> Result<()> {
     let reason = match status {
         200 => "OK",
@@ -2736,14 +2744,17 @@ async fn write_response(
         _ => "Internal Server Error",
     };
     let headers = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: {}\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
         status,
         reason,
-        content_type,
-        body.len()
+        body.content_type(),
+        body.bytes().len(),
+        body.cache_control()
     );
     stream.write_all(headers.as_bytes()).await?;
-    stream.write_all(body).await?;
+    if !head_only {
+        stream.write_all(body.bytes()).await?;
+    }
     stream.shutdown().await?;
     Ok(())
 }
