@@ -50,15 +50,16 @@ sudo LABYRINTH_AUTH_KEY="change-this-secret" \
   --listen-addr 0.0.0.0:44344
 ```
 
-Browser map address:
+Enable the browser map:
 
 ```bash
 sudo LABYRINTH_AUTH_KEY="change-this-secret" \
   ./labyrinth-server \
+  --gui \
   --web-ui-addr 127.0.0.1:44777
 ```
 
-Disable browser visualization:
+Keep browser visualization disabled explicitly:
 
 ```bash
 sudo LABYRINTH_AUTH_KEY="change-this-secret" \
@@ -77,8 +78,9 @@ Server options:
 | `--route <cidr>` | Compatibility option for headless route configuration. |
 | `--domain <name>` | Domain used when generating a local TLS certificate. |
 | `--transport tcp|quic` | Agent transport. Defaults to `tcp`. |
+| `--gui`, `--GUI` | Enable the browser dashboard. Disabled by default. |
 | `--web-ui-addr <ip:port>` | Browser dashboard listen address. Defaults to `127.0.0.1:44777`. |
-| `--no-web-ui` | Disable the browser dashboard. |
+| `--no-web-ui` | Compatibility override that keeps the browser dashboard disabled. |
 
 ## Agent
 
@@ -356,7 +358,7 @@ Slash-prefixed paths and programs are remote input:
 
 ## Browser Visualization
 
-The dashboard is enabled by default on:
+The dashboard is disabled by default. Start the server with `--gui` to enable it on:
 
 ```text
 http://127.0.0.1:44777
@@ -399,7 +401,7 @@ labyrinth -> cert
 Dashboard unavailable:
 
 ```bash
-./labyrinth-server --web-ui-addr 127.0.0.1:44777
+./labyrinth-server --gui --web-ui-addr 127.0.0.1:44777
 ```
 
 QUIC agent cannot connect:

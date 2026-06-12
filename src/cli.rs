@@ -68,6 +68,9 @@ pub struct ServerArgs {
     /// Agent transport to listen for
     #[arg(long, value_enum, default_value_t = TransportMode::Tcp)]
     pub transport: TransportMode,
+    /// Enable the read-only browser visualization dashboard
+    #[arg(long, visible_alias = "GUI")]
+    pub gui: bool,
     /// Disable the read-only browser visualization dashboard
     #[arg(long)]
     pub no_web_ui: bool,
@@ -201,6 +204,7 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
     init_logging(args.logging.level());
 
     if args.headless {
+        let web_ui_enabled = args.web_ui_enabled();
         println!(
             "{}",
             styling::format_success_msg(
@@ -214,11 +218,12 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
             args.no_auth,
             args.domain,
             args.transport,
-            !args.no_web_ui,
+            web_ui_enabled,
             &args.web_ui_addr,
         )
         .await?;
     } else {
+        let web_ui_enabled = args.web_ui_enabled();
         println!(
             "{}",
             styling::format_success_msg(
@@ -231,7 +236,7 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
             args.no_auth,
             args.domain,
             args.transport,
-            !args.no_web_ui,
+            web_ui_enabled,
             &args.web_ui_addr,
         )
         .await?;
@@ -286,6 +291,12 @@ async fn run_dweller(args: DwellerArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+impl ServerArgs {
+    fn web_ui_enabled(&self) -> bool {
+        self.gui && !self.no_web_ui
+    }
+}
+
 fn print_logo() {
     println!("{}", styling::format_logo());
 }
@@ -297,4 +308,33 @@ fn init_logging(log_level: Level) {
         .with_level(true)
         .with_max_level(log_level)
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_ui_is_disabled_by_default() {
+        let cli = ServerCli::try_parse_from(["labyrinth-server"]).unwrap();
+        assert!(!cli.args.web_ui_enabled());
+    }
+
+    #[test]
+    fn gui_flag_enables_web_ui() {
+        let cli = ServerCli::try_parse_from(["labyrinth-server", "--gui"]).unwrap();
+        assert!(cli.args.web_ui_enabled());
+    }
+
+    #[test]
+    fn uppercase_gui_alias_enables_web_ui() {
+        let cli = ServerCli::try_parse_from(["labyrinth-server", "--GUI"]).unwrap();
+        assert!(cli.args.web_ui_enabled());
+    }
+
+    #[test]
+    fn no_web_ui_overrides_gui_for_compatibility() {
+        let cli = ServerCli::try_parse_from(["labyrinth-server", "--gui", "--no-web-ui"]).unwrap();
+        assert!(!cli.args.web_ui_enabled());
+    }
 }
