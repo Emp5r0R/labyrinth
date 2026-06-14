@@ -1,211 +1,70 @@
-# Labyrinth v1.1.0 Release Notes
-
-## Major Update: Automated BloodHound Collection
-
-**Version:** 1.1.0  
-**Author:** Emp5r0R  
-**Release Date:** June 11, 2026
-
----
-
-## What's New
-
-### Automated BloodHound Collection
-- **Zero-Touch Provisioning**: Automatically locates `SharpHound.exe` in Kali defaults or downloads the latest version from GitHub if missing.
-- **Smart Execution**: Uploads, executes with robust collection flags (`All,GPOLocations`), retrieves results to `labyrinth-artifacts/`, and performs a full remote cleanup.
-- **Integrated Workflow**: Available via the `bloodhound` command in the main CLI or `!bloodhound` within interactive shells.
-
-### Enhanced Reliability
-- **Command Timeouts**: Implemented extended 20-minute timeouts for long-running AD collection tasks.
-- **Path Normalization**: Improved remote path handling for uploads and downloads on Windows targets.
-
----
-
 # Labyrinth v1.0.0 Release Notes
 
-## Major Release: Complete UI Redesign
-
-**Version:** 1.0.0  
-**Author:** Emp5r0R  
-**Release Date:** July 21, 2025
-
----
-
-##  What's New
-
-###  Complete UI Transformation
-- **Unique Visual Identity**: Distinctive ASCII logo with "by Emp5r0R" branding
-- **Vertical Data Presentation**: Clean, structured information display
-- **Consistent Color Scheme**: Professional cyan/yellow/green color palette
-- **Uniform Indicators**: Replaced emojis with consistent [+], [-], [!] symbols
-
-###  Enhanced Command System
-- **New Commands**: 
-  - `ariadne` - IP tunneling (branded as "Ariadne Mode")
-  - `portal` - Port forwarding (branded as "Portal Mode")
-- **Backward Compatibility**: Legacy `tunnel` and `forward` commands still work
-- **Improved Help**: Clear descriptions with Labyrinth-specific terminology
-
-###  Technical Improvements
-- **Zero Compile Warnings**: Clean, optimized codebase
-- **Enhanced Error Handling**: Clear, formatted error messages
-- **Input Validation**: Visual feedback with checkmarks/crosses
-- **Interactive Flows**: Branded setup interfaces for all operations
+**Version:** 1.0.0
+**Author:** Emp5r0R
+**Release Date:** June 14, 2026
+**Release URL:** https://github.com/Emp5r0R/labyrinth/releases/tag/v1.0.0
 
 ---
 
-##  Available Binaries
+## Overview
 
-### Linux x86_64 Builds
-- **`labyrinth-v1.0.0-x86_64-unknown-linux-gnu`** (5.8M)
-  - Standard Linux binary with glibc dependency
-  - Best performance for most Linux distributions
-  
-- **`labyrinth-v1.0.0-x86_64-unknown-linux-musl`** (5.9M)
-  - Static binary with no external dependencies
-  - Works on any Linux distribution (Alpine, embedded systems, etc.)
+Labyrinth v1.0.0 is the initial public binary release. It ships the compatibility
+wrapper plus dedicated server, agent, and dweller binaries for Windows and Linux.
 
----
+## Included Binaries
 
-##  Key Features
+### Compatibility Wrapper
+- `labyrinth-v1.0.0-i686-pc-windows-gnu.exe` (5.4M)
+- `labyrinth-v1.0.0-x86_64-pc-windows-gnu.exe` (6.0M)
+- `labyrinth-v1.0.0-x86_64-unknown-linux-gnu` (6.5M)
+- `labyrinth-v1.0.0-x86_64-unknown-linux-musl` (6.6M)
 
-### Agent Management
-- **Vertical Agent Listing**: Clean card-based display
-- **Detailed Agent Profiles**: System info, network interfaces, status
-- **Visual Status Indicators**: Color-coded connection states
+### Server
+- `labyrinth-server-v1.0.0-i686-pc-windows-gnu.exe` (4.3M)
+- `labyrinth-server-v1.0.0-x86_64-pc-windows-gnu.exe` (4.9M)
+- `labyrinth-server-v1.0.0-x86_64-unknown-linux-gnu` (5.3M)
+- `labyrinth-server-v1.0.0-x86_64-unknown-linux-musl` (5.4M)
 
-### Network Operations
-- **Ariadne Mode**: Complete IP tunneling with CIDR validation
-- **Portal Mode**: Port forwarding with mapping validation
-- **Interactive Setup**: Guided configuration with visual feedback
+### Agent
+- `labyrinth-agent-v1.0.0-i686-pc-windows-gnu.exe` (3.5M)
+- `labyrinth-agent-v1.0.0-x86_64-pc-windows-gnu.exe` (4.0M)
+- `labyrinth-agent-v1.0.0-x86_64-unknown-linux-gnu` (4.3M)
+- `labyrinth-agent-v1.0.0-x86_64-unknown-linux-musl` (4.4M)
 
-### User Experience
-- **Dashboard-Style Status**: Clear system overview
-- **Certificate Display**: Formatted fingerprint and certificate info
-- **Command Prompt**: Branded with arrow indicators
-- **Clear Screen**: Maintains branding after clearing
+### Dweller
+- `labyrinth-dweller-v1.0.0-i686-pc-windows-gnu.exe` (3.7M)
+- `labyrinth-dweller-v1.0.0-x86_64-pc-windows-gnu.exe` (4.2M)
+- `labyrinth-dweller-v1.0.0-x86_64-unknown-linux-gnu` (4.5M)
+- `labyrinth-dweller-v1.0.0-x86_64-unknown-linux-musl` (4.6M)
 
----
+## Platform Notes
 
-## [todo] Backward Compatibility
+- `x86_64-unknown-linux-gnu`: standard Linux build for glibc-based systems.
+- `x86_64-unknown-linux-musl`: static Linux build for broader portability.
+- `x86_64-pc-windows-gnu.exe`: Windows x64 executable.
+- `i686-pc-windows-gnu.exe`: Windows x86 executable.
+- Windows Ariadne mode requires `wintun.dll` next to the executable.
 
-All existing functionality is preserved:
-- [done] Legacy `tunnel` command -> `ariadne`
-- [done] Legacy `forward` command -> `portal`
-- [done] All CLI arguments and options
-- [done] Configuration file formats
-- [done] Network protocols and agent communication
+## Verification
 
----
+Release artifacts were built with:
 
-##  Build Information
-
-**Compiler:** Rust 1.x  
-**Optimization:** Full release optimization with LTO  
-**Strip:** Debug symbols removed for smaller binaries  
-**Targets:** Linux x86_64 (GNU/musl)
-
----
-
-##  Requirements
-
-### System Requirements
-- **OS**: Linux (any distribution)
-- **Architecture**: x86_64 (64-bit)
-- **Memory**: 50MB RAM minimum
-- **Network**: TCP/IP stack for tunneling
-
-### Dependencies
-- **GNU build**: glibc 2.17+ (most modern Linux distributions)
-- **musl build**: No external dependencies (fully static)
-
----
-
-##  Quick Start
-
-```bash
-# Download and make executable
-chmod +x labyrinth-v1.0.0-x86_64-unknown-linux-musl
-
-# View help
-./labyrinth-v1.0.0-x86_64-unknown-linux-musl --help
-
-# Start server
-./labyrinth-v1.0.0-x86_64-unknown-linux-musl server
-
-# Connect agent
-./labyrinth-v1.0.0-x86_64-unknown-linux-musl agent --server https://your-server:44344
-```
-
----
-
-##  Visual Preview
-
-```
- )   _ ( _        _ o  _  _)_ ( _  
-(__ (_( )_) (_(  )  ( ) ) (_   ) ) 
-              _)
-
-                 by Emp5r0R
-
-[+] Labyrinth Control Interface
-Navigate the network maze with precision
-
-Connected Agents
------------------
-Agent 1
-ID:                  abc12345
-Name:                target-host
-System:              Linux/x86_64
-Status:              Online
-Tunnel:              Active (192.168.1.0/24)
-```
-
----
-
-##  Development
-
-### Build from Source
-```bash
-git clone <repository>
-cd labyrinth
-cargo build --release
-```
-
-### Multi-Architecture Build
 ```bash
 ./build_release.sh
 ```
 
----
+Validation gates for this release:
 
-##  Changelog
+```bash
+cargo fmt -- --check
+cargo test
+cargo clippy --all-targets -- -D warnings
+git diff --check
+```
 
-### v1.0.0 (2025-07-21)
-- **BREAKING**: Complete UI redesign with new visual identity
-- **NEW**: `ariadne` command for IP tunneling
-- **NEW**: `portal` command for port forwarding
-- **NEW**: Vertical data presentation throughout interface
-- **NEW**: Branded ASCII logo with author attribution
-- **IMPROVED**: Error handling and user feedback
-- **IMPROVED**: Input validation with visual indicators
-- **IMPROVED**: Help system with clear descriptions
-- **FIXED**: All compile warnings resolved
-- **MAINTAINED**: Full backward compatibility
+The published release targets commit:
 
----
-
-##  Author
-
-**Emp5r0R**  
-*Network Security Tools Developer*
-
----
-
-##  License
-
-This project maintains its original licensing terms.
-
----
-
-*Labyrinth v1.0.0 - Navigate the network maze with precision*
+```text
+ce47341052a5f6ea1579368df91e102cd66202f7
+```
