@@ -66,5 +66,5 @@ git diff --check
 The published release targets commit:
 
 ```text
-ce47341052a5f6ea1579368df91e102cd66202f7
+3686f978163a6a823aab22bec27de030000157dc
 ```
