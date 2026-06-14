@@ -50,6 +50,12 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+/AGENTS.md
+
+# Local key material
+/key.pem
+/*.pem
+/*.key
 
 # Benchmark reports
 /criterion/
