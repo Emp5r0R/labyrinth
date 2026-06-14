@@ -1,4 +1,4 @@
-# Labyrinth v1.1.0
+# Labyrinth v1.0.0
 
 ```
  )   _ ( _        _ o  _  _)_ ( _
@@ -35,7 +35,7 @@ Use it only on systems and networks where you have explicit authorization.
 - Interactive remote shells with raw PTY mode and a control shell that uses
   `!` local commands so `/usr/bin`, `/tmp`, and other slash-prefixed remote
   paths pass through unchanged.
-- Read-only browser network map on `127.0.0.1:44777` by default, showing
+- Optional read-only browser network map on `127.0.0.1:44777` with `--gui`, showing
   agents, dwellers, networks, active tunnels, port forwards, encrypted edges,
   local edges, shared networks, route conflicts, and status summaries.
 - Linux and Windows agent and dweller support. Linux Ariadne uses TUN support;
