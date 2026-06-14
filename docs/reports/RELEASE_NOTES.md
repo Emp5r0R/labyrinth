@@ -63,8 +63,4 @@ cargo clippy --all-targets -- -D warnings
 git diff --check
 ```
 
-The published release targets commit:
-
-```text
-3686f978163a6a823aab22bec27de030000157dc
-```
+The published release target is recorded in the GitHub release metadata.
