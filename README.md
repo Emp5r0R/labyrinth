@@ -36,9 +36,8 @@ Use it only on systems and networks where you have explicit authorization.
 - Interactive remote shells with raw PTY mode and a control shell that uses
   `!` local commands so `/usr/bin`, `/tmp`, and other slash-prefixed remote
   paths pass through unchanged.
-- Windows in-memory execution workflows for BOF and reflective PE/DLL loading.
-  Linux in-memory loading requires a separate ELF/memfd loader design and is
-  not part of the current BOF/PE workflow.
+- In-memory execution workflows: Windows BOF and reflective PE/DLL loading, and
+  Linux ELF execution through an anonymous memfd-backed file descriptor.
 - Explicit Windows evasion startup hooks for AMSI and ETW through the agent
   `--evasion` option. These hooks are never applied unless requested.
 - Optional read-only browser network map on `127.0.0.1:44777` with `--gui`, showing

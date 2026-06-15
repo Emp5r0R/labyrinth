@@ -79,7 +79,8 @@ Agent:
 - `src/agent/tls_config.rs`: TLS and certificate verification.
 - `src/agent/evasion.rs`: Windows-only AMSI and ETW startup hooks behind the
   explicit agent `--evasion` option.
-- `src/agent/command_executor.rs`: OS-aware command execution workflows.
+- `src/agent/command_executor.rs`: OS-aware command execution workflows,
+  including Windows BOF/reflective PE handling and Linux memfd ELF execution.
 - `src/agent/pty_shell.rs`: interactive PTY shell support.
 - `src/agent/reverse_port_forward.rs`: agent-side Portal handling.
 - `src/agent/streaming_manager.rs`: agent-side streaming handlers.

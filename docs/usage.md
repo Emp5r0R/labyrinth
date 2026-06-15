@@ -377,15 +377,15 @@ Control shell local commands include:
 !exit
 ```
 
-The `commands` menu also includes Windows in-memory execution workflows for BOF
-and reflective PE/DLL loading. These workflows send typed protocol messages and
-store command output under `command_outputs/` like other remote execution
-results.
+The `commands` menu also includes in-memory execution workflows:
 
-Linux BOF and PE/DLL loading are intentionally rejected because those formats
-are Windows-specific. Linux in-memory execution is possible through a separate
-ELF loader, such as a memfd-backed executable or shared-object loader, but that
-requires different validation, lifecycle, and output-capture behavior.
+- Windows: BOF execution and reflective PE/DLL loading.
+- Linux: ELF execution through an anonymous memfd-backed file descriptor.
+
+These workflows send typed protocol messages and store command output under
+`command_outputs/` like other remote execution results. Linux ELF arguments are
+currently space-delimited. BOF and PE/DLL loading remain Windows-specific and
+are intentionally rejected on Linux.
 
 Slash-prefixed paths and programs are remote input:
 

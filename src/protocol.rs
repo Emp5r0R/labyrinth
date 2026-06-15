@@ -372,6 +372,16 @@ pub enum Message {
         output: String,
         error: Option<String>,
     },
+    /// Linux ELF in-memory execution request
+    LinuxElfExecutionRequest {
+        elf_data: Vec<u8>,
+        args: String,
+    },
+    /// Linux ELF in-memory execution response
+    LinuxElfExecutionResponse {
+        output: String,
+        error: Option<String>,
+    },
     /// Streaming protocol messages
     Stream(StreamMessage),
 }
