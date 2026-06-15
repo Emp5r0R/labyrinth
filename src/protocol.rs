@@ -30,7 +30,9 @@ pub struct DwellerServerEndpoint {
     pub address: String,
     pub fingerprint: Option<String>,
     pub transport: String,
+    #[serde(default)]
     pub sni: Option<String>,
+    #[serde(default)]
     pub alpn: Vec<String>,
 }
 

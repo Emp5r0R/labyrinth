@@ -48,6 +48,27 @@ LABYRINTH_AUTH_KEY="change-this-secret" \
   --retry
 ```
 
+Run an agent with transport customization:
+
+```bash
+LABYRINTH_AUTH_KEY="change-this-secret" \
+  cargo run --bin labyrinth-agent -- \
+  --server 127.0.0.1:44344 \
+  --fingerprint SHA256_FINGERPRINT \
+  --sni example.com \
+  --alpn h2,http/1.1
+```
+
+Run a Windows agent with explicit startup hooks:
+
+```bash
+LABYRINTH_AUTH_KEY="change-this-secret" \
+  cargo run --bin labyrinth-agent -- \
+  --server 127.0.0.1:44344 \
+  --fingerprint SHA256_FINGERPRINT \
+  --evasion amsi,etw
+```
+
 Run a dweller:
 
 ```bash
@@ -155,6 +176,9 @@ git rm --cached path/to/generated-file
 - Keep the browser dashboard on localhost unless authentication is added.
 - Review command execution, upload/download, shell, PEAS, dweller, and task
   queue changes with extra care.
+- Review `--sni`, `--alpn`, `--evasion`, BloodHound, BOF, and reflective
+  loading changes with extra care because they affect transport identity,
+  telemetry interaction, and in-memory execution behavior.
 
 ## Documentation Rules
 

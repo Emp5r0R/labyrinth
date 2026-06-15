@@ -133,10 +133,39 @@ Agent options:
 | `--proxy <socks5-url>` | TCP/TLS-only SOCKS5 proxy. |
 | `--transport tcp|quic` | Server transport. Defaults to `tcp`. |
 | `--retry` | Reconnect after connection failure. |
+| `--sni <name>` | Override the TLS or QUIC Server Name Indication value. Defaults to `localhost`. |
+| `--alpn <proto[,proto]>` | Override ALPN protocols for the TLS or QUIC handshake. QUIC defaults to `labyrinth-control/1` when unset. |
+| `--evasion <amsi|etw|all>` | Windows-only startup hooks. May be comma-delimited. Hooks are not applied unless explicitly requested. |
 
 Agents collect host, operating system, interface, route, and low-noise outbound
 reachability data during registration. The server uses that information for
 route detection, topology display, and smart access planning.
+
+Transport customization example:
+
+```bash
+LABYRINTH_AUTH_KEY="change-this-secret" \
+  ./labyrinth-agent \
+  --server SERVER_IP:44344 \
+  --fingerprint SHA256_FINGERPRINT \
+  --sni example.com \
+  --alpn h2,http/1.1
+```
+
+Windows startup hooks example:
+
+```bash
+LABYRINTH_AUTH_KEY="change-this-secret" \
+  ./labyrinth-agent \
+  --server SERVER_IP:44344 \
+  --fingerprint SHA256_FINGERPRINT \
+  --evasion amsi,etw
+```
+
+`--evasion` accepts `amsi`, `etw`, or `all`. The hooks are isolated in the
+agent evasion module, run before registration, and skip with a warning on
+non-Windows platforms or unsupported Windows architectures. Hook patching is
+implemented for x86_64 and i686 Windows.
 
 ## BloodHound Collection
 
@@ -347,6 +376,16 @@ Control shell local commands include:
 !privesc
 !exit
 ```
+
+The `commands` menu also includes Windows in-memory execution workflows for BOF
+and reflective PE/DLL loading. These workflows send typed protocol messages and
+store command output under `command_outputs/` like other remote execution
+results.
+
+Linux BOF and PE/DLL loading are intentionally rejected because those formats
+are Windows-specific. Linux in-memory execution is possible through a separate
+ELF loader, such as a memfd-backed executable or shared-object loader, but that
+requires different validation, lifecycle, and output-capture behavior.
 
 Slash-prefixed paths and programs are remote input:
 

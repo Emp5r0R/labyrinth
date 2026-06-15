@@ -21,6 +21,7 @@ Use it only on systems and networks where you have explicit authorization.
   compatibility wrapper.
 - TCP/TLS transport by default, with optional QUIC/UDP transport for native
   per-connection streams.
+- Optional SNI and ALPN overrides for TCP/TLS and QUIC agent handshakes.
 - Certificate fingerprint or base64 certificate verification for agent and
   dweller trust.
 - Ariadne IP tunneling with automatic route candidate detection from connected
@@ -35,6 +36,11 @@ Use it only on systems and networks where you have explicit authorization.
 - Interactive remote shells with raw PTY mode and a control shell that uses
   `!` local commands so `/usr/bin`, `/tmp`, and other slash-prefixed remote
   paths pass through unchanged.
+- Windows in-memory execution workflows for BOF and reflective PE/DLL loading.
+  Linux in-memory loading requires a separate ELF/memfd loader design and is
+  not part of the current BOF/PE workflow.
+- Explicit Windows evasion startup hooks for AMSI and ETW through the agent
+  `--evasion` option. These hooks are never applied unless requested.
 - Optional read-only browser network map on `127.0.0.1:44777` with `--gui`, showing
   agents, dwellers, networks, active tunnels, port forwards, encrypted edges,
   local edges, shared networks, route conflicts, and status summaries.
@@ -79,6 +85,22 @@ LABYRINTH_AUTH_KEY="change-this-secret" \
   --fingerprint SHA256_FINGERPRINT \
   --retry
 ```
+
+Optional transport and Windows startup controls:
+
+```bash
+LABYRINTH_AUTH_KEY="change-this-secret" \
+  ./target/release/labyrinth-agent \
+  --server SERVER_IP:44344 \
+  --fingerprint SHA256_FINGERPRINT \
+  --sni example.com \
+  --alpn h2,http/1.1 \
+  --evasion amsi,etw
+```
+
+`--evasion` is Windows-only and accepts `amsi`, `etw`, or `all`. Hook patching
+is implemented for x86_64 and i686 Windows and skips unsupported architectures
+with a warning. Use it only inside explicitly authorized test scope.
 
 Open the visualization dashboard on the server host by starting the server with `--gui`:
 
@@ -164,6 +186,9 @@ port forwards online.
 - Set `LABYRINTH_AUTH_KEY` unless you are doing local-only testing.
 - Do not use `--no-auth` outside isolated tests.
 - Pin server identity with `--fingerprint` or `--cert`.
+- Treat `--sni`, `--alpn`, `--evasion`, in-memory execution, BloodHound,
+  upload/download, and shell workflows as explicit operator actions that require
+  authorization and change-control review.
 - Keep generated certificates, keys, logs, command output, shell captures,
   dwellers, and release binaries out of git.
 - Keep the browser dashboard bound to localhost unless you add explicit access

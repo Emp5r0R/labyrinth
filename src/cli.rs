@@ -107,6 +107,9 @@ pub struct AgentArgs {
     /// Custom ALPN protocols for handshake (e.g., h3,http/1.1)
     #[arg(long, value_delimiter = ',')]
     pub alpn: Vec<String>,
+    /// Windows-only startup hooks to apply explicitly: amsi, etw, or all
+    #[arg(long = "evasion", value_delimiter = ',', value_parser = ["amsi", "etw", "all"])]
+    pub evasion: Vec<String>,
 }
 
 #[derive(Args, Clone)]
@@ -254,16 +257,18 @@ async fn run_server(args: ServerArgs) -> anyhow::Result<()> {
 async fn run_agent(args: AgentArgs) -> anyhow::Result<()> {
     init_logging(args.logging.level());
     info!("Connecting agent to {}", args.server);
-    agent::run_agent(
-        &args.server,
-        args.cert,
-        args.fingerprint,
-        args.proxy,
-        args.transport,
-        args.retry,
-        args.sni,
-        args.alpn,
-    )
+    let evasion_hooks = agent::evasion::EvasionHook::parse_cli_values(&args.evasion)?;
+    agent::run_agent(agent::AgentRunConfig {
+        server_addr: args.server,
+        server_cert_b64: args.cert,
+        accept_fingerprint: args.fingerprint,
+        proxy: args.proxy,
+        transport: args.transport,
+        retry: args.retry,
+        sni: args.sni,
+        alpn: args.alpn,
+        evasion_hooks,
+    })
     .await?;
     Ok(())
 }
@@ -346,5 +351,18 @@ mod tests {
     fn no_web_ui_overrides_gui_for_compatibility() {
         let cli = ServerCli::try_parse_from(["labyrinth-server", "--gui", "--no-web-ui"]).unwrap();
         assert!(!cli.args.web_ui_enabled());
+    }
+
+    #[test]
+    fn agent_evasion_flag_accepts_comma_delimited_values() {
+        let cli = AgentCli::try_parse_from([
+            "labyrinth-agent",
+            "--server",
+            "127.0.0.1:44344",
+            "--evasion",
+            "amsi,etw",
+        ])
+        .unwrap();
+        assert_eq!(cli.args.evasion, vec!["amsi", "etw"]);
     }
 }
