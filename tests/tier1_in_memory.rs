@@ -68,17 +68,37 @@ async fn test_linux_reflective_rejection() {
 #[tokio::test]
 async fn test_windows_bof_placeholder() {
     let executor = CommandExecutor::new(&OperatingSystem::Windows);
-    let result: Result<String> = executor.execute_bof(vec![], vec![], "go").await;
+    // Use x64 COFF header mock
+    let mut bof_data = vec![0u8; 100];
+    bof_data[0] = 0x64; bof_data[1] = 0x86; // IMAGE_FILE_MACHINE_AMD64
+
+    let result: Result<String> = executor.execute_bof(bof_data, vec![], "go").await;
     
-    assert!(result.is_ok());
-    assert!(result.unwrap().contains("Windows BOF loader placeholder"));
+    if cfg!(target_os = "windows") {
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("BOF loaded at"));
+    } else {
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Not supported on this OS"));
+    }
 }
 
 #[tokio::test]
 async fn test_windows_reflective_placeholder() {
     let executor = CommandExecutor::new(&OperatingSystem::Windows);
-    let result: Result<String> = executor.execute_reflective(vec![], "args").await;
+    // Use MZ header mock
+    let mut pe_data = vec![0u8; 1024];
+    pe_data[0] = 0x4D; pe_data[1] = 0x5A; // MZ
+    pe_data[60] = 0x40; // e_lfanew
+    pe_data[0x40] = 0x50; pe_data[0x41] = 0x45; // PE\0\0
+
+    let result: Result<String> = executor.execute_reflective(pe_data, "args").await;
     
-    assert!(result.is_ok());
-    assert!(result.unwrap().contains("Windows reflective loader placeholder"));
+    if cfg!(target_os = "windows") {
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("Reflectively mapped PE at"));
+    } else {
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Not supported on this OS"));
+    }
 }
