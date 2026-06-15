@@ -1852,12 +1852,8 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                     }
                 }
                 CommandCategory::InMemory => {
-                    if let Err(e) = start_in_memory_mode(
-                        &agent_name,
-                        &agent_sender,
-                        &command_response,
-                    )
-                    .await
+                    if let Err(e) =
+                        start_in_memory_mode(&agent_name, &agent_sender, &command_response).await
                     {
                         println!(
                             "{}",
@@ -1899,10 +1895,9 @@ async fn start_in_memory_mode(
                 .default("go".to_string())
                 .interact_text()
                 .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
-            
-            let bof_data = fs::read(&path).map_err(|e| {
-                LabyrinthError::Message(format!("Failed to read BOF file: {}", e))
-            })?;
+
+            let bof_data = fs::read(&path)
+                .map_err(|e| LabyrinthError::Message(format!("Failed to read BOF file: {}", e)))?;
 
             println!("{} Sending BOF to agent...", styling::INDENT_LEVEL_1);
             execute_remote_message(
@@ -1917,7 +1912,8 @@ async fn start_in_memory_mode(
                     entry_point,
                 },
                 Duration::from_secs(30),
-            ).await;
+            )
+            .await;
         }
         1 => {
             let path: String = Input::new()
@@ -1930,23 +1926,23 @@ async fn start_in_memory_mode(
                 .interact_text()
                 .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
 
-            let pe_data = fs::read(&path).map_err(|e| {
-                LabyrinthError::Message(format!("Failed to read PE file: {}", e))
-            })?;
+            let pe_data = fs::read(&path)
+                .map_err(|e| LabyrinthError::Message(format!("Failed to read PE file: {}", e)))?;
 
-            println!("{} Sending PE/DLL to agent for reflective loading...", styling::INDENT_LEVEL_1);
+            println!(
+                "{} Sending PE/DLL to agent for reflective loading...",
+                styling::INDENT_LEVEL_1
+            );
             execute_remote_message(
                 agent_name,
                 "reflective",
                 &format!("Reflective Load: {}", path),
                 agent_sender,
                 command_response,
-                Message::ReflectiveLoadRequest {
-                    pe_data,
-                    args,
-                },
+                Message::ReflectiveLoadRequest { pe_data, args },
                 Duration::from_secs(60),
-            ).await;
+            )
+            .await;
         }
         _ => {}
     }
@@ -3255,8 +3251,8 @@ async fn execute_remote_message(
                 );
             }
             Some(raw_log)
-            }
-            Ok(Ok(Message::BofExecutionResponse { output, error })) => {
+        }
+        Ok(Ok(Message::BofExecutionResponse { output, error })) => {
             let saved =
                 persist_command_output(agent_name, display, token, &output, error.as_deref());
             let mut raw_log = String::new();
@@ -3279,8 +3275,8 @@ async fn execute_remote_message(
                 );
             }
             Some(raw_log)
-            }
-            Ok(Ok(Message::ReflectiveLoadResponse { output, error })) => {
+        }
+        Ok(Ok(Message::ReflectiveLoadResponse { output, error })) => {
             let saved =
                 persist_command_output(agent_name, display, token, &output, error.as_deref());
             let mut raw_log = String::new();
@@ -3303,8 +3299,8 @@ async fn execute_remote_message(
                 );
             }
             Some(raw_log)
-            }
-            Ok(Ok(Message::FileUploadResponse { success, message })) => {
+        }
+        Ok(Ok(Message::FileUploadResponse { success, message })) => {
             let output = format!(
                 "=== File Upload ===\nSummary: {}\nDetails:\n{}",
                 if success {

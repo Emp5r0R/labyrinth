@@ -75,8 +75,10 @@ Agent:
 - `src/agent/core.rs`: agent and dweller runtime loops, registration,
   reachability, callback, hibernation, and task handling.
 - `src/agent/connection.rs`: TCP/TLS, QUIC/UDP, SOCKS, retry, and connection
-  setup.
+  setup, including optional SNI and ALPN overrides.
 - `src/agent/tls_config.rs`: TLS and certificate verification.
+- `src/agent/evasion.rs`: Windows-only AMSI and ETW startup hooks behind the
+  explicit agent `--evasion` option.
 - `src/agent/command_executor.rs`: OS-aware command execution workflows.
 - `src/agent/pty_shell.rs`: interactive PTY shell support.
 - `src/agent/reverse_port_forward.rs`: agent-side Portal handling.
@@ -138,6 +140,11 @@ HTTP, HTTPS, and DNS dweller callback transports are currently accepted as
 configuration and planning labels. They need dedicated listener implementations
 before they can carry task traffic.
 
+Agent SNI and ALPN overrides are connection-establishment concerns and belong in
+`src/agent/connection.rs`. CLI parsing belongs in `src/cli.rs`; the runtime
+passes typed values to the agent instead of embedding parser state in transport
+code.
+
 ## Topology and Smart Access
 
 Topology is derived from:
@@ -180,3 +187,6 @@ terminal-first workflow to mirror.
   shell, file transfer, callback, hibernation, and Portal workflows.
 - Platform-specific code should be isolated behind target-specific modules and
   compile gates.
+- Windows evasion hooks are explicit startup actions. Keep hook selection typed,
+  isolated in `src/agent/evasion.rs`, architecture-gated for x86_64 and i686,
+  and documented in the CLI and operations guides whenever behavior changes.
