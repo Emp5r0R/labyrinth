@@ -176,6 +176,8 @@ concepts:
   and port-forward relationships.
 - Status: online/offline, selected target, reachability, conflicts, active
   tunnels, hibernation, task state, and callback configuration.
+- Capabilities: read-only platform execution support, such as Windows
+  BOF/reflective PE-DLL loading and Linux memfd ELF execution.
 
 The dashboard is read-only in this version. Keep it bound to localhost by
 default. Add mutation endpoints only with explicit authentication and a stable
