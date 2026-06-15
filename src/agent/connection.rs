@@ -33,6 +33,8 @@ impl ConnectionManager {
         accept_fingerprint: Option<String>,
         proxy: Option<String>,
         transport: TransportMode,
+        sni: Option<String>,
+        alpn: Vec<String>,
     ) -> Result<EstablishedControlConnection> {
         match transport {
             TransportMode::Tcp => {
@@ -41,6 +43,8 @@ impl ConnectionManager {
                     server_cert_b64,
                     accept_fingerprint,
                     proxy,
+                    sni,
+                    alpn,
                 )
                 .await?;
                 Ok(EstablishedControlConnection {
@@ -58,6 +62,8 @@ impl ConnectionManager {
                     server_addr,
                     server_cert_b64,
                     accept_fingerprint,
+                    sni,
+                    alpn,
                 )
                 .await?;
                 Ok(EstablishedControlConnection {
@@ -73,10 +79,17 @@ impl ConnectionManager {
         server_cert_b64: Option<String>,
         accept_fingerprint: Option<String>,
         proxy: Option<String>,
+        sni: Option<String>,
+        alpn: Vec<String>,
     ) -> Result<tokio_rustls::client::TlsStream<Box<dyn AsyncReadWrite>>> {
-        let config = TlsConfigManager::create_tls_config(server_cert_b64, accept_fingerprint)?;
+        let mut config = TlsConfigManager::create_tls_config(server_cert_b64, accept_fingerprint)?;
+        if !alpn.is_empty() {
+            config.alpn_protocols = alpn.into_iter().map(|s| s.into_bytes()).collect();
+        }
+
         let connector = TlsConnector::from(Arc::new(config));
-        let domain = ServerName::try_from("localhost")?;
+        let domain_str = sni.unwrap_or_else(|| "localhost".to_string());
+        let domain = ServerName::try_from(domain_str)?.to_owned();
 
         let server_stream: Box<dyn AsyncReadWrite> = if let Some(proxy_url) = &proxy {
             let parsed_url = Url::parse(proxy_url).map_err(LabyrinthError::UrlParse)?;
@@ -119,10 +132,18 @@ impl ConnectionManager {
         server_addr: &str,
         server_cert_b64: Option<String>,
         accept_fingerprint: Option<String>,
+        sni: Option<String>,
+        alpn: Vec<String>,
     ) -> Result<(QuicBidiStream, quinn::Connection)> {
         let mut crypto =
             SecurityManager::create_tls_client_config(server_cert_b64, accept_fingerprint)?;
-        crypto.alpn_protocols = vec![b"labyrinth-control/1".to_vec()];
+        
+        if !alpn.is_empty() {
+            crypto.alpn_protocols = alpn.into_iter().map(|s| s.into_bytes()).collect();
+        } else {
+            crypto.alpn_protocols = vec![b"labyrinth-control/1".to_vec()];
+        }
+
         let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
             .map_err(|e| LabyrinthError::Message(format!("Invalid QUIC client config: {}", e)))?;
         let mut client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
@@ -132,9 +153,10 @@ impl ConnectionManager {
         let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
         endpoint.set_default_client_config(client_config);
 
-        info!("Connecting to server via QUIC: {}", server_addr);
+        let sni_domain = sni.as_deref().unwrap_or("localhost");
+        info!("Connecting to server via QUIC: {} (SNI: {})", server_addr, sni_domain);
         let connection = endpoint
-            .connect(server_addr, "localhost")
+            .connect(server_addr, sni_domain)
             .map_err(|e| LabyrinthError::Message(format!("QUIC connect failed: {}", e)))?
             .await
             .map_err(|e| LabyrinthError::Message(format!("QUIC handshake failed: {}", e)))?;
@@ -154,6 +176,8 @@ impl ConnectionManager {
         proxy: Option<String>,
         transport: TransportMode,
         retry: bool,
+        sni: Option<String>,
+        alpn: Vec<String>,
     ) -> Result<EstablishedControlConnection> {
         loop {
             match Self::establish_control_connection(
@@ -162,6 +186,8 @@ impl ConnectionManager {
                 accept_fingerprint.clone(),
                 proxy.clone(),
                 transport,
+                sni.clone(),
+                alpn.clone(),
             )
             .await
             {

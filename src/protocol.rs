@@ -30,6 +30,8 @@ pub struct DwellerServerEndpoint {
     pub address: String,
     pub fingerprint: Option<String>,
     pub transport: String,
+    pub sni: Option<String>,
+    pub alpn: Vec<String>,
 }
 
 fn default_true() -> bool {
