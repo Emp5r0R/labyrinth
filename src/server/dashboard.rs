@@ -1838,6 +1838,31 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       `;
     }
 
+    function capabilityTone(capability) {
+      const text = String(capability || '').toLowerCase();
+      if (text.includes('evasion') || text.includes('amsi') || text.includes('etw')) return 'warn';
+      if (text.includes('bof') || text.includes('reflective') || text.includes('memfd')) return 'ok';
+      return '';
+    }
+
+    function capabilityPills(node) {
+      if (!node || !Array.isArray(node.capabilities)) return [];
+      return node.capabilities.map(capability => ({
+        text: capability,
+        tone: capabilityTone(capability)
+      }));
+    }
+
+    function capabilityHtml(node) {
+      return capabilityPills(node).map(pill => {
+        let toneClass = '';
+        if (pill.tone === 'ok') toneClass = 'success';
+        else if (pill.tone === 'warn') toneClass = 'warning';
+        else if (pill.tone === 'bad') toneClass = 'danger';
+        return `<span class="pill-badge ${toneClass}">${escapeHtml(pill.text)}</span>`;
+      }).join('');
+    }
+
     function emptyText(text) {
       return `<div class="empty-state">${escapeHtml(text)}</div>`;
     }
@@ -1870,6 +1895,11 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
 
       if (selected.detail) {
         properties += `<tr><td>Detail</td><td>${escapeHtml(selected.detail)}</td></tr>`;
+      }
+
+      const capsHtml = capabilityHtml(selected);
+      if (capsHtml) {
+        properties += `<tr><td>Capabilities</td><td><div class="item-pills">${capsHtml}</div></td></tr>`;
       }
 
       let dwellerHtml = '';
@@ -2184,7 +2214,11 @@ const DASHBOARD_HTML: &str = r##"<!doctype html>
       // 2. Inventory Tab
       const filteredNodes = data.nodes.filter(node => (node.kind === 'agent' || node.kind === 'dweller') && !isNodeFiltered(node));
       document.getElementById('inventory-nodes').innerHTML = filteredNodes.length
-        ? filteredNodes.map(node => item(node.label, node.detail, [{ text: node.kind }, { text: node.status, tone: node.status.includes('offline') ? 'warn' : 'ok' }], node.id)).join('')
+        ? filteredNodes.map(node => item(node.label, node.detail, [
+          { text: node.kind },
+          { text: node.status, tone: node.status.includes('offline') ? 'warn' : 'ok' },
+          ...capabilityPills(node)
+        ], node.id)).join('')
         : emptyText('No matching agents or dwellers.');
 
       const filteredRoutes = data.routes.filter(r => !isNodeFiltered({ kind: 'network', label: r.cidr, status: 'detected' }));
@@ -2394,6 +2428,8 @@ struct DashboardNode {
     kind: String,
     status: String,
     detail: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hostname: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2861,6 +2897,7 @@ fn append_offline_dweller_nodes(
                 task_summary(&record.tasks),
                 path_summary(&record.path)
             ),
+            capabilities: execution_capabilities_for_os(&record.os),
             hostname: Some(record.hostname.clone()),
             os: Some(record.os.clone()),
             install_path: Some(record.install_path.clone()),
@@ -2924,6 +2961,7 @@ async fn agent_dashboard_node(
         kind: kind.to_string(),
         status,
         detail,
+        capabilities: execution_capabilities_for_os(&agent.info.os),
         hostname: Some(agent.info.hostname.clone()),
         os: Some(agent.info.os.clone()),
         install_path: dweller_record.map(|r| r.install_path.clone()),
@@ -2934,6 +2972,21 @@ async fn agent_dashboard_node(
         tasks: dweller_record.map(|r| r.tasks.clone()),
         path: dweller_record.map(|r| r.path.clone()),
     }
+}
+
+fn execution_capabilities_for_os(os: &str) -> Vec<String> {
+    let normalized = os.to_ascii_lowercase();
+    if normalized.contains("windows") {
+        return vec![
+            "Windows BOF execution".to_string(),
+            "Reflective PE/DLL loading".to_string(),
+            "AMSI/ETW evasion opt-in".to_string(),
+        ];
+    }
+    if normalized.contains("linux") {
+        return vec!["Linux ELF memfd execution".to_string()];
+    }
+    Vec::new()
 }
 
 fn connectivity_summary(agent: &ConnectedAgent) -> &'static str {
@@ -3051,14 +3104,25 @@ mod tests {
     use tokio::sync::{mpsc, Mutex};
 
     fn test_agent(id: &str, name: &str, kind: AgentKind, addresses: Vec<&str>) -> ConnectedAgent {
+        test_agent_with_platform(id, name, kind, "linux", "x86_64", addresses)
+    }
+
+    fn test_agent_with_platform(
+        id: &str,
+        name: &str,
+        kind: AgentKind,
+        os: &str,
+        arch: &str,
+        addresses: Vec<&str>,
+    ) -> ConnectedAgent {
         let (sender, _rx) = mpsc::channel(1);
         ConnectedAgent {
             id: id.to_string(),
             info: AgentInfo {
                 name: name.to_string(),
                 hostname: name.to_string(),
-                os: "linux".to_string(),
-                arch: "x86_64".to_string(),
+                os: os.to_string(),
+                arch: arch.to_string(),
                 interfaces: vec![NetworkInterface {
                     name: "eth0".to_string(),
                     addresses: addresses.into_iter().map(str::to_string).collect(),
@@ -3119,6 +3183,44 @@ mod tests {
             .edges
             .iter()
             .any(|edge| edge.label == "local/unenc" && !edge.encrypted));
+        assert!(snapshot.nodes.iter().any(|node| node
+            .capabilities
+            .iter()
+            .any(|capability| capability == "Linux ELF memfd execution")));
+    }
+
+    #[tokio::test]
+    async fn snapshot_includes_windows_execution_capabilities() {
+        let mut agents = HashMap::new();
+        agents.insert(
+            "agent-w".to_string(),
+            test_agent_with_platform(
+                "agent-w",
+                "win-alpha",
+                AgentKind::Generic,
+                "windows",
+                "i686",
+                vec!["192.168.20.10/24"],
+            ),
+        );
+
+        let snapshot =
+            DashboardServer::build_snapshot(&agents, &DwellerRegistry::default(), &[], &[]).await;
+        let agent = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.id == "agent:agent-w")
+            .expect("windows agent node should be present");
+
+        assert!(agent
+            .capabilities
+            .contains(&"Windows BOF execution".to_string()));
+        assert!(agent
+            .capabilities
+            .contains(&"Reflective PE/DLL loading".to_string()));
+        assert!(agent
+            .capabilities
+            .contains(&"AMSI/ETW evasion opt-in".to_string()));
     }
 
     #[test]
@@ -3135,5 +3237,7 @@ mod tests {
         assert!(DASHBOARD_HTML.contains("Labyrinth Network Map"));
         assert!(DASHBOARD_HTML.contains("/api/network-map"));
         assert!(DASHBOARD_HTML.contains("<svg id=\"map\""));
+        assert!(DASHBOARD_HTML.contains("capabilityPills"));
+        assert!(DASHBOARD_HTML.contains("Capabilities"));
     }
 }

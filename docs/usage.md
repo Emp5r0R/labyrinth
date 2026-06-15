@@ -410,10 +410,13 @@ It is visualization-only in this version. It shows:
 - Active Ariadne tunnels and Portal forwards.
 - Shared networks and route conflicts.
 - Dweller callback, hibernation, path, task, and reachability context.
+- Platform execution capability badges, including Windows BOF/reflective
+  PE/DLL support and Linux memfd ELF support where applicable.
 - Connection status and update freshness.
 - Pan, zoom, fit-to-view, node selection, and smart access suggestions.
 
-Keep the dashboard bound to localhost unless access control is added.
+Execution badges are informational only. Keep the dashboard bound to localhost
+unless access control is added.
 
 ## Troubleshooting
 

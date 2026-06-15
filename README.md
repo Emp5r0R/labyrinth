@@ -42,7 +42,8 @@ Use it only on systems and networks where you have explicit authorization.
   `--evasion` option. These hooks are never applied unless requested.
 - Optional read-only browser network map on `127.0.0.1:44777` with `--gui`, showing
   agents, dwellers, networks, active tunnels, port forwards, encrypted edges,
-  local edges, shared networks, route conflicts, and status summaries.
+  local edges, shared networks, route conflicts, execution capability badges,
+  and status summaries.
 - Linux and Windows agent and dweller support. Linux Ariadne uses TUN support;
   Windows bridge work is isolated under the Windows netstack module.
 
