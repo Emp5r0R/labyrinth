@@ -50,6 +50,64 @@ impl CommandExecutor {
         }
     }
 
+    pub async fn execute_bof(
+        &self,
+        bof_data: Vec<u8>,
+        args: Vec<u8>,
+        entry_point: &str,
+    ) -> Result<String> {
+        match self {
+            Self::Linux => self.execute_linux_bof(bof_data, args, entry_point).await,
+            Self::Windows => self.execute_windows_bof(bof_data, args, entry_point).await,
+            Self::Unknown => Err(LabyrinthError::Message(
+                "BOF execution not supported on this operating system".to_string(),
+            )),
+        }
+    }
+
+    pub async fn execute_reflective(&self, pe_data: Vec<u8>, args: &str) -> Result<String> {
+        match self {
+            Self::Linux => self.execute_linux_reflective(pe_data, args).await,
+            Self::Windows => self.execute_windows_reflective(pe_data, args).await,
+            Self::Unknown => Err(LabyrinthError::Message(
+                "Reflective loading not supported on this operating system".to_string(),
+            )),
+        }
+    }
+
+    async fn execute_linux_bof(
+        &self,
+        _bof_data: Vec<u8>,
+        _args: Vec<u8>,
+        _entry_point: &str,
+    ) -> Result<String> {
+        Err(LabyrinthError::Message(
+            "BOF execution is not supported on Linux. Windows target required.".to_string(),
+        ))
+    }
+
+    async fn execute_linux_reflective(&self, _pe_data: Vec<u8>, _args: &str) -> Result<String> {
+        Err(LabyrinthError::Message(
+            "Reflective PE/DLL loading is not supported on Linux. Windows target required."
+                .to_string(),
+        ))
+    }
+
+    async fn execute_windows_bof(
+        &self,
+        _bof_data: Vec<u8>,
+        _args: Vec<u8>,
+        _entry_point: &str,
+    ) -> Result<String> {
+        // TODO: Implement custom windows-sys BOF loader
+        Ok("Windows BOF loader placeholder: Successful mock execution.".to_string())
+    }
+
+    async fn execute_windows_reflective(&self, _pe_data: Vec<u8>, _args: &str) -> Result<String> {
+        // TODO: Implement custom windows-sys reflective loader
+        Ok("Windows reflective loader placeholder: Successful mock loading.".to_string())
+    }
+
     async fn execute_linux_command(&self, command: &str) -> Result<String> {
         if let Some(encoded) = command.strip_prefix("linux:shell_raw:") {
             return self.run_linux_shell_raw(encoded);

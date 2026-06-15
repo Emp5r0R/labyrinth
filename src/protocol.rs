@@ -347,6 +347,27 @@ pub enum Message {
     ShellSessionClose {
         session_id: String,
     },
+    /// BOF (Beacon Object File) execution request
+    BofExecutionRequest {
+        bof_data: Vec<u8>,
+        args: Vec<u8>,
+        entry_point: String,
+    },
+    /// BOF execution response
+    BofExecutionResponse {
+        output: String,
+        error: Option<String>,
+    },
+    /// Reflective PE/DLL loading request
+    ReflectiveLoadRequest {
+        pe_data: Vec<u8>,
+        args: String,
+    },
+    /// Reflective PE/DLL loading response
+    ReflectiveLoadResponse {
+        output: String,
+        error: Option<String>,
+    },
     /// Streaming protocol messages
     Stream(StreamMessage),
 }

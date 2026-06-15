@@ -1225,6 +1225,7 @@ enum CommandCategory {
     Shell,
     Upload,
     Download,
+    InMemory,
     Back,
 }
 
@@ -1239,6 +1240,7 @@ impl CommandCategory {
             Self::Shell => "Shell",
             Self::Upload => "Upload file",
             Self::Download => "Download file",
+            Self::InMemory => "In-Memory Execution (BOF/Reflective)",
             Self::Back => "Back",
         }
     }
@@ -1849,9 +1851,104 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                         );
                     }
                 }
+                CommandCategory::InMemory => {
+                    if let Err(e) = start_in_memory_mode(
+                        &agent_name,
+                        &agent_sender,
+                        &command_response,
+                    )
+                    .await
+                    {
+                        println!(
+                            "{}",
+                            styling::format_error_msg(
+                                styling::ERROR_INDICATOR,
+                                &format!("In-Memory execution error: {}", e)
+                            )
+                        );
+                    }
+                }
                 CommandCategory::Back => break,
             }
         }
+    }
+
+    Ok(())
+}
+
+async fn start_in_memory_mode(
+    agent_name: &str,
+    agent_sender: &mpsc::Sender<Message>,
+    command_response: &Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Message>>>>,
+) -> Result<()> {
+    let choices = vec!["Execute BOF", "Reflective PE/DLL Load", "Back"];
+    let selection = Select::new()
+        .with_prompt("In-Memory Execution")
+        .items(&choices)
+        .interact()
+        .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
+
+    match selection {
+        0 => {
+            let path: String = Input::new()
+                .with_prompt("Path to BOF (.o) file")
+                .interact_text()
+                .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+            let entry_point: String = Input::new()
+                .with_prompt("Entry point (e.g. go)")
+                .default("go".to_string())
+                .interact_text()
+                .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+            
+            let bof_data = fs::read(&path).map_err(|e| {
+                LabyrinthError::Message(format!("Failed to read BOF file: {}", e))
+            })?;
+
+            println!("{} Sending BOF to agent...", styling::INDENT_LEVEL_1);
+            execute_remote_message(
+                agent_name,
+                "bof",
+                &format!("Execute BOF: {}", path),
+                agent_sender,
+                command_response,
+                Message::BofExecutionRequest {
+                    bof_data,
+                    args: Vec::new(), // TODO: Support BOF arguments
+                    entry_point,
+                },
+                Duration::from_secs(30),
+            ).await;
+        }
+        1 => {
+            let path: String = Input::new()
+                .with_prompt("Path to PE/DLL file")
+                .interact_text()
+                .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+            let args: String = Input::new()
+                .with_prompt("Arguments (optional)")
+                .allow_empty(true)
+                .interact_text()
+                .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+
+            let pe_data = fs::read(&path).map_err(|e| {
+                LabyrinthError::Message(format!("Failed to read PE file: {}", e))
+            })?;
+
+            println!("{} Sending PE/DLL to agent for reflective loading...", styling::INDENT_LEVEL_1);
+            execute_remote_message(
+                agent_name,
+                "reflective",
+                &format!("Reflective Load: {}", path),
+                agent_sender,
+                command_response,
+                Message::ReflectiveLoadRequest {
+                    pe_data,
+                    args,
+                },
+                Duration::from_secs(60),
+            ).await;
+        }
+        _ => {}
     }
 
     Ok(())
@@ -1867,6 +1964,7 @@ fn command_categories_for(os: CommandsOs) -> Vec<CommandCategory> {
             CommandCategory::Shell,
             CommandCategory::Upload,
             CommandCategory::Download,
+            CommandCategory::InMemory,
             CommandCategory::Back,
         ],
         CommandsOs::Windows => vec![
@@ -1878,6 +1976,7 @@ fn command_categories_for(os: CommandsOs) -> Vec<CommandCategory> {
             CommandCategory::Shell,
             CommandCategory::Upload,
             CommandCategory::Download,
+            CommandCategory::InMemory,
             CommandCategory::Back,
         ],
     }
@@ -3156,8 +3255,56 @@ async fn execute_remote_message(
                 );
             }
             Some(raw_log)
-        }
-        Ok(Ok(Message::FileUploadResponse { success, message })) => {
+            }
+            Ok(Ok(Message::BofExecutionResponse { output, error })) => {
+            let saved =
+                persist_command_output(agent_name, display, token, &output, error.as_deref());
+            let mut raw_log = String::new();
+            if let Some(err) = error {
+                println!("\n{}", decorate_command_output(&err));
+                raw_log.push_str(&err);
+                raw_log.push('\n');
+            }
+            if !output.trim().is_empty() {
+                println!("\n{}", decorate_command_output(&output));
+                raw_log.push_str(&output);
+            }
+            if let Ok(path) = saved {
+                println!(
+                    "{}",
+                    styling::format_success_msg(
+                        styling::SUCCESS_INDICATOR,
+                        &format!("Saved BOF output to {}", path.display())
+                    )
+                );
+            }
+            Some(raw_log)
+            }
+            Ok(Ok(Message::ReflectiveLoadResponse { output, error })) => {
+            let saved =
+                persist_command_output(agent_name, display, token, &output, error.as_deref());
+            let mut raw_log = String::new();
+            if let Some(err) = error {
+                println!("\n{}", decorate_command_output(&err));
+                raw_log.push_str(&err);
+                raw_log.push('\n');
+            }
+            if !output.trim().is_empty() {
+                println!("\n{}", decorate_command_output(&output));
+                raw_log.push_str(&output);
+            }
+            if let Ok(path) = saved {
+                println!(
+                    "{}",
+                    styling::format_success_msg(
+                        styling::SUCCESS_INDICATOR,
+                        &format!("Saved reflective load output to {}", path.display())
+                    )
+                );
+            }
+            Some(raw_log)
+            }
+            Ok(Ok(Message::FileUploadResponse { success, message })) => {
             let output = format!(
                 "=== File Upload ===\nSummary: {}\nDetails:\n{}",
                 if success {

