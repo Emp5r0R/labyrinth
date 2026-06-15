@@ -306,6 +306,8 @@ impl DwellerManager {
                 address: callback_server.trim().to_string(),
                 fingerprint: Self::current_server_fingerprint().ok(),
                 transport: Self::normalize_callback_transport(&callback_transport)?,
+                sni: None,
+                alpn: Vec::new(),
             }]
         };
         let hibernation = Self::prompt_hibernation(record.hibernation.clone())?;
@@ -559,6 +561,8 @@ impl DwellerManager {
                 address: callback_server.trim().to_string(),
                 fingerprint: Self::current_server_fingerprint().ok(),
                 transport: Self::normalize_callback_transport(&callback_transport)?,
+                sni: None,
+                alpn: Vec::new(),
             }]
         };
         let hibernation = Self::prompt_hibernation(DwellerHibernationConfig::default())?;
