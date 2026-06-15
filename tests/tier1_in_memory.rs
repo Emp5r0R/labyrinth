@@ -56,6 +56,31 @@ fn test_reflective_protocol_serialization() {
     }
 }
 
+#[test]
+fn test_linux_elf_protocol_serialization() {
+    let elf_data = b"\x7FELFtest".to_vec();
+    let args = "hello world".to_string();
+
+    let msg = Message::LinuxElfExecutionRequest {
+        elf_data: elf_data.clone(),
+        args: args.clone(),
+    };
+
+    let serialized = serde_json::to_string(&msg).expect("Failed to serialize");
+    let deserialized: Message = serde_json::from_str(&serialized).expect("Failed to deserialize");
+
+    if let Message::LinuxElfExecutionRequest {
+        elf_data: d,
+        args: a,
+    } = deserialized
+    {
+        assert_eq!(d, elf_data);
+        assert_eq!(a, args);
+    } else {
+        panic!("Wrong message type after deserialization");
+    }
+}
+
 #[tokio::test]
 async fn test_linux_bof_rejection() {
     let executor = CommandExecutor::new(&OperatingSystem::Linux);
@@ -78,6 +103,43 @@ async fn test_linux_reflective_rejection() {
         .unwrap_err()
         .to_string()
         .contains("not supported on Linux"));
+}
+
+#[tokio::test]
+async fn test_linux_elf_rejects_invalid_header() {
+    let executor = CommandExecutor::new(&OperatingSystem::Linux);
+    let result: Result<String> = executor.execute_linux_elf(vec![0, 1, 2, 3], "").await;
+
+    if cfg!(target_os = "linux") {
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid Linux ELF"));
+    } else {
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Not supported on this OS"));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_linux_elf_executes_from_memfd() {
+    let echo_path = ["/bin/echo", "/usr/bin/echo"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .expect("echo binary is required for memfd execution test");
+    let elf_data = std::fs::read(echo_path).expect("Failed to read echo binary");
+
+    let executor = CommandExecutor::new(&OperatingSystem::Linux);
+    let result: Result<String> = executor.execute_linux_elf(elf_data, "labyrinth").await;
+
+    let output = result.expect("memfd ELF execution should succeed");
+    assert!(output.contains("Linux ELF executed from memfd"));
+    assert!(output.contains("stdout:\nlabyrinth"));
 }
 
 #[tokio::test]

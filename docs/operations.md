@@ -176,9 +176,9 @@ git rm --cached path/to/generated-file
 - Keep the browser dashboard on localhost unless authentication is added.
 - Review command execution, upload/download, shell, PEAS, dweller, and task
   queue changes with extra care.
-- Review `--sni`, `--alpn`, `--evasion`, BloodHound, BOF, and reflective
-  loading changes with extra care because they affect transport identity,
-  telemetry interaction, and in-memory execution behavior.
+- Review `--sni`, `--alpn`, `--evasion`, BloodHound, BOF, reflective loading,
+  and Linux memfd ELF execution changes with extra care because they affect
+  transport identity, telemetry interaction, and in-memory execution behavior.
 
 ## Documentation Rules
 

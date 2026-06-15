@@ -1852,8 +1852,13 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                     }
                 }
                 CommandCategory::InMemory => {
-                    if let Err(e) =
-                        start_in_memory_mode(&agent_name, &agent_sender, &command_response).await
+                    if let Err(e) = start_in_memory_mode(
+                        selected_os,
+                        &agent_name,
+                        &agent_sender,
+                        &command_response,
+                    )
+                    .await
                     {
                         println!(
                             "{}",
@@ -1873,19 +1878,52 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
 }
 
 async fn start_in_memory_mode(
+    selected_os: CommandsOs,
     agent_name: &str,
     agent_sender: &mpsc::Sender<Message>,
     command_response: &Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Message>>>>,
 ) -> Result<()> {
-    let choices = vec!["Execute BOF", "Reflective PE/DLL Load", "Back"];
+    let choices = match selected_os {
+        CommandsOs::Linux => vec!["Execute Linux ELF from memory", "Back"],
+        CommandsOs::Windows => vec!["Execute BOF", "Reflective PE/DLL Load", "Back"],
+    };
     let selection = Select::new()
         .with_prompt("In-Memory Execution")
         .items(&choices)
         .interact()
         .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
 
-    match selection {
-        0 => {
+    match (selected_os, selection) {
+        (CommandsOs::Linux, 0) => {
+            let path: String = Input::new()
+                .with_prompt("Path to Linux ELF file")
+                .interact_text()
+                .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+            let args: String = Input::new()
+                .with_prompt("Arguments (space-delimited, optional)")
+                .allow_empty(true)
+                .interact_text()
+                .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+
+            let elf_data = fs::read(&path)
+                .map_err(|e| LabyrinthError::Message(format!("Failed to read ELF file: {}", e)))?;
+
+            println!(
+                "{} Sending Linux ELF to agent for memfd execution...",
+                styling::INDENT_LEVEL_1
+            );
+            execute_remote_message(
+                agent_name,
+                "linux_elf",
+                &format!("Execute Linux ELF from memory: {}", path),
+                agent_sender,
+                command_response,
+                Message::LinuxElfExecutionRequest { elf_data, args },
+                Duration::from_secs(60),
+            )
+            .await;
+        }
+        (CommandsOs::Windows, 0) => {
             let path: String = Input::new()
                 .with_prompt("Path to BOF (.o) file")
                 .interact_text()
@@ -1915,7 +1953,7 @@ async fn start_in_memory_mode(
             )
             .await;
         }
-        1 => {
+        (CommandsOs::Windows, 1) => {
             let path: String = Input::new()
                 .with_prompt("Path to PE/DLL file")
                 .interact_text()
@@ -3295,6 +3333,30 @@ async fn execute_remote_message(
                     styling::format_success_msg(
                         styling::SUCCESS_INDICATOR,
                         &format!("Saved reflective load output to {}", path.display())
+                    )
+                );
+            }
+            Some(raw_log)
+        }
+        Ok(Ok(Message::LinuxElfExecutionResponse { output, error })) => {
+            let saved =
+                persist_command_output(agent_name, display, token, &output, error.as_deref());
+            let mut raw_log = String::new();
+            if let Some(err) = error {
+                println!("\n{}", decorate_command_output(&err));
+                raw_log.push_str(&err);
+                raw_log.push('\n');
+            }
+            if !output.trim().is_empty() {
+                println!("\n{}", decorate_command_output(&output));
+                raw_log.push_str(&output);
+            }
+            if let Ok(path) = saved {
+                println!(
+                    "{}",
+                    styling::format_success_msg(
+                        styling::SUCCESS_INDICATOR,
+                        &format!("Saved Linux ELF execution output to {}", path.display())
                     )
                 );
             }
