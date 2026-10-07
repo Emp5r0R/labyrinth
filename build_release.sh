@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # Labyrinth Multi-Architecture Build Script
-# Version 1.0.0 by Emp5r0R
+# Version 1.1.0 by Emp5r0R
 
 set -u
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 RELEASE_DIR="releases"
 
 echo "=== Labyrinth v${VERSION} Multi-Architecture Build ==="

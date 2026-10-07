@@ -1,4 +1,4 @@
-# Labyrinth v1.0.0
+# Labyrinth v1.1.0
 
 ```
  )   _ ( _        _ o  _  _)_ ( _
