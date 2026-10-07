@@ -90,27 +90,70 @@ cargo run --bin labyrinth -- dweller --id local-dweller --auth-key "change-this-
 
 ## Verification
 
-Use the full verification set before merging behavioral changes:
+Use repository script before merging behavioral changes. It uses `Cargo.lock`
+for every dependency-resolving Cargo command:
 
 ```bash
-cargo fmt -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-git diff --check
+# Library and dedicated-binary unit tests
+./scripts/test-all.sh unit
+
+# Integration tests (tests/*.rs only), including streaming/Portal coverage
+./scripts/test-all.sh integration
+
+# Every networking unit module plus the real-socket end-to-end suites
+./scripts/test-all.sh network
+
+# Real TCP/TLS, QUIC and SOCKS5 end-to-end suite only
+./scripts/test-all.sh e2e
+
+# fmt check + unit tests
+./scripts/test-all.sh quick
+
+# Full gate: format, unit, integration, Clippy, release binaries, docs, hygiene
+./scripts/test-all.sh all
 ```
 
-For shell-specific changes:
+`all` is required for production-readiness sign-off. `unit`, `integration`,
+`network`, `e2e`, and `quick` are fast feedback modes; `hygiene` runs format,
+Clippy, release build, docs, and tracked-file checks without rerunning tests.
+`bench` runs Criterion benchmarks and `list` prints every test name. Script
+requires Bash 4+.
+
+Options apply to every test mode:
 
 ```bash
-cargo test shell_ --lib
+./scripts/test-all.sh e2e --filter socks5 --nocapture   # narrow and show output
+./scripts/test-all.sh network --repeat 25 --keep-going  # flake hunting
+```
+
+`--keep-going` runs all steps and prints a pass/fail summary with timings
+instead of stopping at the first failure.
+
+Networking tests bind only to `127.0.0.1` ephemeral ports and need no
+privileges. Ariadne TUN setup is not exercised end to end because it requires
+root/admin; its validation and cleanup logic is unit tested. Tests that need a
+refused connection hold a bound-but-not-listening socket instead of reusing a
+released port, so parallel runs cannot race.
+
+For shell-specific changes, run focused tests in addition to the relevant
+script mode:
+
+```bash
+cargo test --locked shell_ --lib
 ```
 
 For streaming and Portal changes:
 
 ```bash
-cargo test --test integration_streaming -- --nocapture
-cargo bench
+cargo test --locked --test integration_streaming -- --nocapture
+cargo bench --locked
 ```
+
+GitHub Actions runs `./scripts/test-all.sh all` on Ubuntu for pushes and pull
+requests targeting `main` or `master`. A Windows job separately compiles all
+binaries and runs unit tests, integration tests, and Clippy with warnings
+denied. Both jobs use pinned Rust `1.93.1`, lockfile mode, least-privilege
+read-only repository access, and cancel superseded runs.
 
 For dashboard changes:
 

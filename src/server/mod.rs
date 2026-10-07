@@ -6,6 +6,7 @@ pub mod core;
 pub mod dashboard;
 pub mod dweller_manager;
 pub mod dweller_registry;
+pub mod listener;
 #[cfg(target_os = "windows")]
 pub mod netstack_bridge_windows;
 pub mod network_map;
@@ -18,19 +19,23 @@ pub mod ui;
 
 use crate::error::{LabyrinthError, Result};
 use crate::protocol::Message;
-use crate::server::agent_manager::AgentManager;
 use crate::server::certificate::CertificateManager;
 use crate::server::chain_manager::ChainManager;
 use crate::server::core::LabyrinthServer;
 use crate::server::dashboard::DashboardServer;
 use crate::server::dweller_manager::DwellerManager;
+use crate::server::listener::spawn_agent_listener;
 use crate::server::privileges::PrivilegeManager;
 use crate::server::quic_stream_bridge::QuicStreamBridge;
+use crate::server::reverse_port_forward::{
+    parse_mapping, PortalConnectionHandler, PortalListener as PortalSocketListener,
+    DEFAULT_MAX_CONNECTIONS,
+};
 
 use crate::server::tunnel_manager::TunnelManager;
 use crate::server::ui::ServerUI;
 use crate::styling;
-use crate::transport::{parse_socket_addr, QuicBidiStream, TransportMode};
+use crate::transport::TransportMode;
 use base64::{engine::general_purpose, Engine as _};
 use colored::Colorize;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -45,15 +50,15 @@ use rustyline::{Context as RustyContext, Helper};
 use std::borrow::Cow;
 use std::fs;
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tokio::net::TcpListener;
+use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
-use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
 use crate::streaming::{
@@ -77,120 +82,6 @@ fn resolve_auth_key(no_auth: bool) -> Result<Option<String>> {
             "LABYRINTH_AUTH_KEY must be set when authentication is enabled".to_string(),
         )),
     }
-}
-
-async fn spawn_agent_listener(
-    server: Arc<LabyrinthServer>,
-    listen_addr: &str,
-    transport: TransportMode,
-    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
-    key: rustls::pki_types::PrivateKeyDer<'static>,
-) -> Result<()> {
-    match transport {
-        TransportMode::Tcp => spawn_tcp_agent_listener(server, listen_addr, certs, key).await,
-        TransportMode::Quic => spawn_quic_agent_listener(server, listen_addr, certs, key).await,
-    }
-}
-
-async fn spawn_tcp_agent_listener(
-    server: Arc<LabyrinthServer>,
-    listen_addr: &str,
-    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
-    key: rustls::pki_types::PrivateKeyDer<'static>,
-) -> Result<()> {
-    let config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-    let acceptor = TlsAcceptor::from(Arc::new(config));
-    let listener = TcpListener::bind(listen_addr).await?;
-    info!("TCP/TLS agent listener on {}", listen_addr);
-
-    tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, addr)) => {
-                    let acceptor = acceptor.clone();
-                    let server = Arc::clone(&server);
-
-                    tokio::spawn(async move {
-                        match acceptor.accept(stream).await {
-                            Ok(tls_stream) => {
-                                if let Err(e) =
-                                    AgentManager::register_agent(server, tls_stream, addr).await
-                                {
-                                    error!("Agent registration failed: {}", e);
-                                }
-                            }
-                            Err(e) => {
-                                error!("TLS handshake failed: {}", e);
-                            }
-                        }
-                    });
-                }
-                Err(e) => {
-                    error!("Failed to accept TCP agent connection: {}", e);
-                }
-            }
-        }
-    });
-
-    Ok(())
-}
-
-async fn spawn_quic_agent_listener(
-    server: Arc<LabyrinthServer>,
-    listen_addr: &str,
-    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
-    key: rustls::pki_types::PrivateKeyDer<'static>,
-) -> Result<()> {
-    let mut crypto = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-    crypto.alpn_protocols = vec![b"labyrinth-control/1".to_vec()];
-    let quic_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(crypto)
-        .map_err(|e| LabyrinthError::Message(format!("Invalid QUIC server config: {}", e)))?;
-    let server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_crypto));
-    let listen_addr = parse_socket_addr(listen_addr)?;
-    let endpoint = quinn::Endpoint::server(server_config, listen_addr)?;
-    info!("QUIC agent listener on {}", listen_addr);
-
-    tokio::spawn(async move {
-        while let Some(incoming) = endpoint.accept().await {
-            let server = Arc::clone(&server);
-            tokio::spawn(async move {
-                match incoming.await {
-                    Ok(connection) => {
-                        let remote_addr = connection.remote_address();
-                        match connection.accept_bi().await {
-                            Ok((send, recv)) => {
-                                let stream_connection = connection.clone();
-                                let stream =
-                                    QuicBidiStream::with_lifetime(send, recv, None, connection);
-                                if let Err(e) = AgentManager::register_quic_agent(
-                                    server,
-                                    stream,
-                                    remote_addr,
-                                    stream_connection,
-                                )
-                                .await
-                                {
-                                    error!("QUIC agent registration failed: {}", e);
-                                }
-                            }
-                            Err(e) => {
-                                error!("QUIC control stream accept failed: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("QUIC handshake failed: {}", e);
-                    }
-                }
-            });
-        }
-    });
-
-    Ok(())
 }
 
 fn stream_message_connection_id(msg: &StreamMessage) -> Option<ConnectionId> {
@@ -624,7 +515,7 @@ async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
         println!("{}", "────────────────────────────".bright_black());
         println!();
 
-        let mappings: Vec<String> = loop {
+        let mappings: Vec<PortMapping> = loop {
             let input: String = Input::new()
                 .with_prompt(
                     "Port mappings (format: local_port:target_host:target_port, comma-separated)",
@@ -632,15 +523,21 @@ async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
                 .interact_text()
                 .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
 
-            let mappings: Vec<String> = input.split(',').map(|s| s.trim().to_string()).collect();
-            if !mappings.is_empty() && mappings.iter().all(|m| validate_port_mapping(m)) {
+            let parsed = input
+                .split(',')
+                .map(parse_mapping)
+                .collect::<Result<Vec<_>>>();
+            if let Ok(mappings) = parsed {
+                if mappings.is_empty() {
+                    continue;
+                }
                 for mapping in &mappings {
                     println!(
                         "{}{}",
                         styling::INDENT_LEVEL_1,
                         styling::format_check_item(&format!(
                             "Valid mapping: {}",
-                            styling::format_agent_name(mapping)
+                            styling::format_agent_name(&format_mapping(mapping))
                         ))
                     );
                 }
@@ -684,45 +581,37 @@ async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
 
         let mut successful_mappings = Vec::new();
         for mapping in &mappings {
-            let parts: Vec<&str> = mapping.split(':').collect();
-            let local_port: u16 = parts[0].parse().unwrap();
-            let target_host = parts[1].to_string();
-            let target_port: u16 = parts[2].parse().unwrap();
-
-            let server_for_task = server.clone();
-            let agent_sender_clone = agent_sender.clone();
-            let agent_id_clone = agent_id.clone();
-            let target_host_clone = target_host.clone();
-
-            let handle = tokio::spawn(async move {
-                if let Err(e) = run_streaming_port_forward_listener(
-                    local_port,
-                    target_host_clone,
-                    target_port,
-                    server_for_task.clone(),
-                    agent_sender_clone,
-                    agent_id_clone.clone(),
-                )
-                .await
-                {
-                    error!(
-                        "Streaming port forward listener error on {}: {}",
-                        local_port, e
-                    );
-                }
-                server_for_task.unregister_portal_listener(local_port).await;
+            let handler = Arc::new(PortalStreamHandler {
+                server: Arc::clone(&server),
+                agent_sender: agent_sender.clone(),
+                agent_id: agent_id.clone(),
             });
+            // Bind first. Registry only claims successfully bound listeners.
+            let listener =
+                match PortalSocketListener::bind(mapping.clone(), DEFAULT_MAX_CONNECTIONS, handler)
+                    .await
+                {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        println!(
+                            "{}{}",
+                            styling::INDENT_LEVEL_1,
+                            styling::format_cross_item(&format!(
+                                "Failed to start {}: {}",
+                                format_mapping(mapping),
+                                error
+                            ))
+                        );
+                        continue;
+                    }
+                };
 
             match server
                 .register_portal_listener(
-                    local_port,
+                    mapping.local_port,
                     agent_id.clone(),
-                    PortMapping {
-                        local_port,
-                        target_host: target_host.clone(),
-                        target_port,
-                    },
-                    handle,
+                    mapping.clone(),
+                    listener,
                 )
                 .await
             {
@@ -733,7 +622,7 @@ async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
                         styling::INDENT_LEVEL_1,
                         styling::format_check_item(&format!(
                             "Started: {}",
-                            styling::format_agent_name(mapping)
+                            styling::format_agent_name(&format_mapping(mapping))
                         ))
                     );
                 }
@@ -741,7 +630,11 @@ async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
                     println!(
                         "{}{}",
                         styling::INDENT_LEVEL_1,
-                        styling::format_cross_item(&format!("Failed to start {}: {}", mapping, e))
+                        styling::format_cross_item(&format!(
+                            "Failed to start {}: {}",
+                            format_mapping(mapping),
+                            e
+                        ))
                     );
                 }
             }
@@ -763,7 +656,11 @@ async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
             agent.tunnel_active = true;
             agent.tunnel_subnet = Some(format!(
                 "Port forwarding: {}",
-                successful_mappings.join(", ")
+                successful_mappings
+                    .iter()
+                    .map(format_mapping)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         drop(agents);
@@ -776,12 +673,11 @@ async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
         );
         println!("Port forwarding configured:");
         for mapping in &successful_mappings {
-            let parts: Vec<&str> = mapping.split(':').collect();
             println!(
                 "  {}",
                 styling::format_arrow_mapping(
-                    &format!("localhost:{}", parts[0]),
-                    &format!("{}:{}", parts[1], parts[2])
+                    &format!("localhost:{}", mapping.local_port),
+                    &format!("{}:{}", mapping.target_host, mapping.target_port)
                 )
             );
         }
@@ -806,28 +702,16 @@ async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_port_mapping(mapping: &str) -> bool {
-    let parts: Vec<&str> = mapping.split(':').collect();
-    if parts.len() != 3 {
-        return false;
-    }
+    parse_mapping(mapping).is_ok()
+}
 
-    // Validate local port
-    if parts[0].parse::<u16>().is_err() {
-        return false;
-    }
-
-    // Validate target host (basic check - not empty)
-    if parts[1].is_empty() {
-        return false;
-    }
-
-    // Validate target port
-    if parts[2].parse::<u16>().is_err() {
-        return false;
-    }
-
-    true
+fn format_mapping(mapping: &PortMapping) -> String {
+    format!(
+        "{}:{}:{}",
+        mapping.local_port, mapping.target_host, mapping.target_port
+    )
 }
 
 async fn initialize_streaming_managers(server: Arc<LabyrinthServer>) -> Result<()> {
@@ -911,128 +795,76 @@ async fn initialize_streaming_managers(server: Arc<LabyrinthServer>) -> Result<(
     Ok(())
 }
 
-async fn run_streaming_port_forward_listener(
-    local_port: u16,
-    target_host: String,
-    target_port: u16,
+struct PortalStreamHandler {
     server: Arc<LabyrinthServer>,
     agent_sender: mpsc::Sender<Message>,
     agent_id: String,
-) -> Result<()> {
-    let addr = format!("127.0.0.1:{}", local_port);
-    let listener = TcpListener::bind(&addr).await?;
-    info!(
-        "Streaming port forward listener started on {} -> {}:{}",
-        addr, target_host, target_port
-    );
+}
 
-    let stream_manager = server
-        .get_stream_manager()
-        .await
-        .ok_or_else(|| LabyrinthError::Message("Streaming manager not initialized".to_string()))?;
-    let connection_manager = server
-        .get_connection_manager()
-        .await
-        .ok_or_else(|| LabyrinthError::Message("Connection manager not initialized".to_string()))?;
+#[async_trait]
+impl PortalConnectionHandler for PortalStreamHandler {
+    async fn handle(
+        &self,
+        client_socket: tokio::net::TcpStream,
+        client_addr: SocketAddr,
+        mapping: PortMapping,
+    ) -> Result<()> {
+        let connection_id = ConnectionId::new_v4();
+        let connection_manager =
+            self.server.get_connection_manager().await.ok_or_else(|| {
+                LabyrinthError::Message("Streaming manager not initialized".into())
+            })?;
 
-    loop {
-        match listener.accept().await {
-            Ok((client_socket, client_addr)) => {
-                info!(
-                    "Streaming Portal: client {} connected on {}",
-                    client_addr, addr
-                );
+        connection_manager
+            .track_existing_connection(connection_id, client_addr, mapping.clone())
+            .await
+            .map_err(|error| LabyrinthError::Message(error.to_string()))?;
+        self.server
+            .register_connection_owner(connection_id, self.agent_id.clone())
+            .await;
 
-                let mapping = PortMapping {
-                    local_port,
-                    target_host: target_host.clone(),
-                    target_port,
-                };
+        let use_quic_stream = {
+            let agents = self.server.agents().read().await;
+            agents
+                .get(&self.agent_id)
+                .and_then(|agent| agent.quic_connection.as_ref())
+                .is_some()
+        };
 
-                let connection_id = ConnectionId::new_v4();
-                let tracking_mapping = mapping.clone();
-                if let Err(e) = connection_manager
-                    .track_existing_connection(connection_id, client_addr, tracking_mapping)
-                    .await
-                {
-                    error!(
-                        "Failed to register streaming connection for {}:{} -> {}:{}: {}",
-                        addr, local_port, target_host, target_port, e
-                    );
-                    continue;
-                }
-
-                server
-                    .register_connection_owner(connection_id, agent_id.clone())
-                    .await;
-
-                let use_quic_stream = {
-                    let agents = server.agents().read().await;
-                    agents
-                        .get(&agent_id)
-                        .and_then(|agent| agent.quic_connection.as_ref())
-                        .is_some()
-                };
-
-                if use_quic_stream {
-                    if let Err(e) = QuicStreamBridge::create_bidirectional_stream(
-                        Arc::clone(&server),
-                        agent_id.clone(),
-                        connection_id,
-                        client_socket,
-                        mapping,
-                    )
-                    .await
-                    {
-                        error!(
-                            "Failed to create QUIC stream for {}:{} -> {}:{}: {}",
-                            addr, local_port, target_host, target_port, e
-                        );
-                        let _ = connection_manager.cleanup_connection(&connection_id).await;
-                        let _ = server.unregister_connection_owner(&connection_id).await;
-                    }
-                    continue;
-                }
-
-                if let Err(e) = stream_manager
-                    .create_bidirectional_stream(connection_id, client_socket)
-                    .await
-                {
-                    error!(
-                        "Failed to create bidirectional stream for {}:{} -> {}:{}: {}",
-                        addr, local_port, target_host, target_port, e
-                    );
-                    let _ = connection_manager.cleanup_connection(&connection_id).await;
-                    let _ = server.unregister_connection_owner(&connection_id).await;
-                    continue;
-                }
-
-                let setup_msg = StreamMessage::Setup {
+        let result = if use_quic_stream {
+            // Keep QUIC bridge future owned by listener task. Listener stop then
+            // aborts bridge and core cleanup removes all associated state.
+            QuicStreamBridge::create_bidirectional_stream(
+                Arc::clone(&self.server),
+                self.agent_id.clone(),
+                connection_id,
+                client_socket,
+                mapping,
+            )
+            .await
+        } else {
+            let stream_manager = self.server.get_stream_manager().await.ok_or_else(|| {
+                LabyrinthError::Message("Streaming manager not initialized".into())
+            })?;
+            stream_manager
+                .create_bidirectional_stream(connection_id, client_socket)
+                .await
+                .map_err(|error| LabyrinthError::Message(error.to_string()))?;
+            self.agent_sender
+                .send(Message::Stream(StreamMessage::Setup {
                     connection_id,
-                    mapping: mapping.clone(),
-                };
-                if let Err(e) = agent_sender.send(Message::Stream(setup_msg)).await {
-                    error!(
-                        "Failed to send stream setup for {}:{} -> {}:{}: {}",
-                        addr, local_port, target_host, target_port, e
-                    );
-                    let _ = stream_manager.terminate_stream(connection_id).await;
-                    let _ = connection_manager.cleanup_connection(&connection_id).await;
-                    let _ = server.unregister_connection_owner(&connection_id).await;
-                    continue;
-                }
-            }
-            Err(e) => {
-                error!(
-                    "Failed to accept streaming client on {} ({}): {}",
-                    addr, agent_id, e
-                );
-                break;
-            }
-        }
-    }
+                    mapping,
+                }))
+                .await
+                .map_err(|error| LabyrinthError::Message(error.to_string()))
+        };
 
-    Ok(())
+        if let Err(error) = result {
+            self.server.cleanup_portal_connection(connection_id).await;
+            return Err(error);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

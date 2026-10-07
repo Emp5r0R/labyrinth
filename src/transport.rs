@@ -8,6 +8,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+/// ALPN identifying the Labyrinth control protocol on QUIC.
+pub const CONTROL_ALPN: &[u8] = b"labyrinth-control/1";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TransportMode {
     Tcp,
@@ -115,6 +118,40 @@ mod tests {
     fn transport_labels_are_stable() {
         assert_eq!(TransportMode::Tcp.label(), "tcp/tls");
         assert_eq!(TransportMode::Quic.label(), "quic/udp");
+    }
+
+    #[test]
+    fn display_matches_cli_value_names() {
+        use clap::ValueEnum;
+        for mode in [TransportMode::Tcp, TransportMode::Quic] {
+            let cli_name = mode.to_possible_value().unwrap().get_name().to_string();
+            assert_eq!(mode.to_string(), cli_name);
+            assert_eq!(TransportMode::from_str(&cli_name, true).unwrap(), mode);
+        }
+        assert!(TransportMode::from_str("udp", true).is_err());
+    }
+
+    #[test]
+    fn parse_socket_addr_accepts_v4_v6_and_rejects_hostnames() {
+        assert_eq!(parse_socket_addr("127.0.0.1:44344").unwrap().port(), 44344);
+        assert!(parse_socket_addr("[::1]:443").unwrap().is_ipv6());
+        for bad in [
+            "localhost:44344",
+            "127.0.0.1",
+            "::1:443",
+            "",
+            "1.2.3.4:99999",
+        ] {
+            assert!(
+                matches!(parse_socket_addr(bad), Err(LabyrinthError::AddrParse(_))),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_alpn_is_stable() {
+        assert_eq!(CONTROL_ALPN, b"labyrinth-control/1");
     }
 
     #[test]

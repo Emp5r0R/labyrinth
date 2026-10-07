@@ -41,17 +41,31 @@ CLI and shared:
 - `src/cli.rs`: Clap argument definitions and role dispatch.
 - `src/protocol.rs`: typed protocol messages shared by server, agent, and
   dweller.
-- `src/transport.rs`: transport mode enum and CLI value handling.
-- `src/security.rs`: certificate and fingerprint helpers.
+- `src/transport.rs`: transport mode enum, CLI value handling, and the QUIC
+  control ALPN.
+- `src/framing.rs`: bounded newline-delimited JSON frame codec used by every
+  control-channel peer. `FrameCodec::HANDSHAKE` (256 KiB) bounds pre-auth
+  frames, `FrameCodec::CONTROL` (64 MiB) bounds authenticated traffic, and
+  `FrameReader` is the cancel-safe reader for `tokio::select!` loops.
+- `src/portal.rs`: Portal wire policy shared by server and agent: mapping
+  parsing/validation, dial addresses, and the native QUIC stream setup
+  handshake.
+- `src/security.rs`: certificate generation, PEM parsing, fingerprint
+  normalization, constant-time secret comparison, and the pinned
+  `FingerprintVerifier` (pin + handshake signature verification).
 - `src/config.rs`, `src/error.rs`, `src/styling.rs`: shared support code.
 
 Server:
 
-- `src/server/mod.rs`: server startup, listener setup, interactive command
-  dispatch, shell workflows, and headless operation.
+- `src/server/mod.rs`: server startup, interactive command dispatch, shell
+  workflows, and headless operation.
+- `src/server/listener.rs`: TCP/TLS and QUIC agent listeners, server TLS/QUIC
+  configuration, and handshake deadlines. Returns the bound address.
 - `src/server/core.rs`: central `LabyrinthServer` state.
-- `src/server/agent_manager.rs`: connected agent registry.
-- `src/server/agent_connection.rs`: per-agent message routing.
+- `src/server/agent_manager.rs`: agent registration and fail-closed shared-key
+  authentication.
+- `src/server/agent_connection.rs`: per-agent framed reader/writer and message
+  routing. Disconnect cleanup only removes the session that owns the entry.
 - `src/server/chain_manager.rs`: smart multi-hop planning and access
   orchestration.
 - `src/server/topology.rs`: route inference, ownership, shared networks, and
@@ -82,7 +96,8 @@ Agent:
 - `src/agent/command_executor.rs`: OS-aware command execution workflows,
   including Windows BOF/reflective PE handling and Linux memfd ELF execution.
 - `src/agent/pty_shell.rs`: interactive PTY shell support.
-- `src/agent/reverse_port_forward.rs`: agent-side Portal handling.
+- `src/agent/reverse_port_forward.rs`: agent-side Portal data plane
+  (`AgentPortal`) with injected writer registry and response bus.
 - `src/agent/streaming_manager.rs`: agent-side streaming handlers.
 - `src/agent/system_info.rs`: host and interface collection.
 
@@ -107,6 +122,9 @@ Single responsibility:
 - Topology calculations belong in `server/topology.rs`.
 - Smart path planning belongs in `server/chain_manager.rs`.
 - Dweller persistence belongs in `server/dweller_registry.rs`.
+- Wire framing belongs in `framing.rs`; nothing else reads or writes `\n`
+  delimiters by hand.
+- Portal target validation belongs in `portal.rs` so both roles agree.
 
 Open and closed:
 
@@ -125,6 +143,11 @@ Dependency inversion:
 
 - Route high-level workflows through manager APIs instead of reaching into
   another module's internal state.
+- Inject process-wide resources so they can be isolated in tests:
+  `AgentPortal::new(registry, responses)`, `DwellerRegistry::in_memory()` with
+  `LabyrinthServer::with_dweller_registry`, `CertificateManager::
+  load_or_generate_cert_in(dir, ..)`, `FingerprintVerifier::resolve(.., path)`,
+  and `RetryPolicy` for connection retries.
 - Prefer typed protocol messages over string commands between server and agent.
 
 ## Transport Model
@@ -140,6 +163,11 @@ head-of-line blocking and avoids the TCP-over-TCP feedback loop.
 HTTP, HTTPS, and DNS dweller callback transports are currently accepted as
 configuration and planning labels. They need dedicated listener implementations
 before they can carry task traffic.
+
+Certificate pinning compares the SHA-256 of the server leaf certificate and
+also verifies the TLS handshake signature, so a peer replaying the public
+certificate without its private key is rejected. Fingerprints are accepted as
+plain hex or in the colon-separated form printed by `cert`.
 
 Agent SNI and ALPN overrides are connection-establishment concerns and belong in
 `src/agent/connection.rs`. CLI parsing belongs in `src/cli.rs`; the runtime

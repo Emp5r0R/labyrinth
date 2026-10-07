@@ -63,34 +63,70 @@ impl DwellerRecord {
     }
 }
 
+/// Where a registry persists itself. Kept out of the serialized form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistryStorage {
+    File(PathBuf),
+    /// No persistence; used by tests and embedders.
+    Memory,
+}
+
+impl Default for RegistryStorage {
+    fn default() -> Self {
+        Self::File(PathBuf::from(DWELLER_REGISTRY_FILE))
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DwellerRegistry {
     pub dwellers: HashMap<String, DwellerRecord>,
+    #[serde(skip)]
+    storage: RegistryStorage,
 }
 
 impl DwellerRegistry {
+    pub fn in_memory() -> Self {
+        Self {
+            dwellers: HashMap::new(),
+            storage: RegistryStorage::Memory,
+        }
+    }
+
     pub fn load() -> Result<Self> {
-        let path = Self::path();
-        Self::load_from_path(&path)
+        Self::load_from_path(Path::new(DWELLER_REGISTRY_FILE))
+    }
+
+    pub fn storage(&self) -> &RegistryStorage {
+        &self.storage
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Self::path();
-        self.save_to_path(&path)
-    }
-
-    fn load_from_path(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
+        match &self.storage {
+            RegistryStorage::File(path) => self.save_to_path(path),
+            RegistryStorage::Memory => Ok(()),
         }
-
-        let contents = fs::read_to_string(path).map_err(LabyrinthError::Io)?;
-        serde_json::from_str(&contents).map_err(LabyrinthError::Json)
     }
 
-    fn save_to_path(&self, path: &Path) -> Result<()> {
+    pub fn load_from_path(path: &Path) -> Result<Self> {
+        let mut registry = if path.exists() {
+            let contents = fs::read_to_string(path).map_err(LabyrinthError::Io)?;
+            serde_json::from_str::<Self>(&contents).map_err(LabyrinthError::Json)?
+        } else {
+            Self::default()
+        };
+        registry.storage = RegistryStorage::File(path.to_path_buf());
+        Ok(registry)
+    }
+
+    /// Write via a sibling temp file and rename, so a crash mid-write never
+    /// leaves a truncated registry (which would forget every dweller).
+    pub fn save_to_path(&self, path: &Path) -> Result<()> {
         let body = serde_json::to_string_pretty(self)?;
-        fs::write(path, body).map_err(LabyrinthError::Io)
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        fs::write(&tmp, body).map_err(LabyrinthError::Io)?;
+        fs::rename(&tmp, path).map_err(LabyrinthError::Io)
     }
 
     pub fn upsert(&mut self, record: DwellerRecord) {
@@ -165,10 +201,6 @@ impl DwellerRegistry {
         task.updated_at = Some(result.finished_at.clone());
         task.result = Some(result);
         true
-    }
-
-    fn path() -> PathBuf {
-        Path::new(DWELLER_REGISTRY_FILE).to_path_buf()
     }
 }
 
@@ -286,5 +318,166 @@ mod tests {
         ));
         let record = registry.dwellers.get("dweller123").unwrap();
         assert_eq!(record.tasks[0].status, DwellerTaskStatus::Completed);
+    }
+
+    fn command(cmd: &str) -> DwellerTaskKind {
+        DwellerTaskKind::Command {
+            command: cmd.to_string(),
+        }
+    }
+
+    fn seeded() -> DwellerRegistry {
+        let mut registry = DwellerRegistry::in_memory();
+        registry.upsert(DwellerRecord::from_receipt(
+            sample_receipt(),
+            "secret".to_string(),
+        ));
+        registry
+    }
+
+    #[test]
+    fn in_memory_registry_never_touches_disk() {
+        let registry = seeded();
+        assert_eq!(registry.storage(), &RegistryStorage::Memory);
+        // Saving succeeds without any file-system target at all.
+        registry.save().unwrap();
+    }
+
+    #[test]
+    fn default_registry_persists_to_working_directory_file() {
+        assert_eq!(
+            DwellerRegistry::default().storage(),
+            &RegistryStorage::File(PathBuf::from(DWELLER_REGISTRY_FILE))
+        );
+    }
+
+    #[test]
+    fn load_missing_file_yields_empty_registry_bound_to_that_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dwellers.json");
+        let registry = DwellerRegistry::load_from_path(&path).unwrap();
+        assert!(registry.dwellers.is_empty());
+        assert_eq!(registry.storage(), &RegistryStorage::File(path.clone()));
+        registry.save().unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn save_is_atomic_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dwellers.json");
+        let mut registry = DwellerRegistry::load_from_path(&path).unwrap();
+        registry.upsert(DwellerRecord::from_receipt(
+            sample_receipt(),
+            "secret".to_string(),
+        ));
+        registry.save().unwrap();
+        let entries: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("dwellers.json")]);
+        let reloaded = DwellerRegistry::load_from_path(&path).unwrap();
+        assert!(reloaded.dwellers.contains_key("dweller123"));
+    }
+
+    #[test]
+    fn storage_path_is_not_serialized() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dwellers.json");
+        seeded().save_to_path(&path).unwrap();
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(!body.contains("storage"));
+    }
+
+    #[test]
+    fn load_rejects_corrupt_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dwellers.json");
+        fs::write(&path, "{ not json").unwrap();
+        assert!(matches!(
+            DwellerRegistry::load_from_path(&path),
+            Err(LabyrinthError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn enqueue_for_unknown_dweller_returns_none() {
+        let mut registry = seeded();
+        assert!(registry
+            .enqueue_task("missing", command("id"), "now".into())
+            .is_none());
+    }
+
+    #[test]
+    fn claim_respects_limit_order_and_only_pending_tasks() {
+        let mut registry = seeded();
+        let ids: Vec<String> = (0..5)
+            .map(|i| {
+                registry
+                    .enqueue_task("dweller123", command(&format!("cmd{i}")), "t0".into())
+                    .unwrap()
+                    .task_id
+            })
+            .collect();
+
+        let first = registry.claim_tasks("dweller123", 2, "t1".into());
+        assert_eq!(
+            first.iter().map(|t| &t.task_id).collect::<Vec<_>>(),
+            vec![&ids[0], &ids[1]]
+        );
+        assert!(first
+            .iter()
+            .all(|t| t.status == DwellerTaskStatus::Running && t.attempts == 1));
+
+        // Running tasks are not handed out twice.
+        let second = registry.claim_tasks("dweller123", 10, "t2".into());
+        assert_eq!(
+            second.iter().map(|t| &t.task_id).collect::<Vec<_>>(),
+            vec![&ids[2], &ids[3], &ids[4]]
+        );
+        assert!(registry
+            .claim_tasks("dweller123", 10, "t3".into())
+            .is_empty());
+        assert!(registry.claim_tasks("missing", 10, "t3".into()).is_empty());
+        assert!(registry
+            .claim_tasks("dweller123", 0, "t3".into())
+            .is_empty());
+    }
+
+    #[test]
+    fn failed_result_marks_task_failed_and_unknown_ids_are_rejected() {
+        let mut registry = seeded();
+        let task = registry
+            .enqueue_task("dweller123", command("false"), "t0".into())
+            .unwrap();
+        registry.claim_tasks("dweller123", 1, "t1".into());
+
+        let result = |task_id: &str| DwellerTaskResult {
+            task_id: task_id.to_string(),
+            success: false,
+            output: String::new(),
+            error: Some("exit 1".into()),
+            finished_at: "t2".into(),
+        };
+        assert!(!registry.complete_task("dweller123", result("nope")));
+        assert!(!registry.complete_task("missing", result(&task.task_id)));
+        assert!(registry.complete_task("dweller123", result(&task.task_id)));
+
+        let stored = &registry.dwellers["dweller123"].tasks[0];
+        assert_eq!(stored.status, DwellerTaskStatus::Failed);
+        assert_eq!(stored.updated_at.as_deref(), Some("t2"));
+        assert_eq!(
+            stored.result.as_ref().unwrap().error.as_deref(),
+            Some("exit 1")
+        );
+    }
+
+    #[test]
+    fn remove_forgets_dweller() {
+        let mut registry = seeded();
+        assert!(registry.remove("dweller123").is_some());
+        assert!(registry.remove("dweller123").is_none());
+        assert!(registry.list().is_empty());
     }
 }

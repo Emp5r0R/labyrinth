@@ -24,14 +24,23 @@ use std::process::Command;
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use tokio::net::TcpListener;
+use tokio::time::{timeout, Duration};
 #[cfg(target_os = "linux")]
 use tracing::warn;
 use tracing::{error, info};
+
+const AGENT_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(target_os = "linux")]
+const ARIADNE_PROXY_BIND_ADDR: &str = "127.0.0.1";
+#[cfg(target_os = "linux")]
+const SO_ORIGINAL_DST: libc::c_int = 80;
 
 // Server-only TUN; userland stack handled by NetstackBridge
 
 /// Single Responsibility: Tunnel management operations
 pub struct TunnelManager;
+
+static ARIADNE_NETWORK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 impl TunnelManager {
     pub async fn start_tunnel_for_agent(
@@ -47,7 +56,12 @@ impl TunnelManager {
             )));
         }
 
-        Self::run_ariadne_preflight()?;
+        let subnet = Self::normalize_ariadne_subnet(subnet)?;
+        Self::validate_tunnel_name(tun_name)?;
+        let _network_guard = ARIADNE_NETWORK_LOCK.lock().await;
+
+        // Check state before privileged preflight. Repeating an idempotent request must
+        // remain cheap and must not fail because the caller temporarily lost sudo.
 
         let agent_sender = {
             let agents = server.agents().read().await;
@@ -73,24 +87,49 @@ impl TunnelManager {
                 )));
             }
 
+            if agents.iter().any(|(other_id, other)| {
+                other_id != agent_id
+                    && other.tunnel_active
+                    && other.tunnel_subnet.as_deref() == Some(subnet.as_str())
+            }) {
+                return Err(LabyrinthError::Message(format!(
+                    "Subnet {} already has an active Ariadne tunnel on another agent",
+                    subnet
+                )));
+            }
+
             agent.sender.clone()
         };
 
+        if server
+            .ariadne_snapshots()
+            .await
+            .iter()
+            .any(|snapshot| snapshot.agent_id == agent_id)
+        {
+            return Err(LabyrinthError::Message(
+                "Ariadne listener already exists for selected agent; stop it before retrying"
+                    .to_string(),
+            ));
+        }
+
+        Self::run_ariadne_preflight()?;
+
         #[cfg(target_os = "linux")]
-        Self::setup_tunnel(server, agent_id, &agent_sender, tun_name, subnet).await?;
+        Self::setup_tunnel(server, agent_id, &agent_sender, tun_name, &subnet).await?;
         #[cfg(target_os = "windows")]
-        Self::setup_tunnel_windows(tun_name, subnet).await?;
+        Self::setup_tunnel_windows(tun_name, &subnet).await?;
 
         let start_msg = Message::StartTunnel {
-            subnet: subnet.to_string(),
+            subnet: subnet.clone(),
             tun_name: tun_name.to_string(),
         };
 
-        if let Err(e) = agent_sender.send(start_msg).await {
+        if let Err(e) = Self::send_agent_message(&agent_sender, start_msg, "start tunnel").await {
             #[cfg(target_os = "linux")]
-            let _ = Self::cleanup_tunnel(server, agent_id, tun_name, subnet).await;
+            let _ = Self::cleanup_tunnel(server, agent_id, tun_name, &subnet).await;
             #[cfg(target_os = "windows")]
-            let _ = Self::cleanup_tunnel_windows(tun_name).await;
+            let _ = Self::cleanup_tunnel_windows(tun_name, &subnet).await;
             return Err(LabyrinthError::Message(format!(
                 "Failed to send tunnel start request: {}",
                 e
@@ -99,16 +138,34 @@ impl TunnelManager {
 
         #[cfg(target_os = "windows")]
         {
-            WindowsNetstackBridge::start(tun_name, agent_sender.clone()).map_err(|e| {
-                LabyrinthError::Message(format!("Failed to start Wintun bridge: {}", e))
-            })?;
+            if let Err(e) = WindowsNetstackBridge::start(tun_name, agent_sender.clone()) {
+                let _ =
+                    Self::send_agent_message(&agent_sender, Message::StopTunnel, "rollback tunnel")
+                        .await;
+                let _ = Self::cleanup_tunnel_windows(tun_name, &subnet).await;
+                return Err(LabyrinthError::Message(format!(
+                    "Failed to start Wintun bridge: {}",
+                    e
+                )));
+            }
         }
 
         let mut agents = server.agents().write().await;
         if let Some(agent) = agents.get_mut(agent_id) {
             agent.tunnel_active = true;
-            agent.tunnel_subnet = Some(subnet.to_string());
+            agent.tunnel_subnet = Some(subnet);
             agent.tun_name = Some(tun_name.to_string());
+        } else {
+            drop(agents);
+            let _ = Self::send_agent_message(&agent_sender, Message::StopTunnel, "rollback tunnel")
+                .await;
+            #[cfg(target_os = "linux")]
+            let _ = Self::cleanup_tunnel(server, agent_id, tun_name, &subnet).await;
+            #[cfg(target_os = "windows")]
+            let _ = Self::cleanup_tunnel_windows(tun_name, &subnet).await;
+            return Err(LabyrinthError::Message(
+                "Selected agent disconnected while starting tunnel".to_string(),
+            ));
         }
 
         Ok(())
@@ -202,6 +259,52 @@ impl TunnelManager {
                 .default("labyrinth".to_string())
                 .interact_text()
                 .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+            let subnet = Self::normalize_ariadne_subnet(&subnet)?;
+            Self::validate_tunnel_name(&tun_name)?;
+            let _network_guard = ARIADNE_NETWORK_LOCK.lock().await;
+            {
+                let agents = server.agents().read().await;
+                let Some(agent) = agents.get(&agent_id) else {
+                    return Err(LabyrinthError::Message(
+                        "Selected agent disconnected before tunnel setup".to_string(),
+                    ));
+                };
+                if agent.tunnel_active {
+                    if agent.tunnel_subnet.as_deref() == Some(subnet.as_str()) {
+                        println!(
+                            "{}",
+                            styling::format_hint("Ariadne tunnel already active; reusing it.")
+                        );
+                        return Ok(());
+                    }
+                    return Err(LabyrinthError::Message(format!(
+                        "{} already has an active tunnel for {}",
+                        agent.info.name,
+                        agent.tunnel_subnet.as_deref().unwrap_or("another subnet")
+                    )));
+                }
+                if agents.iter().any(|(other_id, other)| {
+                    other_id != &agent_id
+                        && other.tunnel_active
+                        && other.tunnel_subnet.as_deref() == Some(subnet.as_str())
+                }) {
+                    return Err(LabyrinthError::Message(format!(
+                        "Subnet {} already has an active Ariadne tunnel on another agent",
+                        subnet
+                    )));
+                }
+            }
+            if server
+                .ariadne_snapshots()
+                .await
+                .iter()
+                .any(|snapshot| snapshot.agent_id == agent_id)
+            {
+                return Err(LabyrinthError::Message(
+                    "Ariadne listener already exists for selected agent; stop it before retrying"
+                        .to_string(),
+                ));
+            }
 
             println!(
                 "{}{}",
@@ -222,11 +325,12 @@ impl TunnelManager {
                 tun_name: tun_name.clone(),
             };
 
-            if let Err(e) = agent_sender.send(start_msg).await {
+            if let Err(e) = Self::send_agent_message(&agent_sender, start_msg, "start tunnel").await
+            {
                 #[cfg(target_os = "linux")]
                 let _ = Self::cleanup_tunnel(server, &agent_id, &tun_name, &subnet).await;
                 #[cfg(target_os = "windows")]
-                let _ = Self::cleanup_tunnel_windows(&tun_name).await;
+                let _ = Self::cleanup_tunnel_windows(&tun_name, &subnet).await;
                 error!(
                     "Failed to send tunnel start request to agent {}: {}",
                     agent_id, e
@@ -239,9 +343,19 @@ impl TunnelManager {
 
             #[cfg(target_os = "windows")]
             {
-                WindowsNetstackBridge::start(&tun_name, agent_sender.clone()).map_err(|e| {
-                    LabyrinthError::Message(format!("Failed to start Wintun bridge: {}", e))
-                })?;
+                if let Err(e) = WindowsNetstackBridge::start(&tun_name, agent_sender.clone()) {
+                    let _ = Self::send_agent_message(
+                        &agent_sender,
+                        Message::StopTunnel,
+                        "rollback tunnel",
+                    )
+                    .await;
+                    let _ = Self::cleanup_tunnel_windows(&tun_name, &subnet).await;
+                    return Err(LabyrinthError::Message(format!(
+                        "Failed to start Wintun bridge: {}",
+                        e
+                    )));
+                }
             }
 
             let mut agents = server.agents().write().await;
@@ -270,8 +384,16 @@ impl TunnelManager {
                 );
                 println!();
             } else {
+                drop(agents);
+                let _ =
+                    Self::send_agent_message(&agent_sender, Message::StopTunnel, "rollback tunnel")
+                        .await;
+                #[cfg(target_os = "linux")]
+                let _ = Self::cleanup_tunnel(server, &agent_id, &tun_name, &subnet).await;
+                #[cfg(target_os = "windows")]
+                let _ = Self::cleanup_tunnel_windows(&tun_name, &subnet).await;
                 return Err(LabyrinthError::Message(
-                    "Selected agent not found".to_string(),
+                    "Selected agent disconnected while starting tunnel".to_string(),
                 ));
             }
         } else {
@@ -311,7 +433,7 @@ impl TunnelManager {
                 ));
             }
 
-            for bin in ["ip", "iptables", "sysctl"] {
+            for bin in ["ip", "iptables"] {
                 if Self::command_exists(bin) {
                     println!(
                         "{}",
@@ -436,125 +558,7 @@ impl TunnelManager {
 
     pub async fn stop_tunnel(server: &LabyrinthServer) -> Result<()> {
         let current_id = server.current_agent().read().await.clone();
-        if let Some(agent_id) = current_id {
-            let mut agents = server.agents().write().await;
-            if let Some(agent) = agents.get_mut(&agent_id) {
-                if !agent.tunnel_active {
-                    println!(
-                        "{}",
-                        styling::format_warning_msg(
-                            styling::WARNING_INDICATOR,
-                            "No active tunnel or port forwarding for this agent"
-                        )
-                    );
-                    return Ok(());
-                }
-
-                if server.has_portal_forwarding(&agent_id).await {
-                    let stopped_ports = server.stop_portal_forwarding_for_agent(&agent_id).await;
-
-                    let connection_ids = server.connection_ids_for_agent(&agent_id).await;
-                    if let Some(stream_manager) = server.get_stream_manager().await {
-                        for connection_id in &connection_ids {
-                            let _ = stream_manager.terminate_stream(*connection_id).await;
-                        }
-                    }
-                    if let Some(connection_manager) = server.get_connection_manager().await {
-                        for connection_id in &connection_ids {
-                            let _ = connection_manager.cleanup_connection(connection_id).await;
-                        }
-                    }
-                    for connection_id in connection_ids {
-                        let _ = server.unregister_connection_owner(&connection_id).await;
-                    }
-
-                    agent.tunnel_active = false;
-                    agent.tunnel_subnet = None;
-
-                    if stopped_ports.is_empty() {
-                        println!(
-                            "{}",
-                            styling::format_warning_msg(
-                                styling::WARNING_INDICATOR,
-                                "Port forwarding listeners were not running"
-                            )
-                        );
-                    } else {
-                        println!(
-                            "{}",
-                            styling::format_success_msg(
-                                styling::SUCCESS_INDICATOR,
-                                &format!(
-                                    "Port forwarding stopped on ports: {}",
-                                    stopped_ports
-                                        .iter()
-                                        .map(|p| p.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                )
-                            )
-                        );
-                    }
-                } else {
-                    // It's a tunnel - send stop message and cleanup
-                    let stop_msg = Message::StopTunnel;
-
-                    if let Err(e) = agent.sender.send(stop_msg).await {
-                        println!(
-                            "{}",
-                            styling::format_warning_msg(
-                                styling::WARNING_INDICATOR,
-                                &format!(
-                                    "Failed to send stop tunnel request to agent {}: {}",
-                                    agent.id, e
-                                )
-                            )
-                        );
-                    }
-
-                    // Cleanup local tunnel
-                    if let Some(ref tun_name) = agent.tun_name {
-                        #[cfg(target_os = "linux")]
-                        let cleanup_result = Self::cleanup_tunnel(
-                            server,
-                            &agent_id,
-                            tun_name,
-                            agent
-                                .tunnel_subnet
-                                .as_ref()
-                                .unwrap_or(&"unknown".to_string()),
-                        )
-                        .await;
-
-                        #[cfg(target_os = "windows")]
-                        let cleanup_result = Self::cleanup_tunnel_windows(tun_name).await;
-
-                        if let Err(e) = cleanup_result {
-                            println!(
-                                "{}",
-                                styling::format_warning_msg(
-                                    styling::WARNING_INDICATOR,
-                                    &format!("Tunnel cleanup failed: {}", e)
-                                )
-                            );
-                        }
-                    }
-
-                    agent.tunnel_active = false;
-                    agent.tunnel_subnet = None;
-                    agent.tun_name = None;
-
-                    println!(
-                        "{}",
-                        styling::format_success_msg(styling::SUCCESS_INDICATOR, "Tunnel stopped")
-                    );
-                }
-            } else {
-                return Err(LabyrinthError::Message(
-                    "Selected agent not found".to_string(),
-                ));
-            }
-        } else {
+        let Some(agent_id) = current_id else {
             println!(
                 "{}",
                 styling::format_warning_msg(
@@ -562,8 +566,217 @@ impl TunnelManager {
                     "No agent selected. Use 'select' command first."
                 )
             );
+            return Ok(());
+        };
+        let _network_guard = ARIADNE_NETWORK_LOCK.lock().await;
+
+        let (tunnel_active, sender, tun_name, subnet) = {
+            let agents = server.agents().read().await;
+            let Some(agent) = agents.get(&agent_id) else {
+                return Err(LabyrinthError::Message(
+                    "Selected agent not found".to_string(),
+                ));
+            };
+            (
+                agent.tunnel_active,
+                agent.sender.clone(),
+                agent.tun_name.clone(),
+                agent.tunnel_subnet.clone(),
+            )
+        };
+
+        let has_portal = server.has_portal_forwarding(&agent_id).await;
+        let has_ariadne = server
+            .ariadne_snapshots()
+            .await
+            .iter()
+            .any(|snapshot| snapshot.agent_id == agent_id);
+        if !tunnel_active && !has_portal && !has_ariadne {
+            println!(
+                "{}",
+                styling::format_warning_msg(
+                    styling::WARNING_INDICATOR,
+                    "No active tunnel or port forwarding for this agent"
+                )
+            );
+            return Ok(());
         }
-        Ok(())
+
+        let mut failures = Vec::new();
+        let stopped_ports = if has_portal {
+            server.stop_portal_forwarding_for_agent(&agent_id).await
+        } else {
+            Vec::new()
+        };
+
+        if !has_portal {
+            if let Err(error) =
+                Self::send_agent_message(&sender, Message::StopTunnel, "stop tunnel").await
+            {
+                failures.push(error.to_string());
+            }
+        }
+
+        let connection_ids = server.connection_ids_for_agent(&agent_id).await;
+        if let Some(stream_manager) = server.get_stream_manager().await {
+            for connection_id in &connection_ids {
+                if let Err(error) = stream_manager.terminate_stream(*connection_id).await {
+                    failures.push(format!("stream {} cleanup: {}", connection_id, error));
+                }
+            }
+        }
+        if let Some(connection_manager) = server.get_connection_manager().await {
+            for connection_id in &connection_ids {
+                if let Err(error) = connection_manager.cleanup_connection(connection_id).await {
+                    failures.push(format!("connection {} cleanup: {}", connection_id, error));
+                }
+            }
+        }
+        for connection_id in connection_ids {
+            let _ = server.unregister_connection_owner(&connection_id).await;
+        }
+
+        if has_ariadne || !has_portal {
+            if let (Some(tun_name), Some(subnet)) = (tun_name.as_deref(), subnet.as_deref()) {
+                #[cfg(target_os = "linux")]
+                let cleanup_result =
+                    Self::cleanup_tunnel(server, &agent_id, tun_name, subnet).await;
+
+                #[cfg(target_os = "windows")]
+                let cleanup_result = Self::cleanup_tunnel_windows(tun_name, subnet).await;
+
+                #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+                let cleanup_result: Result<()> = Err(LabyrinthError::Message(
+                    "Ariadne is supported on Linux and Windows only".to_string(),
+                ));
+
+                if let Err(error) = cleanup_result {
+                    failures.push(error.to_string());
+                }
+            } else if has_ariadne {
+                let _ = server.stop_ariadne_listener(&agent_id).await;
+            }
+        }
+
+        if !stopped_ports.is_empty() {
+            println!(
+                "{}",
+                styling::format_success_msg(
+                    styling::SUCCESS_INDICATOR,
+                    &format!(
+                        "Port forwarding stopped on ports: {}",
+                        stopped_ports
+                            .iter()
+                            .map(|port| port.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )
+            );
+        }
+
+        if let Some(agent) = server.agents().write().await.get_mut(&agent_id) {
+            agent.tunnel_active = false;
+            agent.tunnel_subnet = None;
+            agent.tun_name = None;
+        }
+
+        if failures.is_empty() {
+            println!(
+                "{}",
+                styling::format_success_msg(styling::SUCCESS_INDICATOR, "Tunnel stopped")
+            );
+            Ok(())
+        } else {
+            Err(LabyrinthError::Message(format!(
+                "Tunnel stop completed with errors: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+
+    /// Cleanup tunnel, Portal, and stream resources when agent disconnects.
+    ///
+    /// Agent control channel is already unavailable in this path, so cleanup
+    /// never sends a protocol message and remains safe after agent removal.
+    pub async fn cleanup_agent_resources(server: &LabyrinthServer, agent_id: &str) -> Result<()> {
+        let _network_guard = ARIADNE_NETWORK_LOCK.lock().await;
+
+        let (tun_name, subnet) = {
+            let agents = server.agents().read().await;
+            agents
+                .get(agent_id)
+                .map(|agent| (agent.tun_name.clone(), agent.tunnel_subnet.clone()))
+                .unwrap_or((None, None))
+        };
+
+        let has_ariadne = server
+            .ariadne_snapshots()
+            .await
+            .iter()
+            .any(|snapshot| snapshot.agent_id == agent_id);
+        let mut failures = Vec::new();
+        let _stopped_ports = server.stop_portal_forwarding_for_agent(agent_id).await;
+
+        let connection_ids = server.connection_ids_for_agent(agent_id).await;
+        if let Some(stream_manager) = server.get_stream_manager().await {
+            for connection_id in &connection_ids {
+                if let Err(error) = stream_manager.terminate_stream(*connection_id).await {
+                    failures.push(format!("stream {} cleanup: {}", connection_id, error));
+                }
+            }
+        }
+        if let Some(connection_manager) = server.get_connection_manager().await {
+            for connection_id in &connection_ids {
+                if let Err(error) = connection_manager.cleanup_connection(connection_id).await {
+                    failures.push(format!("connection {} cleanup: {}", connection_id, error));
+                }
+            }
+        }
+        for connection_id in connection_ids {
+            let _ = server.unregister_connection_owner(&connection_id).await;
+        }
+
+        if has_ariadne {
+            if let (Some(tun_name), Some(subnet)) = (tun_name.as_deref(), subnet.as_deref()) {
+                #[cfg(target_os = "linux")]
+                let cleanup_result = Self::cleanup_tunnel(server, agent_id, tun_name, subnet).await;
+
+                #[cfg(target_os = "windows")]
+                let cleanup_result = Self::cleanup_tunnel_windows(tun_name, subnet).await;
+
+                #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+                let cleanup_result: Result<()> = Err(LabyrinthError::Message(
+                    "Ariadne is supported on Linux and Windows only".to_string(),
+                ));
+
+                if let Err(error) = cleanup_result {
+                    failures.push(error.to_string());
+                }
+            } else {
+                // Preserve listener cancellation even when state was partially
+                // written or agent record was removed before this call.
+                let _ = server.stop_ariadne_listener(agent_id).await;
+            }
+        }
+
+        if let Some(agent) = server.agents().write().await.get_mut(agent_id) {
+            agent.tunnel_active = false;
+            agent.tunnel_subnet = None;
+            agent.tun_name = None;
+        }
+        if server.current_agent().read().await.as_deref() == Some(agent_id) {
+            *server.current_agent().write().await = None;
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(LabyrinthError::Message(format!(
+                "Disconnected agent resource cleanup failed: {}",
+                failures.join("; ")
+            )))
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -587,53 +800,67 @@ impl TunnelManager {
         );
 
         let tun_ip = "10.0.0.1";
-        let proxy_port = Self::pick_proxy_port().await?;
+        // Keep listener bound while installing the redirect rule. This removes
+        // the ephemeral-port release/rebind race and avoids exposing proxy to LAN.
+        let proxy_listener = TcpListener::bind((ARIADNE_PROXY_BIND_ADDR, 0))
+            .await
+            .map_err(LabyrinthError::Io)?;
+        let proxy_port = proxy_listener
+            .local_addr()
+            .map_err(LabyrinthError::Io)?
+            .port();
+        let mut tunnel_created = false;
+        let mut redirect_added = false;
 
-        match Self::create_linux_tun_device(tun_name) {
-            Ok(()) => {}
-            Err(err) if Self::should_recover_existing_tun(&err) => {
-                warn!(
-                    "Detected stale tunnel interface {}. Removing it before retrying setup.",
-                    tun_name
-                );
-                let _ = Self::run_command("ip", &["link", "del", tun_name]);
-                Self::create_linux_tun_device(tun_name)?;
+        let setup_result = (|| -> Result<()> {
+            // Never delete an existing interface by name: it may belong to another
+            // process. Operator must choose another name or clean stale state.
+            Self::create_linux_tun_device(tun_name)?;
+            tunnel_created = true;
+
+            Self::run_command(
+                "ip",
+                &[
+                    "addr",
+                    "replace",
+                    &format!("{}/32", tun_ip),
+                    "dev",
+                    tun_name,
+                ],
+            )?;
+            Self::run_command("ip", &["link", "set", tun_name, "up"])?;
+            // Ariadne is a userland TCP proxy. Enabling global IP forwarding is
+            // unnecessary and would leave a host-wide setting changed on stop.
+            Self::run_command("ip", &["route", "replace", "local", subnet, "dev", "lo"])?;
+            redirect_added = Self::ensure_iptables_rule(
+                "iptables",
+                &[
+                    "-t",
+                    "nat",
+                    "OUTPUT",
+                    "-p",
+                    "tcp",
+                    "-d",
+                    subnet,
+                    "-j",
+                    "REDIRECT",
+                    "--to-ports",
+                    &proxy_port.to_string(),
+                ],
+            )?;
+            Ok(())
+        })();
+
+        if let Err(error) = setup_result {
+            if tunnel_created {
+                let _ =
+                    Self::cleanup_linux_network(tun_name, subnet, proxy_port, redirect_added, true);
             }
-            Err(err) => return Err(err),
+            return Err(error);
         }
 
-        Self::run_command(
-            "ip",
-            &[
-                "addr",
-                "replace",
-                &format!("{}/32", tun_ip),
-                "dev",
-                tun_name,
-            ],
-        )?;
-        Self::run_command("ip", &["link", "set", tun_name, "up"])?;
-
-        Self::run_command("sysctl", &["-w", "net.ipv4.ip_forward=1"])?;
-        Self::run_command("ip", &["route", "replace", "local", subnet, "dev", "lo"])?;
-        Self::ensure_iptables_rule(
-            "iptables",
-            &[
-                "-t",
-                "nat",
-                "OUTPUT",
-                "-p",
-                "tcp",
-                "-d",
-                subnet,
-                "-j",
-                "REDIRECT",
-                "--to-ports",
-                &proxy_port.to_string(),
-            ],
-        )?;
-
         let proxy_task = Self::spawn_linux_ariadne_proxy(
+            proxy_listener,
             server,
             agent_id.to_string(),
             agent_sender.clone(),
@@ -661,15 +888,7 @@ impl TunnelManager {
     }
 
     #[cfg(target_os = "linux")]
-    fn should_recover_existing_tun(err: &LabyrinthError) -> bool {
-        let message = err.to_string().to_ascii_lowercase();
-        message.contains("exists")
-            || message.contains("already in use")
-            || message.contains("device or resource busy")
-    }
-
-    #[cfg(target_os = "linux")]
-    fn ensure_iptables_rule(cmd: &str, rule_args: &[&str]) -> Result<()> {
+    fn ensure_iptables_rule(cmd: &str, rule_args: &[&str]) -> Result<bool> {
         let mut check_args = Vec::with_capacity(rule_args.len() + 1);
         if rule_args.starts_with(&["-t", "nat"]) {
             check_args.extend(["-t", "nat", "-C"]);
@@ -680,7 +899,7 @@ impl TunnelManager {
         }
 
         if Self::command_succeeds(cmd, &check_args)? {
-            return Ok(());
+            return Ok(false);
         }
 
         let mut add_args = Vec::with_capacity(rule_args.len() + 1);
@@ -692,65 +911,85 @@ impl TunnelManager {
             add_args.extend(rule_args.iter().copied());
         }
 
-        Self::run_command(cmd, &add_args)
-    }
-
-    #[cfg(target_os = "linux")]
-    async fn pick_proxy_port() -> Result<u16> {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(LabyrinthError::Io)?;
-        let port = listener.local_addr().map_err(LabyrinthError::Io)?.port();
-        drop(listener);
-        Ok(port)
+        Self::run_command(cmd, &add_args)?;
+        Ok(true)
     }
 
     #[cfg(target_os = "linux")]
     async fn spawn_linux_ariadne_proxy(
+        listener: TcpListener,
         server: &LabyrinthServer,
         agent_id: String,
         agent_sender: tokio::sync::mpsc::Sender<Message>,
         proxy_port: u16,
     ) -> Result<tokio::task::JoinHandle<()>> {
-        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, proxy_port))
-            .await
-            .map_err(LabyrinthError::Io)?;
         let server = Arc::new(server.clone_for_tasks());
 
         Ok(tokio::spawn(async move {
+            let mut bridges = tokio::task::JoinSet::new();
             loop {
-                let (client_socket, client_addr) = match listener.accept().await {
-                    Ok(accepted) => accepted,
-                    Err(e) => {
-                        warn!("Ariadne proxy accept error on {}: {}", proxy_port, e);
-                        break;
-                    }
-                };
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let (client_socket, client_addr) = match accepted {
+                            Ok(accepted) => accepted,
+                            Err(e) => {
+                                warn!("Ariadne proxy accept error on {}: {}", proxy_port, e);
+                                break;
+                            }
+                        };
 
-                let Ok(target_addr) = Self::original_destination(&client_socket) else {
-                    warn!("Failed to resolve original destination for redirected connection");
-                    continue;
-                };
+                        let target_addr = match Self::original_destination(&client_socket) {
+                            Ok(target_addr)
+                                if target_addr.port() != 0
+                                    && !target_addr.ip().is_unspecified()
+                                    && target_addr.port() != proxy_port =>
+                            {
+                                target_addr
+                            }
+                            Ok(target_addr) => {
+                                warn!(
+                                    "Rejecting invalid Ariadne original destination {} from {}",
+                                    target_addr, client_addr
+                                );
+                                continue;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to resolve original destination for {}: {}",
+                                    client_addr, e
+                                );
+                                continue;
+                            }
+                        };
 
-                let server = Arc::clone(&server);
-                let agent_sender = agent_sender.clone();
-                let agent_id = agent_id.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = Self::bridge_ariadne_connection(
-                        server,
-                        agent_id,
-                        agent_sender,
-                        client_socket,
-                        client_addr,
-                        target_addr,
-                        proxy_port,
-                    )
-                    .await
-                    {
-                        warn!("Ariadne proxy bridge failed: {}", e);
+                        let server = Arc::clone(&server);
+                        let agent_sender = agent_sender.clone();
+                        let agent_id = agent_id.clone();
+                        bridges.spawn(async move {
+                            if let Err(e) = Self::bridge_ariadne_connection(
+                                server,
+                                agent_id,
+                                agent_sender,
+                                client_socket,
+                                client_addr,
+                                target_addr,
+                                proxy_port,
+                            )
+                            .await
+                            {
+                                warn!("Ariadne proxy bridge failed: {}", e);
+                            }
+                        });
                     }
-                });
+                    completed = bridges.join_next(), if !bridges.is_empty() => {
+                        if let Some(Err(e)) = completed {
+                            warn!("Ariadne proxy bridge task failed: {}", e);
+                        }
+                    }
+                }
             }
+            // Stop closes listener; abort any bridge still holding client sockets.
+            bridges.abort_all();
         }))
     }
 
@@ -763,7 +1002,7 @@ impl TunnelManager {
             libc::getsockopt(
                 fd,
                 libc::SOL_IP,
-                80,
+                SO_ORIGINAL_DST,
                 &mut addr as *mut _ as *mut libc::c_void,
                 &mut len,
             )
@@ -854,12 +1093,15 @@ impl TunnelManager {
             )));
         }
 
-        if let Err(e) = agent_sender
-            .send(Message::Stream(StreamMessage::Setup {
+        if let Err(e) = Self::send_agent_message(
+            &agent_sender,
+            Message::Stream(StreamMessage::Setup {
                 connection_id,
                 mapping,
-            }))
-            .await
+            }),
+            "send Ariadne stream setup",
+        )
+        .await
         {
             let _ = stream_manager.terminate_stream(connection_id).await;
             let _ = connection_manager.cleanup_connection(&connection_id).await;
@@ -883,11 +1125,15 @@ impl TunnelManager {
         let ps = format!(
             "$name='{}'; \
             $a=Get-NetAdapter -Name $name -ErrorAction SilentlyContinue; \
-            if (-not $a) {{ exit 0 }}; \
+            if (-not $a) {{ throw \"Wintun adapter '$name' not found\" }}; \
             $idx=$a.ifIndex; \
-            New-NetIPAddress -InterfaceIndex $idx -IPAddress 10.0.0.1 -PrefixLength 24 -AddressFamily IPv4 -ErrorAction SilentlyContinue | Out-Null; \
-            New-NetRoute -DestinationPrefix '{}' -InterfaceIndex $idx -NextHop 0.0.0.0 -ErrorAction SilentlyContinue | Out-Null;",
-            tun_name, subnet
+            if (-not (Get-NetIPAddress -InterfaceIndex $idx -IPAddress 10.0.0.1 -ErrorAction SilentlyContinue)) {{ \
+                New-NetIPAddress -InterfaceIndex $idx -IPAddress 10.0.0.1 -PrefixLength 24 -AddressFamily IPv4 -ErrorAction Stop | Out-Null \
+            }}; \
+            if (-not (Get-NetRoute -DestinationPrefix '{}' -InterfaceIndex $idx -ErrorAction SilentlyContinue)) {{ \
+                New-NetRoute -DestinationPrefix '{}' -InterfaceIndex $idx -NextHop 0.0.0.0 -ErrorAction Stop | Out-Null \
+            }};",
+            tun_name, subnet, subnet
         );
 
         let output = Command::new("powershell")
@@ -915,8 +1161,33 @@ impl TunnelManager {
             tun_name, subnet
         );
 
-        if let Some(proxy_port) = server.stop_ariadne_listener(agent_id).await {
-            let _ = Self::run_command(
+        let proxy_port = server.stop_ariadne_listener(agent_id).await;
+        Self::cleanup_linux_network(
+            tun_name,
+            subnet,
+            proxy_port.unwrap_or_default(),
+            proxy_port.is_some(),
+            true,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn cleanup_linux_network(
+        tun_name: &str,
+        subnet: &str,
+        proxy_port: u16,
+        remove_redirect: bool,
+        remove_tun: bool,
+    ) -> Result<()> {
+        let mut failures = Vec::new();
+        let mut run = |cmd: &str, args: &[&str]| {
+            if let Err(error) = Self::run_command_idempotent(cmd, args) {
+                failures.push(error.to_string());
+            }
+        };
+
+        if remove_redirect {
+            run(
                 "iptables",
                 &[
                     "-t",
@@ -934,24 +1205,43 @@ impl TunnelManager {
                 ],
             );
         }
-        let _ = Self::run_command("ip", &["route", "del", "local", subnet, "dev", "lo"]);
-        let _ = Self::run_command("ip", &["addr", "del", "10.0.0.1/32", "dev", tun_name]);
-        let _ = Self::run_command("ip", &["link", "del", tun_name]);
+        run("ip", &["route", "del", "local", subnet, "dev", "lo"]);
+        run("ip", &["addr", "del", "10.0.0.1/32", "dev", tun_name]);
+        if remove_tun {
+            run("ip", &["link", "del", tun_name]);
+        }
 
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(LabyrinthError::Message(format!(
+                "Ariadne cleanup failed: {}",
+                failures.join("; ")
+            )))
+        }
     }
 
     #[cfg(target_os = "windows")]
-    async fn cleanup_tunnel_windows(tun_name: &str) -> Result<()> {
+    async fn cleanup_tunnel_windows(tun_name: &str, subnet: &str) -> Result<()> {
         let ps = format!(
             "$name='{}'; $a=Get-NetAdapter -Name $name -ErrorAction SilentlyContinue; \
-            if ($a) {{ Remove-NetIPAddress -InterfaceIndex $a.ifIndex -Confirm:$false -ErrorAction SilentlyContinue | Out-Null }}",
-            tun_name
+            if ($a) {{ \
+                Remove-NetRoute -DestinationPrefix '{}' -InterfaceIndex $a.ifIndex -Confirm:$false -ErrorAction SilentlyContinue; \
+                Remove-NetIPAddress -InterfaceIndex $a.ifIndex -IPAddress 10.0.0.1 -Confirm:$false -ErrorAction SilentlyContinue \
+            }}",
+            tun_name, subnet
         );
-        let _ = Command::new("powershell")
+        let output = Command::new("powershell")
             .args(["-NoProfile", "-Command", &ps])
-            .output();
-        Ok(())
+            .output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(LabyrinthError::Message(format!(
+                "Failed to clean up Wintun routes: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )))
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -971,6 +1261,90 @@ impl TunnelManager {
     #[cfg(target_os = "linux")]
     fn command_succeeds(cmd: &str, args: &[&str]) -> Result<bool> {
         Ok(Command::new(cmd).args(args).output()?.status.success())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_command_idempotent(cmd: &str, args: &[&str]) -> Result<()> {
+        match Self::run_command(cmd, args) {
+            Ok(()) => Ok(()),
+            Err(error) if Self::is_absent_network_resource(&error) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_absent_network_resource(error: &LabyrinthError) -> bool {
+        let message = error.to_string().to_ascii_lowercase();
+        [
+            "cannot find device",
+            "does a matching rule exist",
+            "no chain/target/match",
+            "no such process",
+            "not found",
+        ]
+        .iter()
+        .any(|marker| message.contains(marker))
+    }
+
+    async fn send_agent_message(
+        sender: &tokio::sync::mpsc::Sender<Message>,
+        message: Message,
+        operation: &str,
+    ) -> Result<()> {
+        timeout(AGENT_CONTROL_TIMEOUT, sender.send(message))
+            .await
+            .map_err(|_| {
+                LabyrinthError::Message(format!(
+                    "Timed out after {} seconds while attempting to {}",
+                    AGENT_CONTROL_TIMEOUT.as_secs(),
+                    operation
+                ))
+            })?
+            .map_err(|e| LabyrinthError::Message(format!("Failed to {}: {}", operation, e)))
+    }
+
+    fn validate_tunnel_name(tun_name: &str) -> Result<()> {
+        // Linux IFNAMSIZ is 16 bytes including NUL. Restricting names to this
+        // portable subset also keeps Windows PowerShell interpolation safe.
+        let valid = !tun_name.is_empty()
+            && tun_name.len() <= 15
+            && tun_name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
+        if valid {
+            Ok(())
+        } else {
+            Err(LabyrinthError::Message(
+                "Invalid tunnel interface name: use 1-15 ASCII letters, digits, '.', '_' or '-'"
+                    .to_string(),
+            ))
+        }
+    }
+
+    fn normalize_ariadne_subnet(input: &str) -> Result<String> {
+        let (ip, prefix) = input.split_once('/').ok_or_else(|| {
+            LabyrinthError::Message(format!("Invalid IPv4 subnet format: {}", input))
+        })?;
+        let ip = ip.parse::<std::net::Ipv4Addr>().map_err(|_| {
+            LabyrinthError::Message(format!(
+                "Ariadne currently supports IPv4 subnets only: {}",
+                input
+            ))
+        })?;
+        let prefix = prefix.parse::<u8>().map_err(|_| {
+            LabyrinthError::Message(format!("Invalid IPv4 prefix length: {}", input))
+        })?;
+        if prefix == 0 || prefix > 32 {
+            return Err(LabyrinthError::Message(if prefix == 0 {
+                "Ariadne refuses 0.0.0.0/0 because it would redirect server control traffic"
+                    .to_string()
+            } else {
+                format!("Invalid IPv4 prefix length: {}", prefix)
+            }));
+        }
+        let mask = u32::MAX << (32 - u32::from(prefix));
+        let network = std::net::Ipv4Addr::from(u32::from(ip) & mask);
+        Ok(format!("{}/{}", network, prefix))
     }
 
     fn validate_cidr(input: &str) -> bool {
@@ -1052,8 +1426,39 @@ impl TunnelManager {
 #[cfg(test)]
 mod tests {
     use super::TunnelManager;
-    #[cfg(target_os = "linux")]
-    use crate::error::LabyrinthError;
+    use crate::protocol::{AgentInfo, AgentKind};
+    use crate::server::core::ConnectedAgent;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tokio::sync::{mpsc, Mutex};
+
+    fn active_agent(sender: mpsc::Sender<crate::protocol::Message>) -> ConnectedAgent {
+        ConnectedAgent {
+            id: "agent-1".to_string(),
+            info: AgentInfo {
+                name: "test-agent".to_string(),
+                hostname: "test-host".to_string(),
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+                interfaces: Vec::new(),
+                auth_key: None,
+                kind: AgentKind::Generic,
+                stable_id: None,
+                listener_addr: None,
+                listener_port: None,
+                connectivity: Default::default(),
+            },
+            sender,
+            transport_label: "tcp/tls".to_string(),
+            quic_connection: None,
+            tunnel_active: true,
+            tunnel_subnet: Some("192.168.10.0/24".to_string()),
+            tun_name: Some("labyrinth".to_string()),
+            last_seen: Arc::new(Mutex::new(Instant::now())),
+            command_response: Arc::new(Mutex::new(None)),
+            shell_events: Arc::new(Mutex::new(None)),
+        }
+    }
 
     #[test]
     fn validate_cidr_accepts_ipv4_networks() {
@@ -1065,10 +1470,107 @@ mod tests {
         assert!(!TunnelManager::validate_cidr("192.168.100.0/99"));
     }
 
+    #[test]
+    fn tunnel_name_rejects_shell_metacharacters_and_long_names() {
+        assert!(TunnelManager::validate_tunnel_name("labyrinth").is_ok());
+        assert!(TunnelManager::validate_tunnel_name("lab;rm").is_err());
+        assert!(TunnelManager::validate_tunnel_name("this-name-is-too-long").is_err());
+    }
+
+    #[test]
+    fn ariadne_subnet_normalizes_host_bits_and_rejects_default_route() {
+        assert_eq!(
+            TunnelManager::normalize_ariadne_subnet("192.168.10.99/24").unwrap(),
+            "192.168.10.0/24"
+        );
+        assert!(TunnelManager::normalize_ariadne_subnet("0.0.0.0/0").is_err());
+        assert!(TunnelManager::normalize_ariadne_subnet("192.168.10.1/33").is_err());
+        assert!(TunnelManager::normalize_ariadne_subnet("2001:db8::/64").is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_message_reports_closed_control_channel() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+
+        let error = TunnelManager::send_agent_message(
+            &sender,
+            crate::protocol::Message::StopTunnel,
+            "stop tunnel",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Failed to stop tunnel"));
+    }
+
+    #[tokio::test]
+    async fn agent_message_delivers_control_message() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        TunnelManager::send_agent_message(
+            &sender,
+            crate::protocol::Message::StopTunnel,
+            "stop tunnel",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            receiver.recv().await,
+            Some(crate::protocol::Message::StopTunnel)
+        ));
+    }
+
+    #[tokio::test]
+    async fn start_existing_tunnel_is_idempotent() {
+        let server = crate::server::core::LabyrinthServer::new(false, None);
+        let (sender, _receiver) = mpsc::channel(1);
+        server
+            .agents()
+            .write()
+            .await
+            .insert("agent-1".to_string(), active_agent(sender));
+
+        // Existing state returns before privileged preflight or resource mutation.
+        TunnelManager::start_tunnel_for_agent(&server, "agent-1", "192.168.10.99/24", "labyrinth")
+            .await
+            .unwrap();
+
+        let agent = server.agents().read().await;
+        assert_eq!(
+            agent
+                .get("agent-1")
+                .and_then(|entry| entry.tunnel_subnet.as_deref()),
+            Some("192.168.10.0/24")
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnected_agent_cleanup_is_idempotent_without_state() {
+        let server = crate::server::core::LabyrinthServer::new(false, None);
+        *server.current_agent().write().await = Some("gone-agent".to_string());
+
+        TunnelManager::cleanup_agent_resources(&server, "gone-agent")
+            .await
+            .unwrap();
+        TunnelManager::cleanup_agent_resources(&server, "gone-agent")
+            .await
+            .unwrap();
+        assert!(server.ariadne_snapshots().await.is_empty());
+        assert!(server.current_agent().read().await.is_none());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
-    fn stale_tun_detection_matches_existing_device_errors() {
-        let err = LabyrinthError::Message("device or resource busy: interface exists".to_string());
-        assert!(TunnelManager::should_recover_existing_tun(&err));
+    fn cleanup_error_classifier_only_ignores_absent_resources() {
+        assert!(TunnelManager::is_absent_network_resource(
+            &crate::error::LabyrinthError::Message(
+                "RTNETLINK answers: No such process".to_string()
+            )
+        ));
+        assert!(!TunnelManager::is_absent_network_resource(
+            &crate::error::LabyrinthError::Message(
+                "Command failed: ip [\"route\"] -> permission denied".to_string()
+            )
+        ));
     }
 }

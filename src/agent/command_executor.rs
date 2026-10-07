@@ -2,11 +2,20 @@ use crate::error::{LabyrinthError, Result};
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::{self, Read, Write};
+use std::process::{Child, Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 #[cfg(target_os = "linux")]
-use std::{ffi::CString, io::Write, os::fd::FromRawFd};
+use std::{ffi::CString, os::fd::FromRawFd};
 
 #[cfg(target_os = "windows")]
 use std::ptr;
@@ -46,6 +55,11 @@ struct CommandResult {
 
 const MAX_LINES: usize = 80;
 const MAX_CHARS: usize = 8000;
+const MAX_CAPTURE_BYTES: usize = 256 * 1024;
+const MAX_RAW_COMMAND_BYTES: usize = 64 * 1024;
+const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const AUTOENUM_COMMAND_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 #[cfg(target_os = "linux")]
 fn split_execution_args(args: &str) -> Vec<String> {
@@ -62,9 +76,19 @@ impl CommandExecutor {
     }
 
     pub async fn execute_command(&self, command: &str) -> Result<String> {
+        let executor = self.clone();
+        let command = command.to_string();
+        tokio::task::spawn_blocking(move || executor.execute_command_blocking(&command))
+            .await
+            .map_err(|error| {
+                LabyrinthError::Message(format!("Command execution task failed: {}", error))
+            })?
+    }
+
+    fn execute_command_blocking(&self, command: &str) -> Result<String> {
         match self {
-            Self::Linux => self.execute_linux_command(command).await,
-            Self::Windows => self.execute_windows_command(command).await,
+            Self::Linux => self.execute_linux_command(command),
+            Self::Windows => self.execute_windows_command(command),
             Self::Unknown => Err(LabyrinthError::Message(
                 "Command execution not supported on this operating system".to_string(),
             )),
@@ -327,7 +351,7 @@ impl CommandExecutor {
         }
     }
 
-    async fn execute_linux_command(&self, command: &str) -> Result<String> {
+    fn execute_linux_command(&self, command: &str) -> Result<String> {
         if let Some(encoded) = command.strip_prefix("linux:shell_raw:") {
             return self.run_linux_shell_raw(encoded);
         }
@@ -409,7 +433,7 @@ impl CommandExecutor {
         }
     }
 
-    async fn execute_windows_command(&self, command: &str) -> Result<String> {
+    fn execute_windows_command(&self, command: &str) -> Result<String> {
         if let Some(encoded) = command.strip_prefix("windows:shell_raw:") {
             return self.run_windows_shell_raw(encoded);
         }
@@ -512,32 +536,29 @@ impl CommandExecutor {
     }
 
     fn run_linux(&self, name: &str, command: &str) -> CommandResult {
-        run_process(
-            name,
-            command,
-            Command::new("sh").args(["-c", command]).output(),
-        )
+        run_process(name, command, Command::new("sh").args(["-c", command]))
     }
 
     fn run_windows_cmd(&self, name: &str, command: &str) -> CommandResult {
-        run_process(
-            name,
-            command,
-            Command::new("cmd").args(["/C", command]).output(),
-        )
+        run_process(name, command, Command::new("cmd").args(["/C", command]))
     }
 
     fn run_windows_powershell(&self, name: &str, command: &str) -> CommandResult {
         run_process(
             name,
             command,
-            Command::new("powershell")
-                .args(["-NoProfile", "-Command", command])
-                .output(),
+            Command::new("powershell").args(["-NoProfile", "-Command", command]),
         )
     }
 
     fn run_linux_shell_raw(&self, encoded: &str) -> Result<String> {
+        let max_encoded = MAX_RAW_COMMAND_BYTES.div_ceil(3) * 4;
+        if encoded.len() > max_encoded {
+            return Err(LabyrinthError::Message(format!(
+                "Encoded shell command exceeds {} bytes",
+                MAX_RAW_COMMAND_BYTES
+            )));
+        }
         let decoded = general_purpose::STANDARD
             .decode(encoded.as_bytes())
             .map_err(|e| {
@@ -545,6 +566,12 @@ impl CommandExecutor {
             })?;
         let cmd = String::from_utf8(decoded)
             .map_err(|e| LabyrinthError::Message(format!("Invalid UTF-8 shell command: {}", e)))?;
+        if cmd.len() > MAX_RAW_COMMAND_BYTES {
+            return Err(LabyrinthError::Message(format!(
+                "Shell command exceeds {} bytes",
+                MAX_RAW_COMMAND_BYTES
+            )));
+        }
 
         // Try to allocate a pseudo-tty via `script` for prompt-heavy tools (mysql, python, etc.).
         let quoted = single_quote_for_sh(&cmd);
@@ -553,19 +580,26 @@ impl CommandExecutor {
             quoted, quoted
         );
 
-        let out = Command::new("sh")
-            .args(["-lc", &wrapped])
-            .output()
-            .map_err(|e| {
-                LabyrinthError::Message(format!("Failed to execute shell command: {}", e))
-            })?;
-
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        Ok(merge_shell_streams(&stdout, &stderr))
+        let result = run_process_with_timeout(
+            "Raw Linux shell",
+            &cmd,
+            Command::new("sh").args(["-lc", &wrapped]),
+            DEFAULT_COMMAND_TIMEOUT,
+        );
+        if !result.success && result.output.is_empty() && !result.error.is_empty() {
+            return Err(LabyrinthError::Message(result.error));
+        }
+        Ok(merge_shell_streams(&result.output, &result.error))
     }
 
     fn run_windows_shell_raw(&self, encoded: &str) -> Result<String> {
+        let max_encoded = MAX_RAW_COMMAND_BYTES.div_ceil(3) * 4;
+        if encoded.len() > max_encoded {
+            return Err(LabyrinthError::Message(format!(
+                "Encoded shell command exceeds {} bytes",
+                MAX_RAW_COMMAND_BYTES
+            )));
+        }
         let decoded = general_purpose::STANDARD
             .decode(encoded.as_bytes())
             .map_err(|e| {
@@ -573,17 +607,23 @@ impl CommandExecutor {
             })?;
         let cmd = String::from_utf8(decoded)
             .map_err(|e| LabyrinthError::Message(format!("Invalid UTF-8 shell command: {}", e)))?;
+        if cmd.len() > MAX_RAW_COMMAND_BYTES {
+            return Err(LabyrinthError::Message(format!(
+                "Shell command exceeds {} bytes",
+                MAX_RAW_COMMAND_BYTES
+            )));
+        }
 
-        let out = Command::new("powershell")
-            .args(["-NoProfile", "-Command", &cmd])
-            .output()
-            .map_err(|e| {
-                LabyrinthError::Message(format!("Failed to execute shell command: {}", e))
-            })?;
-
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        Ok(merge_shell_streams(&stdout, &stderr))
+        let result = run_process_with_timeout(
+            "Raw Windows shell",
+            &cmd,
+            Command::new("powershell").args(["-NoProfile", "-Command", &cmd]),
+            DEFAULT_COMMAND_TIMEOUT,
+        );
+        if !result.success && result.output.is_empty() && !result.error.is_empty() {
+            return Err(LabyrinthError::Message(result.error));
+        }
+        Ok(merge_shell_streams(&result.output, &result.error))
     }
 
     fn run_linux_autoenum(&self) -> Result<String> {
@@ -628,10 +668,11 @@ impl CommandExecutor {
         };
 
         let cmd = format!("{} > '{}' 2>&1", runner, output_path);
-        let result = run_process(
+        let result = run_process_with_timeout(
             "AutoEnum (Linux)",
             &cmd,
-            Command::new("sh").args(["-c", &cmd]).output(),
+            Command::new("sh").args(["-c", &cmd]),
+            AUTOENUM_COMMAND_TIMEOUT,
         );
 
         let preview = summarize_file_preview(&output_path, 120, 50000);
@@ -681,9 +722,7 @@ impl CommandExecutor {
         let launcher = run_process(
             "AutoEnum (Windows)",
             "powershell -NoProfile -Command <autoenum>",
-            Command::new("powershell")
-                .args(["-NoProfile", "-Command", &script])
-                .output(),
+            Command::new("powershell").args(["-NoProfile", "-Command", &script]),
         );
 
         let source = extract_tag_line(&launcher.output, "SOURCE:")
@@ -710,31 +749,187 @@ impl CommandExecutor {
     }
 }
 
-fn run_process(
+fn run_process(name: &str, command: &str, process: &mut Command) -> CommandResult {
+    run_process_with_timeout(name, command, process, DEFAULT_COMMAND_TIMEOUT)
+}
+
+fn run_process_with_timeout(
     name: &str,
     command: &str,
-    output: std::io::Result<std::process::Output>,
+    process: &mut Command,
+    timeout: Duration,
 ) -> CommandResult {
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            CommandResult {
+    let execution = match execute_process(process, timeout) {
+        Ok(execution) => execution,
+        Err(error) => {
+            return CommandResult {
                 name: name.to_string(),
                 command: command.to_string(),
-                success: out.status.success(),
-                output: OutputFormatter::truncate(&stdout),
-                error: OutputFormatter::truncate(&stderr),
+                success: false,
+                output: String::new(),
+                error: format!("Failed to execute: {}", error),
             }
         }
-        Err(e) => CommandResult {
-            name: name.to_string(),
-            command: command.to_string(),
-            success: false,
-            output: String::new(),
-            error: format!("Failed to execute: {}", e),
-        },
+    };
+
+    let stdout = String::from_utf8_lossy(&execution.stdout.bytes).to_string();
+    let stderr = String::from_utf8_lossy(&execution.stderr.bytes).to_string();
+    let mut error = OutputFormatter::truncate(&stderr);
+    if execution.timed_out {
+        append_process_error(
+            &mut error,
+            &format!("Command timed out after {} seconds", timeout.as_secs()),
+        );
     }
+    if execution.stdout.truncated || execution.stderr.truncated {
+        append_process_error(
+            &mut error,
+            &format!(
+                "Command output exceeded {} bytes and process was stopped",
+                MAX_CAPTURE_BYTES
+            ),
+        );
+    }
+
+    CommandResult {
+        name: name.to_string(),
+        command: command.to_string(),
+        success: !execution.timed_out
+            && !execution.stdout.truncated
+            && !execution.stderr.truncated
+            && execution
+                .status
+                .map(|status| status.success())
+                .unwrap_or(false),
+        output: OutputFormatter::truncate(&stdout),
+        error,
+    }
+}
+
+struct CapturedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+struct ProcessExecution {
+    status: Option<std::process::ExitStatus>,
+    stdout: CapturedOutput,
+    stderr: CapturedOutput,
+    timed_out: bool,
+}
+
+fn execute_process(process: &mut Command, timeout: Duration) -> io::Result<ProcessExecution> {
+    process.stdout(Stdio::piped()).stderr(Stdio::piped());
+    configure_process_group(process);
+    let mut child = process.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("failed to capture stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("failed to capture stderr"))?;
+    let stdout_limit = Arc::new(AtomicBool::new(false));
+    let stderr_limit = Arc::new(AtomicBool::new(false));
+    let stdout_limit_reader = Arc::clone(&stdout_limit);
+    let stderr_limit_reader = Arc::clone(&stderr_limit);
+    let stdout_thread = thread::spawn(move || capture_output(stdout, stdout_limit_reader));
+    let stderr_thread = thread::spawn(move || capture_output(stderr, stderr_limit_reader));
+
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    let status = loop {
+        if stdout_limit.load(Ordering::Acquire) || stderr_limit.load(Ordering::Acquire) {
+            terminate_process(&mut child)?;
+            break None;
+        }
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            timed_out = true;
+            terminate_process(&mut child)?;
+            break None;
+        }
+        thread::sleep(PROCESS_POLL_INTERVAL);
+    };
+
+    let stdout = stdout_thread
+        .join()
+        .map_err(|_| io::Error::other("stdout capture thread panicked"))?;
+    let stderr = stderr_thread
+        .join()
+        .map_err(|_| io::Error::other("stderr capture thread panicked"))?;
+
+    Ok(ProcessExecution {
+        status,
+        stdout,
+        stderr,
+        timed_out,
+    })
+}
+
+fn capture_output<R: Read>(mut reader: R, exceeded: Arc<AtomicBool>) -> CapturedOutput {
+    let mut bytes = Vec::with_capacity(MAX_CAPTURE_BYTES.min(8192));
+    let mut buffer = [0u8; 8192];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                let remaining = MAX_CAPTURE_BYTES.saturating_sub(bytes.len());
+                if count > remaining {
+                    bytes.extend_from_slice(&buffer[..remaining]);
+                    exceeded.store(true, Ordering::Release);
+                    break;
+                }
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+            Err(_) => break,
+        }
+    }
+    CapturedOutput {
+        bytes,
+        truncated: exceeded.load(Ordering::Acquire),
+    }
+}
+
+fn terminate_process(child: &mut Child) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let process_group = -(child.id() as libc::pid_t);
+        // Kill shell and descendants. Fallback to direct child kill when group no longer exists.
+        let result = unsafe { libc::kill(process_group, libc::SIGKILL) };
+        if result != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            child.kill()?;
+        }
+    }
+    #[cfg(not(unix))]
+    child.kill()?;
+    let _ = child.wait()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn configure_process_group(process: &mut Command) {
+    unsafe {
+        process.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_process: &mut Command) {}
+
+fn append_process_error(error: &mut String, message: &str) {
+    if !error.is_empty() {
+        error.push('\n');
+    }
+    error.push_str(message);
 }
 
 pub struct OSDetector;
@@ -823,7 +1018,7 @@ impl OutputFormatter {
         let mut lines: Vec<&str> = s.lines().take(MAX_LINES).collect();
         let mut joined = lines.join("\n");
         if joined.len() > MAX_CHARS {
-            joined.truncate(MAX_CHARS);
+            truncate_utf8(&mut joined, MAX_CHARS);
             joined.push_str("\n...[truncated]");
             return joined;
         }
@@ -860,7 +1055,7 @@ fn summarize_file_preview(path: &str, max_lines: usize, max_chars: usize) -> Opt
     }
     let mut out = collected.join("\n");
     if out.len() > max_chars {
-        out.truncate(max_chars);
+        truncate_utf8(&mut out, max_chars);
         out.push_str("\n...[truncated]");
     } else if content.lines().count() > max_lines {
         out.push_str("\n...[truncated]");
@@ -888,4 +1083,92 @@ fn merge_shell_streams(stdout: &str, stderr: &str) -> String {
 
 fn single_quote_for_sh(input: &str) -> String {
     input.replace('\'', "'\"'\"'")
+}
+
+fn truncate_utf8(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    let mut boundary = max_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn process_timeout_terminates_child_group() {
+        let result = run_process_with_timeout(
+            "timeout",
+            "sleep",
+            Command::new("sh").args(["-c", "sleep 5"]),
+            Duration::from_millis(100),
+        );
+
+        assert!(!result.success);
+        assert!(result.error.contains("timed out"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_output_is_bounded() {
+        let result = run_process(
+            "output",
+            "large output",
+            Command::new("sh").args(["-c", "yes x | head -c 300000"]),
+        );
+
+        assert!(!result.success);
+        assert!(result.error.contains("output exceeded"));
+        assert!(result.output.len() <= MAX_CHARS);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_success_and_failure_are_reported() {
+        let success = run_process(
+            "success",
+            "printf",
+            Command::new("sh").args(["-c", "printf ok"]),
+        );
+        assert!(success.success);
+        assert_eq!(success.output, "ok");
+
+        let failure = run_process(
+            "failure",
+            "exit",
+            Command::new("sh").args(["-c", "printf failed >&2; exit 7"]),
+        );
+        assert!(!failure.success);
+        assert!(failure.error.contains("failed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_shell_input_limit_is_checked_before_decode() {
+        let executor = CommandExecutor::Linux;
+        let encoded = general_purpose::STANDARD.encode(vec![b'x'; MAX_RAW_COMMAND_BYTES + 1]);
+        let error = executor
+            .run_linux_shell_raw(&encoded)
+            .expect_err("oversized raw command must be rejected");
+        assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn shell_quoting_preserves_single_quotes() {
+        assert_eq!(single_quote_for_sh("echo 'ok'"), "echo '\"'\"'ok'\"'\"'");
+    }
+
+    #[test]
+    fn output_truncation_preserves_utf8_boundaries() {
+        let input = "é".repeat(MAX_CHARS);
+        let truncated = OutputFormatter::truncate(&input);
+        assert!(truncated.ends_with("...[truncated]"));
+        assert!(truncated.is_char_boundary(truncated.len()));
+    }
 }

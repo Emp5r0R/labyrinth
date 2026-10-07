@@ -111,9 +111,16 @@ impl SystemInfoCollector {
                     || ip.is_link_local()
                     || ip.is_broadcast()
                     || ip.is_documentation()
+                    || ip.is_multicast()
                     || ip.is_unspecified())
             }
-            IpAddr::V6(ip) => !(ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local()),
+            IpAddr::V6(ip) => {
+                !(ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_unique_local()
+                    || ip.is_unicast_link_local()
+                    || ip.is_multicast())
+            }
         }
     }
 
@@ -422,6 +429,7 @@ impl SystemInfoCollector {
 #[cfg(test)]
 mod tests {
     use super::SystemInfoCollector;
+    use crate::protocol::InternetAccess;
 
     #[test]
     fn parses_linux_ip_addr_output_with_cidr() {
@@ -461,5 +469,100 @@ en0: flags=8863<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500
         assert_eq!(interfaces[0].name, "en0");
         assert_eq!(interfaces[0].addresses, vec!["172.16.7.20/16"]);
         assert_eq!(interfaces[0].hardware_addr, "00:11:22:33:44:55");
+    }
+
+    #[test]
+    fn public_ip_classification() {
+        for public in ["8.8.8.8", "1.1.1.1", "2606:4700::1111"] {
+            assert!(
+                SystemInfoCollector::is_public_ip(public.parse().unwrap()),
+                "{public}"
+            );
+        }
+        for private in [
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.1.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "255.255.255.255",
+            "192.0.2.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "::1",
+            "::",
+            "fd00::1",
+            "fe80::1",
+            "ff02::1",
+        ] {
+            assert!(
+                !SystemInfoCollector::is_public_ip(private.parse().unwrap()),
+                "{private}"
+            );
+        }
+        assert_eq!(
+            SystemInfoCollector::parse_public_socket_ip("8.8.8.8:443"),
+            Some(true)
+        );
+        assert_eq!(
+            SystemInfoCollector::parse_public_socket_ip("10.0.0.1:443"),
+            Some(false)
+        );
+        assert_eq!(
+            SystemInfoCollector::parse_public_socket_ip("example.com:443"),
+            None
+        );
+    }
+
+    #[test]
+    fn netmask_to_prefix_handles_dotted_hex_and_rejects_holes() {
+        assert_eq!(
+            SystemInfoCollector::netmask_to_prefix("255.255.255.0"),
+            Some(24)
+        );
+        assert_eq!(
+            SystemInfoCollector::netmask_to_prefix("0xffff0000"),
+            Some(16)
+        );
+        assert_eq!(SystemInfoCollector::netmask_to_prefix("0.0.0.0"), Some(0));
+        assert_eq!(
+            SystemInfoCollector::netmask_to_prefix("255.255.255.255"),
+            Some(32)
+        );
+        assert_eq!(SystemInfoCollector::netmask_to_prefix("255.0.255.0"), None);
+        assert_eq!(SystemInfoCollector::netmask_to_prefix("0xzz"), None);
+        assert_eq!(SystemInfoCollector::netmask_to_prefix("garbage"), None);
+    }
+
+    #[tokio::test]
+    async fn connectivity_reports_reachable_local_server() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let report = SystemInfoCollector::collect_connectivity(Some(&addr), true).await;
+        assert!(report.server_reachable);
+        assert_eq!(report.checked_target.as_deref(), Some(addr.as_str()));
+        // Loopback is reachable but not proof of internet access.
+        assert_eq!(report.internet_access, InternetAccess::ServerReachable);
+    }
+
+    #[tokio::test]
+    async fn connectivity_reports_unreachable_server_without_claiming_access() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let report = SystemInfoCollector::collect_connectivity(Some(&addr), true).await;
+        assert!(!report.server_reachable);
+        assert!(matches!(
+            report.internet_access,
+            InternetAccess::RouteOnly | InternetAccess::Unreachable
+        ));
+    }
+
+    #[tokio::test]
+    async fn proxied_transport_skips_direct_server_probe() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let report = SystemInfoCollector::collect_connectivity(Some(&addr), false).await;
+        assert!(!report.server_reachable, "probed server despite proxy mode");
     }
 }

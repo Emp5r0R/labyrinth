@@ -404,4 +404,179 @@ mod tests {
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].agents.len(), 2);
     }
+
+    fn iface_with_flags(name: &str, address: &str, flags: &[&str]) -> NetworkInterface {
+        NetworkInterface {
+            flags: flags.iter().map(|f| f.to_string()).collect(),
+            ..iface(name, vec![address])
+        }
+    }
+
+    #[test]
+    fn normalize_ipv4_cidr_rejects_malformed_input() {
+        for bad in [
+            "10.0.0.1",
+            "10.0.0.1/33",
+            "10.0.0.1/-1",
+            "10.0.0/24",
+            "/24",
+            "10.0.0.1/",
+            "fe80::1/64",
+            "",
+        ] {
+            assert!(
+                TopologyManager::normalize_ipv4_cidr(bad).is_none(),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            TopologyManager::normalize_ipv4_cidr("10.1.2.3/0")
+                .unwrap()
+                .0,
+            "0.0.0.0/0"
+        );
+        assert_eq!(
+            TopologyManager::normalize_ipv4_cidr("10.1.2.3/32")
+                .unwrap()
+                .0,
+            "10.1.2.3/32"
+        );
+    }
+
+    #[test]
+    fn route_contains_ip_edges() {
+        use std::net::Ipv4Addr;
+        let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
+        assert!(TopologyManager::route_contains_ip(
+            "0.0.0.0/0",
+            ip("203.0.113.9")
+        ));
+        assert!(TopologyManager::route_contains_ip(
+            "10.0.0.5/32",
+            ip("10.0.0.5")
+        ));
+        assert!(!TopologyManager::route_contains_ip(
+            "10.0.0.5/32",
+            ip("10.0.0.6")
+        ));
+        assert!(TopologyManager::route_contains_ip(
+            "10.0.0.0/24",
+            ip("10.0.0.255")
+        ));
+        assert!(!TopologyManager::route_contains_ip(
+            "10.0.0.0/24",
+            ip("10.0.1.0")
+        ));
+        // Host bits in the CIDR are ignored.
+        assert!(TopologyManager::route_contains_ip(
+            "10.0.0.77/24",
+            ip("10.0.0.1")
+        ));
+        assert!(!TopologyManager::route_contains_ip(
+            "not-a-cidr",
+            ip("10.0.0.1")
+        ));
+    }
+
+    #[test]
+    fn detect_routes_skips_non_routable_and_loopback_interfaces() {
+        let interfaces = vec![
+            iface(
+                "eth0",
+                vec!["169.254.10.10/16", "224.0.0.5/4", "0.0.0.0/8", "fe80::1/64"],
+            ),
+            iface("eth1", vec!["10.9.9.9/0"]),
+            iface("lo:1", vec!["10.10.10.10/24"]),
+            iface_with_flags("tap0", "10.20.20.20/24", &["UP", "LOOPBACK"]),
+        ];
+        assert!(TopologyManager::detect_agent_routes(&interfaces).is_empty());
+        assert!(TopologyManager::best_route_for_agent(&interfaces).is_none());
+        assert!(TopologyManager::best_route_for_agent(&[]).is_none());
+    }
+
+    #[test]
+    fn scoring_prefers_physical_private_lan_over_virtual_and_public() {
+        let interfaces = vec![
+            iface("docker0", vec!["172.17.0.1/16"]),
+            iface("veth12ab", vec!["172.18.0.1/24"]),
+            iface("eth0", vec!["203.0.113.10/24"]),
+            iface_with_flags("ens3", "192.168.56.10/24", &["UP", "LOWER_UP"]),
+            iface_with_flags("wlan0", "10.50.0.3/32", &["UP"]),
+        ];
+        let routes = TopologyManager::detect_agent_routes(&interfaces);
+        assert_eq!(routes[0].cidr, "192.168.56.0/24");
+        assert_eq!(routes[0].interface_name, "ens3");
+        let position = |cidr: &str| routes.iter().position(|r| r.cidr == cidr).unwrap();
+        // Private physical LAN beats public, and beats container bridges.
+        assert!(position("192.168.56.0/24") < position("203.0.113.0/24"));
+        assert!(position("192.168.56.0/24") < position("172.17.0.0/16"));
+        assert!(position("192.168.56.0/24") < position("172.18.0.0/24"));
+        let score = |cidr: &str| routes[position(cidr)].score;
+        // Same address on a container bridge: -80 penalty and no +10 NIC-name bonus.
+        let physical_equivalent =
+            TopologyManager::detect_agent_routes(&[iface("eth9", vec!["172.17.0.1/16"])])[0].score;
+        assert_eq!(physical_equivalent - score("172.17.0.0/16"), 90);
+        assert!(routes.windows(2).all(|w| w[0].score >= w[1].score));
+    }
+
+    #[test]
+    fn build_snapshot_groups_shared_lans_and_flags_overlaps() {
+        use crate::protocol::{AgentInfo, AgentKind};
+        use crate::server::core::ConnectedAgent;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use tokio::sync::{mpsc, Mutex};
+
+        let make = |id: &str, cidrs: Vec<&str>| {
+            let (sender, _rx) = mpsc::channel(1);
+            ConnectedAgent {
+                id: id.into(),
+                info: AgentInfo {
+                    name: id.to_uppercase(),
+                    hostname: id.into(),
+                    os: "linux".into(),
+                    arch: "x86_64".into(),
+                    interfaces: vec![iface("eth0", cidrs)],
+                    auth_key: None,
+                    kind: AgentKind::Generic,
+                    stable_id: None,
+                    listener_addr: None,
+                    listener_port: None,
+                    connectivity: Default::default(),
+                },
+                sender,
+                transport_label: "tcp/tls".into(),
+                quic_connection: None,
+                tunnel_active: false,
+                tunnel_subnet: None,
+                tun_name: None,
+                last_seen: Arc::new(Mutex::new(std::time::Instant::now())),
+                command_response: Arc::new(Mutex::new(None)),
+                shell_events: Arc::new(Mutex::new(None)),
+            }
+        };
+        let mut agents = HashMap::new();
+        agents.insert("a".to_string(), make("a", vec!["10.0.5.4/24"]));
+        agents.insert("b".to_string(), make("b", vec!["10.0.5.9/24"]));
+        agents.insert("c".to_string(), make("c", vec!["10.0.0.1/16"]));
+        agents.insert("d".to_string(), make("d", vec!["192.168.7.7/24"]));
+
+        let snapshot = TopologyManager::build_snapshot(&agents);
+        assert_eq!(snapshot.routes.len(), 4);
+        assert_eq!(snapshot.shared_routes.len(), 1);
+        assert_eq!(snapshot.shared_routes[0].cidr, "10.0.5.0/24");
+        assert_eq!(snapshot.shared_routes[0].agents.len(), 2);
+
+        let all_conflicting: std::collections::BTreeSet<_> = snapshot
+            .conflicts
+            .iter()
+            .flat_map(|c| c.agents.iter().cloned())
+            .collect();
+        assert!(all_conflicting.contains("C (c)"));
+        assert!(all_conflicting.contains("A (a)"));
+        assert!(!all_conflicting.iter().any(|a| a.contains("(d)")));
+
+        // Deterministic regardless of HashMap iteration order.
+        assert_eq!(snapshot, TopologyManager::build_snapshot(&agents));
+    }
 }

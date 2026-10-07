@@ -472,16 +472,24 @@ impl ChainManager {
         println!();
     }
 
+    /// Longest-prefix match, like a routing table: an agent sitting directly
+    /// on the target's /24 beats one advertising an enclosing /16. Score and
+    /// IDs only break ties so the choice is deterministic.
     fn best_route_for_target(routes: &[AgentRoute], target_ip: Ipv4Addr) -> Option<AgentRoute> {
+        let prefix_len = |route: &AgentRoute| {
+            TopologyManager::normalize_ipv4_cidr(&route.cidr)
+                .map(|(_, _, prefix)| prefix)
+                .unwrap_or(0)
+        };
         let mut candidates: Vec<_> = routes
             .iter()
             .filter(|route| TopologyManager::route_contains_ip(&route.cidr, target_ip))
             .cloned()
             .collect();
         candidates.sort_by(|left, right| {
-            right
-                .score
-                .cmp(&left.score)
+            prefix_len(right)
+                .cmp(&prefix_len(left))
+                .then_with(|| right.score.cmp(&left.score))
                 .then_with(|| left.cidr.cmp(&right.cidr))
                 .then_with(|| left.agent_id.cmp(&right.agent_id))
         });
@@ -553,6 +561,19 @@ mod tests {
     use std::time::Instant;
     use tokio::sync::{mpsc, Mutex};
 
+    trait AddInterface {
+        fn interfaces_mut_add(&mut self, cidr: &str);
+    }
+
+    impl AddInterface for ConnectedAgent {
+        fn interfaces_mut_add(&mut self, cidr: &str) {
+            let mut extra = self.info.interfaces[0].clone();
+            extra.name = "eth1".into();
+            extra.addresses = vec![cidr.into()];
+            self.info.interfaces.push(extra);
+        }
+    }
+
     fn agent(id: &str, name: &str, cidr: &str) -> ConnectedAgent {
         let (sender, _rx) = mpsc::channel(1);
         ConnectedAgent {
@@ -623,5 +644,243 @@ mod tests {
             .unwrap();
         assert!(plan.ready);
         assert!(matches!(&plan.actions[0], ChainAction::ReuseTunnel { .. }));
+    }
+
+    fn record(id: &str, listen_addr: &str) -> DwellerRecord {
+        DwellerRecord::from_receipt(
+            crate::protocol::DwellerInstallReceipt {
+                dweller_id: id.into(),
+                dweller_name: format!("{id}-name"),
+                hostname: "h".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+                listen_addr: listen_addr.into(),
+                listen_port: 45454,
+                fingerprint: "00".repeat(32),
+                install_path: "/x".into(),
+                config_dir: "/y".into(),
+                service_name: "svc".into(),
+                callback_servers: vec![],
+                parent_path: vec![],
+                hibernation: Default::default(),
+            },
+            "secret".into(),
+        )
+    }
+
+    fn server_with_registry() -> LabyrinthServer {
+        LabyrinthServer::new(false, None)
+            .with_dweller_registry(crate::server::dweller_registry::DwellerRegistry::in_memory())
+    }
+
+    #[test]
+    fn parse_target_accepts_ip_and_cidr_and_rejects_others() {
+        let target = ChainManager::parse_target(" 10.0.0.5 ").unwrap();
+        assert_eq!(target.display, "10.0.0.5/32");
+        assert_eq!(target.ip, Ipv4Addr::new(10, 0, 0, 5));
+        let target = ChainManager::parse_target("10.0.0.5/24").unwrap();
+        assert_eq!(target.display, "10.0.0.0/24");
+        for bad in [
+            "",
+            "  ",
+            "host.internal",
+            "10.0.0.256",
+            "10.0.0.0/33",
+            "::1",
+        ] {
+            assert!(ChainManager::parse_target(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn tun_names_are_short_safe_and_deterministic() {
+        assert_eq!(ChainManager::tun_name_for_agent("Agent-A"), "lab-agenta");
+        assert_eq!(ChainManager::tun_name_for_agent("!!!"), "lab-chain");
+        let long = ChainManager::tun_name_for_agent("0123456789abcdef");
+        assert_eq!(long, "lab-01234567");
+        // Linux IFNAMSIZ is 16 including NUL.
+        assert!(long.len() <= 15);
+        assert!(long.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    }
+
+    #[tokio::test]
+    async fn plan_prefers_most_specific_route() {
+        let server = server_with_registry();
+        server
+            .agents()
+            .write()
+            .await
+            .insert("wide".into(), agent("wide", "Wide", "10.0.1.4/16"));
+        server
+            .agents()
+            .write()
+            .await
+            .insert("near".into(), agent("near", "Near", "10.0.5.4/24"));
+
+        let plan = ChainManager::build_plan(&server, "10.0.5.20")
+            .await
+            .unwrap();
+        assert!(matches!(
+            &plan.actions[0],
+            ChainAction::StartTunnel { agent_id, cidr, .. }
+                if agent_id == "near" && cidr == "10.0.5.0/24"
+        ));
+        // Outside the /24 only the /16 can reach it.
+        let plan = ChainManager::build_plan(&server, "10.0.9.1").await.unwrap();
+        assert!(matches!(
+            &plan.actions[0],
+            ChainAction::StartTunnel { agent_id, .. } if agent_id == "wide"
+        ));
+    }
+
+    #[tokio::test]
+    async fn plan_is_blocked_when_owner_tunnel_serves_another_subnet() {
+        let server = server_with_registry();
+        let mut busy = agent("a", "A", "172.16.10.4/24");
+        busy.interfaces_mut_add("192.168.50.4/24");
+        busy.tunnel_active = true;
+        busy.tunnel_subnet = Some("192.168.50.0/24".into());
+        server.agents().write().await.insert("a".into(), busy);
+
+        let plan = ChainManager::build_plan(&server, "172.16.10.9")
+            .await
+            .unwrap();
+        assert!(!plan.ready);
+        assert!(matches!(
+            &plan.actions[..],
+            [ChainAction::Blocked { reason }] if reason.contains("already has an active tunnel")
+        ));
+    }
+
+    #[tokio::test]
+    async fn plan_is_blocked_without_any_route() {
+        let server = server_with_registry();
+        server
+            .agents()
+            .write()
+            .await
+            .insert("a".into(), agent("a", "A", "172.16.10.4/24"));
+        let plan = ChainManager::build_plan(&server, "8.8.8.8").await.unwrap();
+        assert_eq!(plan.target, "8.8.8.8/32");
+        assert!(matches!(&plan.actions[..], [ChainAction::Blocked { .. }]));
+    }
+
+    #[tokio::test]
+    async fn plan_routes_through_remembered_dweller_behind_agent() {
+        let server = server_with_registry();
+        server
+            .agents()
+            .write()
+            .await
+            .insert("a".into(), agent("a", "A", "10.20.0.4/24"));
+        server
+            .dweller_registry()
+            .write()
+            .await
+            .upsert(record("dw", "10.20.0.9"));
+
+        let plan = ChainManager::build_plan(&server, "192.168.99.5")
+            .await
+            .unwrap();
+        assert!(!plan.ready);
+        assert!(matches!(
+            &plan.actions[..],
+            [
+                ChainAction::StartTunnel { agent_id, .. },
+                ChainAction::ConnectDweller { dweller_id, address, .. },
+                ChainAction::RetryAfterDweller { .. },
+            ] if agent_id == "a" && dweller_id == "dw" && address == "10.20.0.9:45454"
+        ));
+
+        // Parent tunnel already covering the dweller: reuse it.
+        {
+            let mut agents = server.agents().write().await;
+            let parent = agents.get_mut("a").unwrap();
+            parent.tunnel_active = true;
+            parent.tunnel_subnet = Some("10.20.0.0/24".into());
+        }
+        let plan = ChainManager::build_plan(&server, "192.168.99.5")
+            .await
+            .unwrap();
+        assert!(matches!(&plan.actions[0], ChainAction::ReuseTunnel { .. }));
+    }
+
+    #[tokio::test]
+    async fn connected_or_unreachable_dwellers_are_not_planned() {
+        let server = server_with_registry();
+        server
+            .agents()
+            .write()
+            .await
+            .insert("a".into(), agent("a", "A", "10.20.0.4/24"));
+        server
+            .dweller_registry()
+            .write()
+            .await
+            .upsert(record("far", "10.99.0.9"));
+        let plan = ChainManager::build_plan(&server, "192.168.99.5")
+            .await
+            .unwrap();
+        assert!(matches!(&plan.actions[..], [ChainAction::Blocked { .. }]));
+
+        server
+            .dweller_registry()
+            .write()
+            .await
+            .upsert(record("dw", "10.20.0.9"));
+        server
+            .agents()
+            .write()
+            .await
+            .insert("dw".into(), agent("dw", "DW", "10.30.0.4/24"));
+        let plan = ChainManager::build_plan(&server, "192.168.99.5")
+            .await
+            .unwrap();
+        assert!(matches!(&plan.actions[..], [ChainAction::Blocked { .. }]));
+    }
+
+    #[tokio::test]
+    async fn plan_is_read_only_and_deterministic() {
+        // AGENTS.md contract: `plan` never mutates tunnels, dwellers or selection.
+        let server = server_with_registry();
+        server
+            .agents()
+            .write()
+            .await
+            .insert("a".into(), agent("a", "A", "10.20.0.4/24"));
+        server
+            .dweller_registry()
+            .write()
+            .await
+            .upsert(record("dw", "10.20.0.9"));
+
+        let snapshot = |server: &LabyrinthServer| {
+            let server = server.clone_for_tasks();
+            async move {
+                let agents = server.agents().read().await;
+                let mut state: Vec<_> = agents
+                    .values()
+                    .map(|a| (a.id.clone(), a.tunnel_active, a.tunnel_subnet.clone()))
+                    .collect();
+                state.sort();
+                let registry = server.dweller_registry().read().await;
+                let dwellers = serde_json::to_string(&registry.list()).unwrap();
+                (state, dwellers, server.current_agent().read().await.clone())
+            }
+        };
+
+        let before = snapshot(&server).await;
+        let first = ChainManager::build_plan(&server, "192.168.99.5")
+            .await
+            .unwrap();
+        for target in ["10.20.0.50", "192.168.99.5", "8.8.8.8", "10.20.0.0/24"] {
+            ChainManager::build_plan(&server, target).await.unwrap();
+        }
+        let _ = ChainManager::suggestions(&server).await;
+        let again = ChainManager::build_plan(&server, "192.168.99.5")
+            .await
+            .unwrap();
+        assert_eq!(first, again);
+        assert_eq!(before, snapshot(&server).await);
     }
 }

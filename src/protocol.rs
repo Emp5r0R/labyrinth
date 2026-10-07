@@ -390,3 +390,248 @@ impl Message {
     // Removed unused helper methods for streaming protocol
     // These methods were never used and added unnecessary complexity
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::streaming::models::{CloseReason, DataDirection, PortMapping};
+    use serde_json::{json, Value};
+
+    fn wire(message: &Message) -> Value {
+        serde_json::to_value(message).unwrap()
+    }
+
+    fn round_trip(message: &Message) -> Message {
+        serde_json::from_value(wire(message)).unwrap()
+    }
+
+    #[test]
+    fn unit_variants_use_bare_string_tags() {
+        // Older peers depend on these exact encodings.
+        assert_eq!(wire(&Message::Ping), json!("Ping"));
+        assert_eq!(wire(&Message::Pong), json!("Pong"));
+        assert_eq!(wire(&Message::AgentAck), json!("AgentAck"));
+        assert_eq!(wire(&Message::StopTunnel), json!("StopTunnel"));
+        assert_eq!(wire(&Message::TunnelStarted), json!("TunnelStarted"));
+        assert_eq!(wire(&Message::TunnelStopped), json!("TunnelStopped"));
+    }
+
+    #[test]
+    fn struct_variants_are_externally_tagged() {
+        assert_eq!(
+            wire(&Message::CommandRequest {
+                command: "id".into()
+            }),
+            json!({"CommandRequest": {"command": "id"}})
+        );
+        assert_eq!(
+            wire(&Message::DwellerHello {
+                auth_key: "k".into()
+            }),
+            json!({"DwellerHello": {"auth_key": "k"}})
+        );
+        assert_eq!(
+            wire(&Message::StartTunnel {
+                subnet: "10.0.0.0/24".into(),
+                tun_name: "lab0".into()
+            }),
+            json!({"StartTunnel": {"subnet": "10.0.0.0/24", "tun_name": "lab0"}})
+        );
+    }
+
+    #[test]
+    fn agent_register_from_older_peer_defaults_connectivity() {
+        let legacy = json!({"AgentRegister": {
+            "name": "a", "hostname": "h", "os": "linux", "arch": "x86_64",
+            "interfaces": [], "auth_key": null, "kind": "Generic",
+            "stable_id": null, "listener_addr": null, "listener_port": null
+        }});
+        match serde_json::from_value::<Message>(legacy).unwrap() {
+            Message::AgentRegister(info) => {
+                assert_eq!(info.connectivity, ConnectivityReport::default());
+                assert_eq!(info.connectivity.internet_access, InternetAccess::Unknown);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hibernation_defaults_apply_to_missing_and_partial_fields() {
+        let empty: DwellerHibernationConfig = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(empty, DwellerHibernationConfig::default());
+        assert!(empty.enabled);
+        assert_eq!(empty.sleep_seconds, 60);
+        assert_eq!(empty.jitter_percent, 50);
+        assert_eq!(empty.task_batch_size, 10);
+
+        let partial: DwellerHibernationConfig =
+            serde_json::from_value(json!({"enabled": false, "sleep_seconds": 5})).unwrap();
+        assert!(!partial.enabled);
+        assert_eq!(partial.sleep_seconds, 5);
+        assert_eq!(partial.task_batch_size, 10);
+    }
+
+    #[test]
+    fn callback_endpoint_and_runtime_config_tolerate_missing_optional_fields() {
+        let endpoint: DwellerServerEndpoint = serde_json::from_value(json!({
+            "address": "10.0.0.1:44344", "fingerprint": null, "transport": "quic"
+        }))
+        .unwrap();
+        assert!(endpoint.sni.is_none());
+        assert!(endpoint.alpn.is_empty());
+
+        let runtime: DwellerRuntimeConfig = serde_json::from_value(json!({})).unwrap();
+        assert!(runtime.callback_servers.is_empty());
+        assert_eq!(runtime.hibernation, DwellerHibernationConfig::default());
+    }
+
+    #[test]
+    fn dweller_task_round_trips_with_defaults() {
+        let task: DwellerTask = serde_json::from_value(json!({
+            "task_id": "t1",
+            "kind": {"Command": {"command": "whoami"}},
+            "status": "Pending",
+            "created_at": "now"
+        }))
+        .unwrap();
+        assert_eq!(task.attempts, 0);
+        assert!(task.updated_at.is_none() && task.result.is_none());
+        let encoded = serde_json::to_value(&task).unwrap();
+        assert_eq!(
+            serde_json::from_value::<DwellerTask>(encoded).unwrap(),
+            task
+        );
+
+        let stop: DwellerTaskKind = serde_json::from_value(json!("StopTunnel")).unwrap();
+        assert_eq!(stop, DwellerTaskKind::StopTunnel);
+    }
+
+    #[test]
+    fn stream_messages_round_trip_including_binary_payload() {
+        let id = uuid::Uuid::new_v4();
+        let payload: Vec<u8> = (0..=255).collect();
+        let messages = [
+            Message::Stream(StreamMessage::Setup {
+                connection_id: id,
+                mapping: PortMapping {
+                    local_port: 8080,
+                    target_host: "[2001:db8::1]".into(),
+                    target_port: 443,
+                },
+            }),
+            Message::Stream(StreamMessage::Data {
+                connection_id: id,
+                payload: bytes::Bytes::from(payload.clone()),
+                direction: DataDirection::ClientToTarget,
+            }),
+            Message::Stream(StreamMessage::Close {
+                connection_id: id,
+                reason: CloseReason::ProtocolError("reset".into()),
+            }),
+            Message::Stream(StreamMessage::SetupAck {
+                connection_id: id,
+                success: false,
+                error_message: Some("refused".into()),
+            }),
+        ];
+        for message in &messages {
+            assert_eq!(wire(&round_trip(message)), wire(message));
+        }
+        match round_trip(&messages[1]) {
+            Message::Stream(StreamMessage::Data { payload: got, .. }) => {
+                assert_eq!(&got[..], &payload[..])
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_variants_and_wrong_shapes_are_rejected() {
+        for bad in [
+            json!("NotAMessage"),
+            json!({"CommandRequest": {}}),
+            json!({"CommandRequest": {"command": 7}}),
+            json!({"PortalPortForward": {"local_port": 70000, "target_addr": "x", "auth_key": null}}),
+            json!(42),
+            json!(null),
+        ] {
+            assert!(
+                serde_json::from_value::<Message>(bad.clone()).is_err(),
+                "{bad} should not decode"
+            );
+        }
+    }
+
+    #[test]
+    fn every_control_message_survives_the_frame_codec() {
+        use crate::framing::FrameCodec;
+        let id = "s1".to_string();
+        let messages = vec![
+            Message::Ping,
+            Message::ConfigureDweller {
+                config: DwellerRuntimeConfig::default(),
+            },
+            Message::ConfigureDwellerResponse {
+                success: true,
+                message: "ok".into(),
+            },
+            Message::DwellerPollTasks {
+                dweller_id: "d".into(),
+                max_tasks: 3,
+            },
+            Message::DwellerTasks { tasks: vec![] },
+            Message::PortalPortForward {
+                local_port: 1,
+                target_addr: "10.0.0.1:22".into(),
+                auth_key: None,
+            },
+            Message::ReversePortForwardSetup {
+                connection_id: "c".into(),
+                local_port: 1,
+                target_host: "h".into(),
+                target_port: 2,
+            },
+            Message::DataPacket(vec![0, 10, 13, 255]),
+            Message::CommandResponse {
+                output: "line1\nline2\r\n\u{0}".into(),
+                error: Some("e".into()),
+            },
+            Message::FileDownloadResponse {
+                success: true,
+                message: String::new(),
+                remote_path: "/etc/hostname".into(),
+                content_b64: Some("aGk=".into()),
+            },
+            Message::ShellSessionStart {
+                session_id: id.clone(),
+                cols: 80,
+                rows: 24,
+            },
+            Message::ShellSessionInput {
+                session_id: id.clone(),
+                data_b64: "bHMK".into(),
+            },
+            Message::ShellSessionResize {
+                session_id: id.clone(),
+                cols: 200,
+                rows: 50,
+            },
+            Message::ShellSessionClose { session_id: id },
+            Message::BofExecutionRequest {
+                bof_data: vec![1, 2, 3],
+                args: vec![],
+                entry_point: "go".into(),
+            },
+            Message::ReflectiveLoadRequest {
+                pe_data: vec![b'M', b'Z'],
+                args: "-x".into(),
+            },
+        ];
+        for message in messages {
+            let frame = FrameCodec::CONTROL.encode(&message).unwrap();
+            assert_eq!(frame.iter().filter(|b| **b == b'\n').count(), 1);
+            let decoded: Message = FrameCodec::CONTROL.decode(&frame).unwrap();
+            assert_eq!(wire(&decoded), wire(&message));
+        }
+    }
+}

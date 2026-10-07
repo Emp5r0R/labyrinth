@@ -1,11 +1,15 @@
 use crate::error::{LabyrinthError, Result};
-use crate::protocol::Message;
+use crate::portal;
 use crate::server::core::LabyrinthServer;
-use crate::streaming::models::{ConnectionId, ConnectionStatus, PortMapping, StreamMessage};
+use crate::server::reverse_port_forward::{
+    read_quic_setup_ack, DEFAULT_CONNECT_TIMEOUT, DEFAULT_IDLE_TIMEOUT,
+};
+use crate::streaming::models::{ConnectionId, ConnectionStatus, PortMapping};
 use crate::transport::QuicBidiStream;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 use tracing::{debug, error, info};
 
 pub struct QuicStreamBridge;
@@ -31,15 +35,7 @@ impl QuicStreamBridge {
                 })?
         };
 
-        tokio::spawn(async move {
-            if let Err(e) =
-                Self::run_stream(server, connection, connection_id, client_socket, mapping).await
-            {
-                error!("QUIC stream {} failed: {}", connection_id, e);
-            }
-        });
-
-        Ok(())
+        Self::run_stream(server, connection, connection_id, client_socket, mapping).await
     }
 
     async fn run_stream(
@@ -54,87 +50,57 @@ impl QuicStreamBridge {
             .await
             .map_err(|e| LabyrinthError::Message(format!("Failed to open QUIC stream: {}", e)))?;
 
-        let setup = Message::Stream(StreamMessage::Setup {
-            connection_id,
-            mapping,
-        });
-        let setup_line = serde_json::to_string(&setup)?;
-        send.write_all(setup_line.as_bytes())
-            .await
-            .map_err(|e| LabyrinthError::Message(format!("QUIC write failed: {}", e)))?;
-        send.write_all(b"\n")
-            .await
-            .map_err(|e| LabyrinthError::Message(format!("QUIC write failed: {}", e)))?;
+        portal::write_quic_setup(&mut send, connection_id, mapping).await?;
 
         let mut reader = BufReader::new(recv);
-        let mut ack_buf = Vec::new();
-        reader.read_until(b'\n', &mut ack_buf).await?;
-        let ack: Message = serde_json::from_slice(&ack_buf[..ack_buf.len().saturating_sub(1)])?;
-        match ack {
-            Message::Stream(StreamMessage::SetupAck {
-                success: true,
-                connection_id: ack_id,
-                ..
-            }) if ack_id == connection_id => {
-                if let Some(cm) = server.get_connection_manager().await {
-                    let _ = cm
-                        .update_connection_status(&connection_id, ConnectionStatus::Active)
-                        .await;
-                }
+        if let Err(error) =
+            read_quic_setup_ack(&mut reader, DEFAULT_CONNECT_TIMEOUT, connection_id).await
+        {
+            if let Some(cm) = server.get_connection_manager().await {
+                let _ = cm
+                    .update_connection_status(
+                        &connection_id,
+                        ConnectionStatus::Error(error.to_string()),
+                    )
+                    .await;
             }
-            Message::Stream(StreamMessage::SetupAck {
-                success: false,
-                error_message,
-                ..
-            }) => {
-                let reason = error_message.unwrap_or_else(|| "target setup failed".to_string());
-                if let Some(cm) = server.get_connection_manager().await {
-                    let _ = cm
-                        .update_connection_status(
-                            &connection_id,
-                            ConnectionStatus::Error(reason.clone()),
-                        )
-                        .await;
-                    let _ = cm.cleanup_connection(&connection_id).await;
-                }
-                let _ = server.unregister_connection_owner(&connection_id).await;
-                return Err(LabyrinthError::Message(reason));
-            }
-            other => {
-                let _ = server.unregister_connection_owner(&connection_id).await;
-                return Err(LabyrinthError::Message(format!(
-                    "Unexpected QUIC stream ack: {:?}",
-                    other
-                )));
-            }
+            server.cleanup_portal_connection(connection_id).await;
+            return Err(error);
+        }
+        if let Some(cm) = server.get_connection_manager().await {
+            let _ = cm
+                .update_connection_status(&connection_id, ConnectionStatus::Active)
+                .await;
         }
 
+        // Server-speaks-first targets (SSH, SMTP, MySQL) can send their banner
+        // in the same flight as the ack; it may already sit in our buffer.
+        let early_data = reader.buffer().to_vec();
+        if !early_data.is_empty() {
+            client_socket.write_all(&early_data).await?;
+        }
         let recv = reader.into_inner();
         let mut quic_stream = QuicBidiStream::new(send, recv);
         info!("QUIC native stream active for {}", connection_id);
 
-        match tokio::io::copy_bidirectional(&mut client_socket, &mut quic_stream).await {
-            Ok((client_to_agent, agent_to_client)) => {
+        match timeout(
+            DEFAULT_IDLE_TIMEOUT,
+            tokio::io::copy_bidirectional(&mut client_socket, &mut quic_stream),
+        )
+        .await
+        {
+            Err(_) => error!("QUIC stream {} idle timeout", connection_id),
+            Ok(Err(e)) => {
+                error!("QUIC stream {} copy failed: {}", connection_id, e);
+            }
+            Ok(Ok((client_to_agent, agent_to_client))) => {
                 debug!(
                     "QUIC stream {} closed after {} bytes client->agent and {} bytes agent->client",
                     connection_id, client_to_agent, agent_to_client
                 );
             }
-            Err(e) => {
-                error!("QUIC stream {} copy failed: {}", connection_id, e);
-            }
         }
-
-        if let Some(sm) = server.get_stream_manager().await {
-            let _ = sm.terminate_stream(connection_id).await;
-        }
-        if let Some(cm) = server.get_connection_manager().await {
-            let _ = cm
-                .update_connection_status(&connection_id, ConnectionStatus::Closing)
-                .await;
-            let _ = cm.cleanup_connection(&connection_id).await;
-        }
-        let _ = server.unregister_connection_owner(&connection_id).await;
+        server.cleanup_portal_connection(connection_id).await;
         Ok(())
     }
 }
@@ -269,7 +235,7 @@ mod tests {
             },
         );
 
-        QuicStreamBridge::create_bidirectional_stream(
+        let bridge_task = tokio::spawn(QuicStreamBridge::create_bidirectional_stream(
             Arc::clone(&server),
             agent_id,
             ConnectionId::new_v4(),
@@ -279,9 +245,7 @@ mod tests {
                 target_host: echo_addr.ip().to_string(),
                 target_port: echo_addr.port(),
             },
-        )
-        .await
-        .unwrap();
+        ));
 
         client_socket.write_all(b"labyrinth-quic").await.unwrap();
         let mut echoed = [0_u8; 14];
@@ -293,5 +257,108 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(&echoed, b"labyrinth-quic");
+        drop(client_socket);
+        bridge_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn quic_bridge_delivers_target_banner_sent_before_client_speaks() {
+        // Regression: bytes buffered alongside the setup ack were dropped by
+        // `into_inner()`, losing SSH/SMTP-style greetings.
+        let generated = SecurityManager::generate_self_signed_certificate("localhost").unwrap();
+        let (certs, key) = parse_generated_cert(&generated.cert_pem, &generated.key_pem);
+        let server_endpoint = quinn::Endpoint::server(
+            quic_server_config(certs, key),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .unwrap();
+        let mut client_endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        client_endpoint.set_default_client_config(quic_client_config(&generated.cert_pem));
+        let connecting = client_endpoint
+            .connect(server_endpoint.local_addr().unwrap(), "localhost")
+            .unwrap();
+        let incoming = server_endpoint.accept().await.unwrap();
+        let (client_connection, server_connection) = tokio::join!(connecting, incoming);
+        let (client_connection, server_connection) =
+            (client_connection.unwrap(), server_connection.unwrap());
+
+        let banner = b"SSH-2.0-OpenSSH_9.6\r\n";
+        // Fake agent: ack and the target's greeting leave in one write, so
+        // they land in the bridge's read buffer together.
+        tokio::spawn(async move {
+            let (mut send, recv) = client_connection.accept_bi().await.unwrap();
+            let mut recv = tokio::io::BufReader::new(recv);
+            let (connection_id, _) = portal::read_quic_setup(&mut recv, Duration::from_secs(5))
+                .await
+                .unwrap();
+            let mut flight = crate::framing::FrameCodec::SETUP
+                .encode(&crate::protocol::Message::Stream(
+                    crate::streaming::models::StreamMessage::SetupAck {
+                        connection_id,
+                        success: true,
+                        error_message: None,
+                    },
+                ))
+                .unwrap();
+            flight.extend_from_slice(banner);
+            send.write_all(&flight).await.unwrap();
+            let mut sink = Vec::new();
+            let _ = recv.read_to_end(&mut sink).await;
+        });
+        let target_addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+        let local = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = local.local_addr().unwrap();
+        let client_task = tokio::spawn(TcpStream::connect(local_addr));
+        let (bridge_socket, _) = local.accept().await.unwrap();
+        let mut client_socket = client_task.await.unwrap().unwrap();
+
+        let server = Arc::new(LabyrinthServer::new(false, None));
+        let bridge = tokio::spawn(QuicStreamBridge::run_stream(
+            server,
+            server_connection,
+            ConnectionId::new_v4(),
+            bridge_socket,
+            PortMapping {
+                local_port: local_addr.port(),
+                target_host: target_addr.ip().to_string(),
+                target_port: target_addr.port(),
+            },
+        ));
+
+        let mut received = vec![0u8; banner.len()];
+        timeout(
+            Duration::from_secs(5),
+            client_socket.read_exact(&mut received),
+        )
+        .await
+        .expect("banner never arrived")
+        .unwrap();
+        assert_eq!(&received, banner);
+        drop(client_socket);
+        let _ = timeout(Duration::from_secs(5), bridge).await;
+    }
+
+    #[tokio::test]
+    async fn bridge_requires_quic_connected_agent() {
+        let server = Arc::new(LabyrinthServer::new(false, None));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        let (socket, _) = accepted.unwrap();
+        let error = QuicStreamBridge::create_bidirectional_stream(
+            server,
+            "missing".into(),
+            ConnectionId::new_v4(),
+            socket,
+            PortMapping {
+                local_port: 1,
+                target_host: "127.0.0.1".into(),
+                target_port: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("not connected over QUIC"));
     }
 }

@@ -196,21 +196,26 @@ port forwards online.
 
 ## Verification
 
-Before submitting changes:
+Before submitting changes, run full production gate:
 
 ```bash
-cargo fmt -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-git diff --check
+./scripts/test-all.sh all
 ```
 
-For streaming-specific changes:
+Script also exposes focused modes:
 
 ```bash
-cargo test --test integration_streaming -- --nocapture
-cargo bench
+./scripts/test-all.sh unit         # library and binary unit tests
+./scripts/test-all.sh integration  # integration and streaming tests
+./scripts/test-all.sh network      # all networking units + real-socket e2e
+./scripts/test-all.sh e2e --filter quic --nocapture
+./scripts/test-all.sh --help       # every mode and option
 ```
+
+Full gate covers formatting, all unit/integration tests, Clippy, release
+binary compilation, documentation, and tracked-file hygiene. See
+[Operations](docs/operations.md) for focused shell/Portal checks and CI
+details.
 
 ## License and Responsibility
 

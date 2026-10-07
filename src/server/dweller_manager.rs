@@ -1,4 +1,5 @@
 use crate::error::{LabyrinthError, Result};
+use crate::framing::{FrameCodec, HANDSHAKE_TIMEOUT};
 use crate::protocol::{
     AgentInfo, AgentKind, DwellerHibernationConfig, DwellerInstallRequest, DwellerPathHop,
     DwellerRuntimeConfig, DwellerServerEndpoint, DwellerTaskKind, Message,
@@ -15,8 +16,8 @@ use dialoguer::{Confirm, Input, Select};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 
 pub struct DwellerManager;
@@ -428,37 +429,10 @@ impl DwellerManager {
             return Ok(());
         }
 
-        let config =
-            SecurityManager::create_tls_client_config(None, Some(record.fingerprint.clone()))?;
-        let connector = TlsConnector::from(Arc::new(config));
-        let stream = TcpStream::connect(record.socket_addr())
-            .await
-            .map_err(LabyrinthError::Io)?;
-        let server_name = rustls::pki_types::ServerName::try_from("localhost")?;
-        let mut tls_stream = connector
-            .connect(server_name, stream)
-            .await
-            .map_err(LabyrinthError::Io)?;
-
-        let hello = serde_json::to_string(&Message::DwellerHello {
-            auth_key: record.auth_key.clone(),
-        })?;
-        tls_stream
-            .write_all(hello.as_bytes())
-            .await
-            .map_err(LabyrinthError::Io)?;
-        tls_stream
-            .write_all(b"\n")
-            .await
-            .map_err(LabyrinthError::Io)?;
-
-        let mut buf = Vec::new();
-        let mut reader = tokio::io::BufReader::new(&mut tls_stream);
-        reader
-            .read_until(b'\n', &mut buf)
-            .await
-            .map_err(LabyrinthError::Io)?;
-        let register: Message = serde_json::from_slice(&buf[..buf.len() - 1])?;
+        let mut stream = Self::open_dweller_session(&record).await?;
+        let register: Message = FrameCodec::HANDSHAKE
+            .read_required(&mut stream, HANDSHAKE_TIMEOUT)
+            .await?;
         let agent_info = match register {
             Message::AgentRegister(info) => info,
             other => {
@@ -470,11 +444,10 @@ impl DwellerManager {
         };
 
         Self::validate_dweller_identity(&record, &agent_info)?;
-        drop(reader);
 
         AgentManager::register_live_agent(
             server.clone(),
-            tls_stream,
+            stream,
             agent_info,
             record.socket_addr(),
             "tcp/tls".to_string(),
@@ -787,6 +760,36 @@ impl DwellerManager {
         }
     }
 
+    /// Dial a remembered dweller over fingerprint-pinned TLS and send the
+    /// authenticated hello. Returns the buffered stream positioned at the
+    /// dweller's registration frame.
+    pub(crate) async fn open_dweller_session(
+        record: &DwellerRecord,
+    ) -> Result<tokio::io::BufReader<tokio_rustls::client::TlsStream<TcpStream>>> {
+        let config =
+            SecurityManager::create_tls_client_config(None, Some(record.fingerprint.clone()))?;
+        let connector = TlsConnector::from(Arc::new(config));
+        let stream = timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(record.socket_addr()))
+            .await
+            .map_err(|_| LabyrinthError::Message("Dweller connect timed out".into()))?
+            .map_err(LabyrinthError::Io)?;
+        let server_name = rustls::pki_types::ServerName::try_from("localhost")?;
+        let mut tls_stream = timeout(HANDSHAKE_TIMEOUT, connector.connect(server_name, stream))
+            .await
+            .map_err(|_| LabyrinthError::Message("Dweller TLS handshake timed out".into()))?
+            .map_err(LabyrinthError::Io)?;
+
+        FrameCodec::HANDSHAKE
+            .write(
+                &mut tls_stream,
+                &Message::DwellerHello {
+                    auth_key: record.auth_key.clone(),
+                },
+            )
+            .await?;
+        Ok(tokio::io::BufReader::new(tls_stream))
+    }
+
     fn validate_dweller_identity(record: &DwellerRecord, info: &AgentInfo) -> Result<()> {
         if !matches!(info.kind, AgentKind::Dweller) {
             return Err(LabyrinthError::Message(
@@ -965,5 +968,65 @@ mod tests {
         assert_eq!(secret.len(), 32);
         assert!(id.chars().all(|c| c.is_ascii_alphanumeric()));
         assert!(secret.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    /// Fake dweller: pinned TLS listener that returns the first frame it reads.
+    async fn fake_dweller() -> (DwellerRecord, tokio::task::JoinHandle<Option<Message>>) {
+        let identity = SecurityManager::generate_self_signed_certificate("dweller").unwrap();
+        let (certs, key) =
+            crate::security::parse_pem_pair(&identity.cert_pem, &identity.key_pem).unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(certs, key)
+                .unwrap(),
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.ok()?;
+            let tls = acceptor.accept(stream).await.ok()?;
+            let mut tls = tokio::io::BufReader::new(tls);
+            FrameCodec::HANDSHAKE.read(&mut tls).await.ok().flatten()
+        });
+        let mut record = sample_record();
+        record.listen_addr = addr.ip().to_string();
+        record.listen_port = addr.port();
+        record.fingerprint = SecurityManager::fingerprint_from_pem(&identity.cert_pem).unwrap();
+        record.auth_key = "dweller-secret".into();
+        (record, handle)
+    }
+
+    #[tokio::test]
+    async fn open_dweller_session_pins_tls_and_sends_hello() {
+        let (record, dweller) = fake_dweller().await;
+        let session = DwellerManager::open_dweller_session(&record).await.unwrap();
+        drop(session);
+        match dweller.await.unwrap() {
+            Some(Message::DwellerHello { auth_key }) => assert_eq!(auth_key, "dweller-secret"),
+            other => panic!("expected DwellerHello, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn open_dweller_session_refuses_unpinned_listener() {
+        let (mut record, dweller) = fake_dweller().await;
+        record.fingerprint = "ab".repeat(32);
+        assert!(DwellerManager::open_dweller_session(&record).await.is_err());
+        // The hello (and its secret) must never reach the impostor.
+        assert!(dweller.await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn open_dweller_session_reports_unreachable_listener() {
+        // Bound, never listening: refused, and the port stays reserved.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let mut record = sample_record();
+        record.listen_addr = "127.0.0.1".into();
+        record.listen_port = port;
+        record.fingerprint = "ab".repeat(32);
+        assert!(DwellerManager::open_dweller_session(&record).await.is_err());
     }
 }

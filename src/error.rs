@@ -36,6 +36,12 @@ pub enum LabyrinthError {
     #[error("SOCKS error: {0}")]
     Socks(#[from] tokio_socks::Error),
 
+    #[error("Frame exceeds {limit} byte limit")]
+    FrameTooLarge { limit: usize },
+
+    #[error("Authentication failed: {0}")]
+    Auth(String),
+
     #[error("Custom error: {0}")]
     Message(String),
 }

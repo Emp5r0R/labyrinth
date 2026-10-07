@@ -7,6 +7,8 @@ pub mod agent;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod framing;
+pub mod portal;
 pub mod protocol;
 pub mod security;
 pub mod server;

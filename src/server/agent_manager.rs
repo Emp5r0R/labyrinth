@@ -1,14 +1,16 @@
 use crate::error::{LabyrinthError, Result};
+use crate::framing::{FrameCodec, HANDSHAKE_TIMEOUT};
 use crate::protocol::{AgentInfo, AgentKind, Message};
+use crate::security::keys_match;
 use crate::server::agent_connection::{handle_reader, handle_writer};
 use crate::server::core::{ConnectedAgent, LabyrinthServer};
 use crate::styling;
 use colored::Colorize;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 /// Single Responsibility: Manages the registration and lifecycle of agents.
@@ -40,7 +42,7 @@ impl AgentManager {
 
     async fn register_agent_stream<S>(
         server: Arc<LabyrinthServer>,
-        mut stream: S,
+        stream: S,
         client_addr: SocketAddr,
         transport_label: &str,
         quic_connection: Option<quinn::Connection>,
@@ -50,12 +52,12 @@ impl AgentManager {
     {
         info!("New agent connection from {}", client_addr);
 
-        // Read the initial registration message from the agent.
-        let mut buf = Vec::new();
-        let mut reader = tokio::io::BufReader::new(&mut stream);
-        tokio::io::AsyncBufReadExt::read_until(&mut reader, b'\n', &mut buf).await?;
-
-        let message: Message = serde_json::from_slice(&buf[..buf.len() - 1])?;
+        // Unauthenticated peer: small frame limit and a deadline. The reader is
+        // kept (not unwrapped) so bytes sent after registration are not lost.
+        let mut stream = tokio::io::BufReader::new(stream);
+        let message: Message = FrameCodec::HANDSHAKE
+            .read_required(&mut stream, HANDSHAKE_TIMEOUT)
+            .await?;
 
         if let Message::AgentRegister(agent_info) = message {
             // Authenticate the agent if required.
@@ -82,20 +84,12 @@ impl AgentManager {
         agent_info: &AgentInfo,
         client_addr: SocketAddr,
     ) -> Result<()> {
-        if server.auth_required() {
-            if let Some(ref expected_key) = server.auth_key() {
-                if let Some(ref provided_key) = agent_info.auth_key {
-                    if expected_key != provided_key {
-                        error!("Authentication failed for agent from {}", client_addr);
-                        return Err(LabyrinthError::Message("Authentication failed".to_string()));
-                    }
-                } else {
-                    error!("No auth key provided by agent from {}", client_addr);
-                    return Err(LabyrinthError::Message("No auth key provided".to_string()));
-                }
-            }
-        }
-        Ok(())
+        verify_agent_key(
+            server.auth_required(),
+            server.auth_key().as_deref(),
+            agent_info.auth_key.as_deref(),
+        )
+        .inspect_err(|e| error!("Rejected agent from {}: {}", client_addr, e))
     }
 
     pub async fn register_live_agent<S>(
@@ -109,9 +103,9 @@ impl AgentManager {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let ack_msg = serde_json::to_string(&Message::AgentAck)?;
-        stream.write_all(ack_msg.as_bytes()).await?;
-        stream.write_all(b"\n").await?;
+        FrameCodec::HANDSHAKE
+            .write(&mut stream, &Message::AgentAck)
+            .await?;
 
         let (reader, writer) = tokio::io::split(stream);
         let (tx, rx) = mpsc::channel(100);
@@ -138,17 +132,27 @@ impl AgentManager {
             shell_events: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
-        server
+        let session = agent.sender.clone();
+        if let Some(previous) = server
             .agents()
             .write()
             .await
-            .insert(agent_id.clone(), agent);
+            .insert(agent_id.clone(), agent)
+        {
+            // Same stable ID reconnected (e.g. a dweller callback). The old
+            // session's reader will see it no longer owns the entry.
+            warn!(
+                "Agent {} reconnected; replacing session from {}",
+                agent_id, previous.transport_label
+            );
+        }
 
         tokio::spawn(handle_writer(writer, rx));
         tokio::spawn(handle_reader(
             tokio::io::BufReader::new(reader),
             server.clone(),
             agent_id.clone(),
+            session,
         ));
 
         if matches!(agent_info.kind, AgentKind::Dweller) {
@@ -185,6 +189,28 @@ impl AgentManager {
         );
 
         Ok(())
+    }
+}
+
+/// Fail-closed shared-key check. Auth required without a configured key
+/// rejects everyone rather than silently admitting every agent.
+pub fn verify_agent_key(
+    required: bool,
+    expected: Option<&str>,
+    provided: Option<&str>,
+) -> Result<()> {
+    if !required {
+        return Ok(());
+    }
+    let expected = expected.ok_or_else(|| {
+        LabyrinthError::Auth("server requires authentication but has no key".to_string())
+    })?;
+    let provided =
+        provided.ok_or_else(|| LabyrinthError::Auth("No auth key provided".to_string()))?;
+    if keys_match(provided, expected) {
+        Ok(())
+    } else {
+        Err(LabyrinthError::Auth("Authentication failed".to_string()))
     }
 }
 
@@ -237,7 +263,7 @@ mod tests {
 
         let result =
             AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap());
-        assert!(matches!(result, Err(LabyrinthError::Message(_))));
+        assert!(matches!(result, Err(LabyrinthError::Auth(_))));
     }
 
     #[test]
@@ -247,7 +273,7 @@ mod tests {
 
         let result =
             AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap());
-        assert!(matches!(result, Err(LabyrinthError::Message(_))));
+        assert!(matches!(result, Err(LabyrinthError::Auth(_))));
     }
 
     #[test]
@@ -258,5 +284,39 @@ mod tests {
         let result =
             AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap());
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn verify_agent_key_policy_matrix() {
+        assert!(verify_agent_key(false, None, None).is_ok());
+        assert!(verify_agent_key(false, Some("k"), Some("wrong")).is_ok());
+        assert!(verify_agent_key(true, Some("k"), Some("k")).is_ok());
+        assert!(matches!(
+            verify_agent_key(true, Some("k"), Some("K")),
+            Err(LabyrinthError::Auth(_))
+        ));
+        assert!(matches!(
+            verify_agent_key(true, Some("k"), None),
+            Err(LabyrinthError::Auth(_))
+        ));
+        assert!(matches!(
+            verify_agent_key(true, Some("k"), Some("")),
+            Err(LabyrinthError::Auth(_))
+        ));
+    }
+
+    #[test]
+    fn auth_required_without_configured_key_fails_closed() {
+        // Regression: this combination used to admit every agent.
+        assert!(matches!(
+            verify_agent_key(true, None, Some("anything")),
+            Err(LabyrinthError::Auth(_))
+        ));
+        let server = LabyrinthServer::new(true, None);
+        let agent = make_agent(Some("anything"));
+        assert!(
+            AgentManager::authenticate_agent(&server, &agent, "0.0.0.0:0".parse().unwrap())
+                .is_err()
+        );
     }
 }
