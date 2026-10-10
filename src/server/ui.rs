@@ -1,12 +1,12 @@
-use crate::error::{LabyrinthError, Result};
+use crate::error::Result;
 use crate::protocol::{AgentKind, InternetAccess};
 use crate::server::core::LabyrinthServer;
+use crate::server::menu;
 use crate::server::network_map::NetworkMapRenderer;
 use crate::server::topology::TopologyManager;
 
 use crate::styling;
 use colored::Colorize;
-use dialoguer::Select;
 
 /// Single Responsibility: User interface operations
 pub struct ServerUI;
@@ -111,9 +111,30 @@ impl ServerUI {
     }
 
     pub async fn select_agent(server: &LabyrinthServer) -> Result<()> {
-        // Don't run cleanup during select - let the periodic health check handle it
-        let agents = server.agents().read().await;
-        if agents.is_empty() {
+        // Don't run cleanup during select - let the periodic health check handle it.
+        // Snapshot the agents so the lock is not held while the prompt blocks.
+        let candidates: Vec<(String, String, String)> = {
+            let agents = server.agents().read().await;
+            agents
+                .values()
+                .map(|a| {
+                    let label = format!(
+                        "{}  {}@{}  {}  [{}]",
+                        a.info.name,
+                        a.info.os,
+                        a.info.hostname,
+                        a.id,
+                        match a.info.kind {
+                            AgentKind::Dweller => "dweller",
+                            AgentKind::Generic => "agent",
+                        }
+                    );
+                    (a.id.clone(), a.info.name.clone(), label)
+                })
+                .collect()
+        };
+
+        if candidates.is_empty() {
             println!(
                 "{}",
                 styling::format_error_msg(styling::ERROR_INDICATOR, "No agents available")
@@ -121,54 +142,26 @@ impl ServerUI {
             return Ok(());
         }
 
-        let agent_list: Vec<_> = agents.values().collect();
-        let selections: Vec<String> = agent_list
+        let labels: Vec<String> = candidates
             .iter()
-            .map(|a| {
-                format!(
-                    "{} - {} ({}) [{}]",
-                    a.id,
-                    a.info.name,
-                    a.info.hostname,
-                    match a.info.kind {
-                        AgentKind::Dweller => "dweller",
-                        AgentKind::Generic => "agent",
-                    }
-                )
-            })
+            .map(|(_, _, label)| label.clone())
             .collect();
+        let Some(selection) = menu::select_index("Select an agent", &labels)? else {
+            return Ok(());
+        };
+
+        let (id, name, _) = &candidates[selection];
+        *server.current_agent().write().await = Some(id.clone());
 
         println!(
-            "\n{}",
-            styling::format_section_title("Available Agents", "choose an active session")
-        );
-        println!("{}", styling::format_separator(styling::SECTION_SEPARATOR));
-
-        for (i, selection) in selections.iter().enumerate() {
-            println!("  {}. {}", i + 1, selection.cyan());
-        }
-        println!(
-            "\n{}",
-            styling::format_hint(
-                "Tip: use 'info' after selecting to inspect interfaces and routing context."
-            )
-        );
-        println!();
-
-        let selection = Select::new()
-            .with_prompt("Select an agent")
-            .items(&selections)
-            .interact()
-            .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
-
-        let selected_agent = &agent_list[selection];
-        *server.current_agent().write().await = Some(selected_agent.id.clone());
-
-        println!(
-            "\n{} Selected agent: {} ({})",
+            "{} Selected agent: {} ({})",
             styling::format_success_msg(styling::SUCCESS_INDICATOR, "").trim_start(),
-            styling::format_agent_name(&selected_agent.info.name),
-            styling::format_agent_id(&selected_agent.id)
+            styling::format_agent_name(name),
+            styling::format_agent_id(id)
+        );
+        println!(
+            "{}",
+            styling::format_hint("Next: 'commands' for the operator menu, 'info' for details.")
         );
 
         Ok(())

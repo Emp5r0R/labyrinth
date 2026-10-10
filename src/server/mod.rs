@@ -2,11 +2,13 @@ pub mod agent_connection;
 pub mod agent_manager;
 pub mod certificate;
 pub mod chain_manager;
+pub mod command_catalog;
 pub mod core;
 pub mod dashboard;
 pub mod dweller_manager;
 pub mod dweller_registry;
 pub mod listener;
+pub mod menu;
 #[cfg(target_os = "windows")]
 pub mod netstack_bridge_windows;
 pub mod network_map;
@@ -49,7 +51,7 @@ use rustyline::Editor;
 use rustyline::{Context as RustyContext, Helper};
 use std::borrow::Cow;
 use std::fs;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -100,49 +102,16 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
         Editor::<CommandHelper, rustyline::history::DefaultHistory>::new().map_err(|e| {
             crate::error::LabyrinthError::Message(format!("Failed to create readline: {}", e))
         })?;
-    rl.set_helper(Some(CommandHelper::new(vec![
-        "help",
-        "agents",
-        "dwellers",
-        "list",
-        "ls",
-        "select",
-        "connect-dweller",
-        "drop-dweller",
-        "configure-dweller",
-        "task-dweller",
-        "dweller-tasks",
-        "forget-dweller",
-        "info",
-        "show",
-        "topology",
-        "routes",
-        "plan",
-        "access",
-        "chain",
-        "map",
-        "network-map",
-        "tunnel",
-        "ariadne",
-        "stop",
-        "forward",
-        "portal",
-        "commands",
-        "cmd",
-        "bloodhound",
-        "upload",
-        "download",
-        "status",
-        "cert",
-        "certificate",
-        "done",
-        "exit",
-        "quit",
-        "q",
-    ])));
+    rl.set_helper(Some(
+        CommandHelper::new(command_catalog::completion_words()),
+    ));
 
     println!("\n{}", styling::format_welcome_header());
     println!("{}", styling::format_welcome_subtitle());
+    println!(
+        "{}",
+        styling::format_hint("Type 'help' for commands. Use 'exit' to quit Labyrinth.")
+    );
     println!();
 
     loop {
@@ -169,65 +138,7 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
 
                 match line {
                     "help" | "h" => {
-                        println!("\n{}", styling::format_header("Available Commands"));
-                        println!("{}", styling::format_separator(styling::SECTION_SEPARATOR));
-                        println!("  {}  List connected agents", "agents".cyan());
-                        println!("  {}  List remembered dwellers", "dwellers".cyan());
-                        println!("  {}  Select an agent for operations", "select".cyan());
-                        println!(
-                            "  {}  Connect to a remembered dweller",
-                            "connect-dweller".cyan()
-                        );
-                        println!(
-                            "  {}  Drop and persist a dweller via the selected agent",
-                            "drop-dweller".cyan()
-                        );
-                        println!(
-                            "  {}  Configure a remembered dweller callback server",
-                            "configure-dweller".cyan()
-                        );
-                        println!(
-                            "  {}  Queue a task for a hibernating dweller",
-                            "task-dweller".cyan()
-                        );
-                        println!(
-                            "  {}  Show queued dweller tasks and results",
-                            "dweller-tasks".cyan()
-                        );
-                        println!("  {}  Forget a remembered dweller", "forget-dweller".cyan());
-                        println!("  {}  Show detailed agent information", "info".cyan());
-                        println!(
-                            "  {}  Show route topology and shared networks",
-                            "topology".cyan()
-                        );
-                        println!(
-                            "  {}  Preview smart route plan for a target",
-                            "plan <ip|cidr>".cyan()
-                        );
-                        println!(
-                            "  {}  Plan and apply smart access to a target",
-                            "access <ip|cidr>".cyan()
-                        );
-                        println!(
-                            "  {}  Show smart chain state or diagnose reachability",
-                            "chain status|doctor [target]".cyan()
-                        );
-                        println!("  {}  Show visual network map", "map".cyan());
-                        println!("  {}  Start Tunnel", "Ariadne".cyan());
-                        println!("  {}  Port Forwarding", "Portal".cyan());
-                        println!("  {}  Stop active tunnel/forwarding", "stop".cyan());
-                        println!("  {}  Execute system commands on agent", "commands".cyan());
-                        println!(
-                            "  {}  Run BloodHound collection on selected Windows agent",
-                            "bloodhound".cyan()
-                        );
-                        println!("  {}  Upload file to selected agent", "upload".cyan());
-                        println!("  {}  Download file from selected agent", "download".cyan());
-                        println!("  {}  Show server status", "status".cyan());
-                        println!("  {}  Show certificate information", "cert".cyan());
-                        println!("  {}  Show this help message", "help".cyan());
-                        println!("  {}  Exit the server", "exit".cyan());
-                        println!();
+                        println!("{}", command_catalog::render_help());
                     }
                     "agents" | "list" | "ls" => {
                         ServerUI::list_agents(&server).await;
@@ -470,6 +381,9 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                         );
                     }
                     "exit" | "quit" | "q" => {
+                        if !confirm_server_exit(&server).await? {
+                            continue;
+                        }
                         println!(
                             "{}",
                             styling::format_success_msg(styling::SUCCESS_INDICATOR, "Goodbye!")
@@ -495,8 +409,17 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
                 continue;
             }
             Err(rustyline::error::ReadlineError::Eof) => {
-                println!("^D");
-                break;
+                // A closed non-interactive stdin would otherwise spin forever.
+                if !std::io::stdin().is_terminal() {
+                    break;
+                }
+                // Ctrl-D is how operators leave a shell; a stray extra press
+                // must not tear down every agent session.
+                println!(
+                    "{}",
+                    styling::format_hint("Ctrl-D ignored here. Type 'exit' to quit Labyrinth.")
+                );
+                continue;
             }
             Err(err) => {
                 println!("Error: {:?}", err);
@@ -506,6 +429,20 @@ async fn run_cli(server: Arc<LabyrinthServer>) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn confirm_server_exit(server: &LabyrinthServer) -> Result<bool> {
+    let connected = server.agents().read().await.len();
+    if connected == 0 {
+        return Ok(true);
+    }
+    menu::confirm(
+        &format!(
+            "{} agent(s) connected. Quit Labyrinth and drop them?",
+            connected
+        ),
+        false,
+    )
 }
 
 async fn start_port_forwarding(server: Arc<LabyrinthServer>) -> Result<()> {
@@ -929,6 +866,92 @@ mod tests {
     }
 
     #[test]
+    fn command_categories_lead_with_shell_and_end_with_navigation() {
+        for os in [CommandsOs::Linux, CommandsOs::Windows] {
+            let categories = command_categories_for(os);
+            assert_eq!(
+                &categories[..2],
+                &[CommandCategory::Shell, CommandCategory::RawShell]
+            );
+            assert_eq!(
+                &categories[categories.len() - 2..],
+                &[CommandCategory::SwitchOs, CommandCategory::Back]
+            );
+        }
+    }
+
+    #[test]
+    fn switch_profile_toggles_between_os_profiles() {
+        assert_eq!(CommandsOs::Linux.other(), CommandsOs::Windows);
+        assert_eq!(CommandsOs::Windows.other(), CommandsOs::Linux);
+        assert!(CommandCategory::SwitchOs
+            .detail(CommandsOs::Linux)
+            .contains("Windows"));
+    }
+
+    #[tokio::test]
+    async fn shell_output_reports_remote_exit() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(Message::ShellSessionOutput {
+            session_id: "s1".to_string(),
+            data_b64: general_purpose::STANDARD.encode("logout\n"),
+        })
+        .unwrap();
+        tx.send(Message::ShellSessionClose {
+            session_id: "s1".to_string(),
+        })
+        .unwrap();
+
+        let output = tokio::time::timeout(
+            Duration::from_secs(2),
+            collect_shell_output(
+                "s1",
+                &mut rx,
+                Duration::from_millis(200),
+                Duration::from_millis(50),
+            ),
+        )
+        .await
+        .expect("collect_shell_output timed out")
+        .unwrap();
+        assert_eq!(output.text, "logout\n");
+        assert!(output.closed);
+    }
+
+    #[tokio::test]
+    async fn shell_output_stays_open_when_idle() {
+        let (_tx, mut rx) = mpsc::unbounded_channel::<Message>();
+        let output = collect_shell_output(
+            "s1",
+            &mut rx,
+            Duration::from_millis(50),
+            Duration::from_millis(20),
+        )
+        .await
+        .unwrap();
+        assert!(output.text.is_empty());
+        assert!(!output.closed);
+    }
+
+    #[tokio::test]
+    async fn shell_output_ignores_close_for_other_sessions() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(Message::ShellSessionClose {
+            session_id: "other".to_string(),
+        })
+        .unwrap();
+        let output = collect_shell_output(
+            "s1",
+            &mut rx,
+            Duration::from_millis(50),
+            Duration::from_millis(20),
+        )
+        .await
+        .unwrap();
+        assert!(!output.closed);
+    }
+
+    #[test]
     fn shell_local_commands_use_prefixed_tokens() {
         assert_eq!(
             shell_local_command_token(CommandsOs::Linux, "!sysenum"),
@@ -1041,39 +1064,82 @@ mod tests {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CommandsOs {
     Linux,
     Windows,
 }
 
+impl CommandsOs {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Linux => "Linux",
+            Self::Windows => "Windows",
+        }
+    }
+
+    fn other(self) -> Self {
+        match self {
+            Self::Linux => Self::Windows,
+            Self::Windows => Self::Linux,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CommandCategory {
+    Shell,
+    RawShell,
     General,
     Network,
     AutoEnum,
     PrivEsc,
     BloodHound,
-    Shell,
     Upload,
     Download,
     InMemory,
+    SwitchOs,
     Back,
 }
 
 impl CommandCategory {
     fn label(self) -> &'static str {
         match self {
-            Self::General => "General checks",
+            Self::Shell => "Shell",
+            Self::RawShell => "Raw terminal",
+            Self::General => "System checks",
             Self::Network => "Network checks",
             Self::AutoEnum => "AutoEnum",
-            Self::PrivEsc => "Privilege escalation checks",
-            Self::BloodHound => "BloodHound collection",
-            Self::Shell => "Shell",
+            Self::PrivEsc => "Privilege checks",
+            Self::BloodHound => "BloodHound",
             Self::Upload => "Upload file",
             Self::Download => "Download file",
-            Self::InMemory => "In-Memory Execution (BOF/Reflective)",
+            Self::InMemory => "In-memory execution",
+            Self::SwitchOs => "Switch profile",
             Self::Back => "Back",
+        }
+    }
+
+    fn detail(self, os: CommandsOs) -> String {
+        match self {
+            Self::Shell => "line-based shell; 'exit' or Ctrl-D returns here".to_string(),
+            Self::RawShell => "full PTY passthrough; Ctrl-] returns here".to_string(),
+            Self::General => "whoami, sysenum".to_string(),
+            Self::Network => "interfaces, routes, sockets".to_string(),
+            Self::AutoEnum => match os {
+                CommandsOs::Linux => "linpeas".to_string(),
+                CommandsOs::Windows => "winpeas".to_string(),
+            },
+            Self::PrivEsc => "placeholder".to_string(),
+            Self::BloodHound => "SharpHound collection".to_string(),
+            Self::Upload => "local -> agent".to_string(),
+            Self::Download => "agent -> local".to_string(),
+            Self::InMemory => match os {
+                CommandsOs::Linux => "ELF".to_string(),
+                CommandsOs::Windows => "BOF / PE".to_string(),
+            },
+            Self::SwitchOs => format!("use {} commands instead", os.other().label()),
+            Self::Back => "return to the labyrinth prompt".to_string(),
         }
     }
 }
@@ -1517,120 +1583,59 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
         )
     };
 
-    println!("\n{}", "Commands Mode".cyan().bold());
-    println!("{}", "─────────────".bright_black());
-    println!(
-        "Selected agent: {} ({})",
-        agent_name.cyan(),
-        agent_os.bright_black()
-    );
+    let Some(mut selected_os) = resolve_commands_os(&agent_os)? else {
+        return Ok(());
+    };
 
     loop {
-        let auto_detected = detect_os_profile(&agent_os);
-        let auto_label = match auto_detected {
-            Some(CommandsOs::Linux) => "Automatic (detected: Linux)",
-            Some(CommandsOs::Windows) => "Automatic (detected: Windows)",
-            None => "Automatic (detected: Unknown)",
+        println!(
+            "\n{}",
+            styling::format_section_title(
+                "Operator menu",
+                &format!("{} · {} profile", agent_name, selected_os.label())
+            )
+        );
+
+        let items: Vec<menu::MenuItem<CommandCategory>> = command_categories_for(selected_os)
+            .into_iter()
+            .map(|category| {
+                menu::MenuItem::new(category.label(), category.detail(selected_os), category)
+            })
+            .collect();
+        let Some(selected_category) = menu::select("Choose an action", &items)? else {
+            break;
         };
 
-        let os_choices = vec![auto_label, "Custom", "Back"];
-        let os_selection = Select::new()
-            .with_prompt("Select command profile")
-            .items(&os_choices)
-            .interact()
-            .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
-
-        let selected_os = match os_selection {
-            0 => {
-                if let Some(os) = auto_detected {
-                    os
-                } else {
-                    println!(
-                        "{}",
-                        styling::format_warning_msg(
-                            styling::WARNING_INDICATOR,
-                            "Automatic detection failed. Use Custom and choose Linux or Windows."
-                        )
-                    );
-                    continue;
-                }
+        match selected_category {
+            CommandCategory::General => {
+                let commands = general_commands_for(selected_os);
+                run_command_menu(&agent_name, &agent_sender, &command_response, &commands).await?;
             }
-            1 => {
-                let custom_choices = vec!["Linux", "Windows", "Back"];
-                let custom_selection = Select::new()
-                    .with_prompt("Select OS profile")
-                    .items(&custom_choices)
-                    .interact()
-                    .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
-
-                match custom_selection {
-                    0 => CommandsOs::Linux,
-                    1 => CommandsOs::Windows,
-                    _ => continue,
-                }
+            CommandCategory::Network => {
+                let commands = network_commands_for(selected_os);
+                run_command_menu(&agent_name, &agent_sender, &command_response, &commands).await?;
             }
-            _ => break,
-        };
-
-        loop {
-            let category_choices = command_categories_for(selected_os);
-            let category_labels: Vec<&str> = category_choices
-                .iter()
-                .map(|category| category.label())
-                .collect();
-            let category_selection = Select::new()
-                .with_prompt("Select category")
-                .items(&category_labels)
-                .interact()
-                .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
-
-            let selected_category = category_choices[category_selection];
-            match selected_category {
-                CommandCategory::General => {
-                    let commands = general_commands_for(selected_os);
-                    if !run_command_menu(&agent_name, &agent_sender, &command_response, &commands)
-                        .await?
-                    {
-                        break;
-                    }
-                }
-                CommandCategory::Network => {
-                    let commands = network_commands_for(selected_os);
-                    if !run_command_menu(&agent_name, &agent_sender, &command_response, &commands)
-                        .await?
-                    {
-                        break;
-                    }
-                }
-                CommandCategory::AutoEnum => {
-                    let commands = autoenum_commands_for(selected_os);
-                    if !run_command_menu(&agent_name, &agent_sender, &command_response, &commands)
-                        .await?
-                    {
-                        break;
-                    }
-                }
-                CommandCategory::PrivEsc => {
-                    let commands = priv_esc_commands_for(selected_os);
-                    if !run_command_menu(&agent_name, &agent_sender, &command_response, &commands)
-                        .await?
-                    {
-                        break;
-                    }
-                }
-                CommandCategory::BloodHound => {
-                    if let Err(e) = start_bloodhound_collection(server).await {
-                        println!(
-                            "{}",
-                            styling::format_error_msg(
-                                styling::ERROR_INDICATOR,
-                                &format!("BloodHound collection failed: {}", e)
-                            )
-                        );
-                    }
-                }
-                CommandCategory::Shell => {
-                    if let Err(e) = start_shell_mode(
+            CommandCategory::AutoEnum => {
+                let commands = autoenum_commands_for(selected_os);
+                run_command_menu(&agent_name, &agent_sender, &command_response, &commands).await?;
+            }
+            CommandCategory::PrivEsc => {
+                let commands = priv_esc_commands_for(selected_os);
+                run_command_menu(&agent_name, &agent_sender, &command_response, &commands).await?;
+            }
+            CommandCategory::SwitchOs => {
+                selected_os = selected_os.other();
+            }
+            CommandCategory::BloodHound => {
+                report_failure(
+                    "BloodHound collection failed",
+                    start_bloodhound_collection(server).await,
+                );
+            }
+            CommandCategory::Shell => {
+                report_failure(
+                    "Shell session error",
+                    start_control_shell_mode(
                         server,
                         &agent_name,
                         selected_os,
@@ -1638,75 +1643,75 @@ async fn start_commands_mode(server: &LabyrinthServer) -> Result<()> {
                         &command_response,
                         &shell_events,
                     )
-                    .await
-                    {
-                        println!(
-                            "{}",
-                            styling::format_error_msg(
-                                styling::ERROR_INDICATOR,
-                                &format!("Shell session error: {}", e)
-                            )
-                        );
-                    }
-                }
-                CommandCategory::Upload => {
-                    if let Err(e) = start_upload_mode_with_handles(
-                        &agent_name,
-                        &agent_sender,
-                        &command_response,
-                    )
-                    .await
-                    {
-                        println!(
-                            "{}",
-                            styling::format_error_msg(
-                                styling::ERROR_INDICATOR,
-                                &format!("Upload failed: {}", e)
-                            )
-                        );
-                    }
-                }
-                CommandCategory::Download => {
-                    if let Err(e) = start_download_mode_with_handles(
-                        &agent_name,
-                        &agent_sender,
-                        &command_response,
-                    )
-                    .await
-                    {
-                        println!(
-                            "{}",
-                            styling::format_error_msg(
-                                styling::ERROR_INDICATOR,
-                                &format!("Download failed: {}", e)
-                            )
-                        );
-                    }
-                }
-                CommandCategory::InMemory => {
-                    if let Err(e) = start_in_memory_mode(
+                    .await,
+                );
+            }
+            CommandCategory::RawShell => {
+                report_failure(
+                    "Shell session error",
+                    start_raw_shell_mode(&agent_name, &agent_sender, &shell_events).await,
+                );
+            }
+            CommandCategory::Upload => {
+                report_failure(
+                    "Upload failed",
+                    start_upload_mode_with_handles(&agent_name, &agent_sender, &command_response)
+                        .await,
+                );
+            }
+            CommandCategory::Download => {
+                report_failure(
+                    "Download failed",
+                    start_download_mode_with_handles(&agent_name, &agent_sender, &command_response)
+                        .await,
+                );
+            }
+            CommandCategory::InMemory => {
+                report_failure(
+                    "In-memory execution error",
+                    start_in_memory_mode(
                         selected_os,
                         &agent_name,
                         &agent_sender,
                         &command_response,
                     )
-                    .await
-                    {
-                        println!(
-                            "{}",
-                            styling::format_error_msg(
-                                styling::ERROR_INDICATOR,
-                                &format!("In-Memory execution error: {}", e)
-                            )
-                        );
-                    }
-                }
-                CommandCategory::Back => break,
+                    .await,
+                );
             }
+            CommandCategory::Back => break,
         }
     }
 
     Ok(())
+}
+
+/// Uses the detected OS profile, asking only when detection fails.
+fn resolve_commands_os(agent_os: &str) -> Result<Option<CommandsOs>> {
+    if let Some(os) = detect_os_profile(agent_os) {
+        return Ok(Some(os));
+    }
+
+    println!(
+        "{}",
+        styling::format_warning_msg(
+            styling::WARNING_INDICATOR,
+            &format!("Could not detect a command profile from OS '{}'.", agent_os)
+        )
+    );
+    let items = [
+        menu::MenuItem::new("Linux", "", CommandsOs::Linux),
+        menu::MenuItem::new("Windows", "", CommandsOs::Windows),
+    ];
+    menu::select("Choose a command profile", &items)
+}
+
+fn report_failure(context: &str, result: Result<()>) {
+    if let Err(e) = result {
+        println!(
+            "{}",
+            styling::format_error_msg(styling::ERROR_INDICATOR, &format!("{}: {}", context, e))
+        );
+    }
 }
 
 async fn start_in_memory_mode(
@@ -1821,31 +1826,25 @@ async fn start_in_memory_mode(
 }
 
 fn command_categories_for(os: CommandsOs) -> Vec<CommandCategory> {
-    match os {
-        CommandsOs::Linux => vec![
-            CommandCategory::General,
-            CommandCategory::Network,
-            CommandCategory::AutoEnum,
-            CommandCategory::PrivEsc,
-            CommandCategory::Shell,
-            CommandCategory::Upload,
-            CommandCategory::Download,
-            CommandCategory::InMemory,
-            CommandCategory::Back,
-        ],
-        CommandsOs::Windows => vec![
-            CommandCategory::General,
-            CommandCategory::Network,
-            CommandCategory::AutoEnum,
-            CommandCategory::PrivEsc,
-            CommandCategory::BloodHound,
-            CommandCategory::Shell,
-            CommandCategory::Upload,
-            CommandCategory::Download,
-            CommandCategory::InMemory,
-            CommandCategory::Back,
-        ],
+    let mut categories = vec![
+        CommandCategory::Shell,
+        CommandCategory::RawShell,
+        CommandCategory::General,
+        CommandCategory::Network,
+        CommandCategory::AutoEnum,
+        CommandCategory::PrivEsc,
+    ];
+    if os == CommandsOs::Windows {
+        categories.push(CommandCategory::BloodHound);
     }
+    categories.extend([
+        CommandCategory::Upload,
+        CommandCategory::Download,
+        CommandCategory::InMemory,
+        CommandCategory::SwitchOs,
+        CommandCategory::Back,
+    ]);
+    categories
 }
 
 fn autoenum_commands_for(os: CommandsOs) -> Vec<(&'static str, &'static str)> {
@@ -1905,25 +1904,35 @@ async fn run_command_menu(
     agent_name: &str,
     agent_sender: &mpsc::Sender<Message>,
     command_response: &Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Message>>>>,
-    commands: &[(&str, &str)],
-) -> Result<bool> {
-    let mut items: Vec<String> = commands
-        .iter()
-        .map(|(label, _)| (*label).to_string())
-        .collect();
-    items.push("Back".to_string());
-
-    let selection = Select::new()
-        .with_prompt("Select command")
-        .items(&items)
-        .interact()
-        .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
-
-    if selection >= commands.len() {
-        return Ok(false);
+    commands: &[(&'static str, &'static str)],
+) -> Result<()> {
+    if let [(display, token)] = commands {
+        run_preset_command(agent_name, agent_sender, command_response, display, token).await;
+        return Ok(());
     }
 
-    let (display, token) = commands[selection];
+    let mut items: Vec<menu::MenuItem<Option<usize>>> = commands
+        .iter()
+        .enumerate()
+        .map(|(idx, (label, _))| menu::MenuItem::new(label, "", Some(idx)))
+        .collect();
+    items.push(menu::MenuItem::new("Back", "", None));
+
+    // Stay in the submenu after each run so related checks can be chained.
+    while let Some(Some(idx)) = menu::select("Run a command", &items)? {
+        let (display, token) = commands[idx];
+        run_preset_command(agent_name, agent_sender, command_response, display, token).await;
+    }
+    Ok(())
+}
+
+async fn run_preset_command(
+    agent_name: &str,
+    agent_sender: &mpsc::Sender<Message>,
+    command_response: &Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Message>>>>,
+    display: &str,
+    token: &str,
+) {
     println!(
         "\n{} Executing: {}",
         styling::format_success_msg(styling::SUCCESS_INDICATOR, "").trim_start(),
@@ -1947,8 +1956,6 @@ async fn run_command_menu(
         command_timeout_for_token(token),
     )
     .await;
-
-    Ok(true)
 }
 
 async fn start_upload_mode(server: &LabyrinthServer) -> Result<()> {
@@ -1986,14 +1993,11 @@ async fn start_upload_mode_with_handles(
     agent_sender: &mpsc::Sender<Message>,
     command_response: &Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Message>>>>,
 ) -> Result<()> {
-    let local_path: String = Input::new()
-        .with_prompt("Local file path")
-        .interact_text()
-        .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
-    let remote_path: String = Input::new()
-        .with_prompt("Remote destination path")
-        .interact_text()
-        .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+    let Some((local_path, remote_path)) =
+        prompt_transfer_paths("Local file path", "Remote destination path")?
+    else {
+        return Ok(());
+    };
 
     perform_upload(
         agent_name,
@@ -2040,14 +2044,11 @@ async fn start_download_mode_with_handles(
     agent_sender: &mpsc::Sender<Message>,
     command_response: &Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Message>>>>,
 ) -> Result<()> {
-    let remote_path: String = Input::new()
-        .with_prompt("Remote file path")
-        .interact_text()
-        .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
-    let local_path: String = Input::new()
-        .with_prompt("Local destination path")
-        .interact_text()
-        .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+    let Some((remote_path, local_path)) =
+        prompt_transfer_paths("Remote file path", "Local destination path")?
+    else {
+        return Ok(());
+    };
 
     perform_download(
         agent_name,
@@ -2057,6 +2058,20 @@ async fn start_download_mode_with_handles(
         &local_path,
     )
     .await
+}
+
+/// Asks for a source and destination path. Ctrl-C or an empty answer cancels.
+fn prompt_transfer_paths(
+    source_prompt: &str,
+    destination_prompt: &str,
+) -> Result<Option<(String, String)>> {
+    let Some(source) = menu::input(source_prompt)? else {
+        return Ok(None);
+    };
+    let Some(destination) = menu::input(destination_prompt)? else {
+        return Ok(None);
+    };
+    Ok(Some((source, destination)))
 }
 
 async fn perform_upload(
@@ -2209,48 +2224,6 @@ async fn perform_download(
     Ok(())
 }
 
-async fn start_shell_mode(
-    server: &LabyrinthServer,
-    agent_name: &str,
-    selected_os: CommandsOs,
-    agent_sender: &mpsc::Sender<Message>,
-    command_response: &Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Message>>>>,
-    shell_events: &Arc<tokio::sync::Mutex<Option<mpsc::UnboundedSender<Message>>>>,
-) -> Result<()> {
-    println!(
-        "\n{}",
-        styling::format_section_title("Interactive Shell", "remote PTY session")
-    );
-    println!("{}", "────────────────".bright_black());
-
-    let choices = vec![
-        "Operator shell (recommended)",
-        "Raw terminal (advanced; Ctrl-] detaches)",
-        "Back",
-    ];
-    let selection = Select::new()
-        .with_prompt("Select shell mode")
-        .items(&choices)
-        .interact()
-        .map_err(|e| LabyrinthError::Message(format!("Selection error: {}", e)))?;
-
-    match selection {
-        0 => {
-            start_control_shell_mode(
-                server,
-                agent_name,
-                selected_os,
-                agent_sender,
-                command_response,
-                shell_events,
-            )
-            .await
-        }
-        1 => start_raw_shell_mode(agent_name, agent_sender, shell_events).await,
-        _ => Ok(()),
-    }
-}
-
 async fn start_control_shell_mode(
     server: &LabyrinthServer,
     agent_name: &str,
@@ -2261,10 +2234,17 @@ async fn start_control_shell_mode(
 ) -> Result<()> {
     println!(
         "\n{}",
-        styling::format_section_title("Control Shell", "stateful operator session")
+        styling::format_section_title(
+            "Shell",
+            &format!("{} · {}", agent_name, selected_os.label())
+        )
     );
-    println!("{}", "────────────────".bright_black());
-    println!("{}", styling::format_hint("Local commands use a '!' prefix so paths like /usr/bin/tool and nested prompts stay fully interactive."));
+    println!(
+        "{}",
+        styling::format_hint(
+            "'exit', '!exit' or Ctrl-D returns to the menu. Ctrl-C interrupts the remote program. '!help' lists local commands."
+        )
+    );
 
     let transcript = create_shell_transcript(agent_name)?;
     println!(
@@ -2321,13 +2301,36 @@ async fn start_control_shell_mode(
         Duration::from_millis(120),
     )
     .await?;
-    print_shell_output(&initial_output);
-    append_shell_transcript(&transcript, &initial_output);
+    let mut remote_closed = emit_shell_output(&initial_output, &transcript);
 
     loop {
+        if remote_closed {
+            println!(
+                "\n{}",
+                styling::format_success_msg(
+                    styling::SUCCESS_INDICATOR,
+                    "Remote shell exited. Back to the operator menu."
+                )
+            );
+            break;
+        }
+
         let line = match rl.readline(&shell_prompt(agent_name)) {
             Ok(v) => v.trim().to_string(),
-            Err(rustyline::error::ReadlineError::Interrupted) => continue,
+            Err(rustyline::error::ReadlineError::Interrupted) => {
+                // Behave like a normal terminal: interrupt the remote program
+                // rather than leaving the shell.
+                send_shell_input(&session_id, "\x03", agent_sender).await?;
+                let output = collect_shell_output(
+                    &session_id,
+                    &mut shell_rx,
+                    Duration::from_millis(500),
+                    Duration::from_millis(120),
+                )
+                .await?;
+                remote_closed = emit_shell_output(&output, &transcript);
+                continue;
+            }
             Err(rustyline::error::ReadlineError::Eof) => break,
             Err(e) => return Err(LabyrinthError::Message(format!("Shell input error: {}", e))),
         };
@@ -2341,8 +2344,7 @@ async fn start_control_shell_mode(
                 Duration::from_millis(120),
             )
             .await?;
-            print_shell_output(&output);
-            append_shell_transcript(&transcript, &output);
+            remote_closed = emit_shell_output(&output, &transcript);
             continue;
         }
         let _ = rl.add_history_entry(line.as_str());
@@ -2353,7 +2355,14 @@ async fn start_control_shell_mode(
 
         if line == "!help" {
             println!("{}", "Shell Built-ins:".yellow().bold());
-            println!("  {}  exit shell", "!exit".cyan());
+            println!(
+                "  {}  close the shell and return to the menu",
+                "exit | !exit | Ctrl-D".cyan()
+            );
+            println!(
+                "  {}  interrupt the running remote program",
+                "Ctrl-C".cyan()
+            );
             println!("  {}  clear local terminal", "!clear".cyan());
             println!("  {}  show local shell history", "!history".cyan());
             println!(
@@ -2411,7 +2420,7 @@ async fn start_control_shell_mode(
                                 e
                             ))
                         })?;
-                    refresh_remote_shell_prompt(
+                    remote_closed = refresh_remote_shell_prompt(
                         &session_id,
                         agent_sender,
                         &mut shell_rx,
@@ -2433,14 +2442,11 @@ async fn start_control_shell_mode(
         append_shell_transcript(&transcript, &format!("> {}", line));
 
         if line == "!upload" {
-            let local_path: String = Input::new()
-                .with_prompt("Local file path")
-                .interact_text()
-                .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
-            let remote_path: String = Input::new()
-                .with_prompt("Remote destination path")
-                .interact_text()
-                .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+            let Some((local_path, remote_path)) =
+                prompt_transfer_paths("Local file path", "Remote destination path")?
+            else {
+                continue;
+            };
             if let Err(e) = perform_upload(
                 agent_name,
                 agent_sender,
@@ -2460,8 +2466,9 @@ async fn start_control_shell_mode(
                     &format!("< upload completed: {} -> {}", local_path, remote_path),
                 );
             }
-            refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
-                .await?;
+            remote_closed =
+                refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
+                    .await?;
             continue;
         }
 
@@ -2487,20 +2494,18 @@ async fn start_control_shell_mode(
                     styling::format_error_msg(styling::ERROR_INDICATOR, &e.to_string())
                 );
             }
-            refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
-                .await?;
+            remote_closed =
+                refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
+                    .await?;
             continue;
         }
 
         if line == "!download" {
-            let remote_path: String = Input::new()
-                .with_prompt("Remote file path")
-                .interact_text()
-                .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
-            let local_path: String = Input::new()
-                .with_prompt("Local destination path")
-                .interact_text()
-                .map_err(|e| LabyrinthError::Message(format!("Input error: {}", e)))?;
+            let Some((remote_path, local_path)) =
+                prompt_transfer_paths("Remote file path", "Local destination path")?
+            else {
+                continue;
+            };
             if let Err(e) = perform_download(
                 agent_name,
                 agent_sender,
@@ -2521,8 +2526,9 @@ async fn start_control_shell_mode(
                     &format!("< download completed: {} -> {}", remote_path, local_path),
                 );
             }
-            refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
-                .await?;
+            remote_closed =
+                refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
+                    .await?;
             continue;
         }
 
@@ -2533,8 +2539,9 @@ async fn start_control_shell_mode(
                     styling::format_error_msg(styling::ERROR_INDICATOR, &e.to_string())
                 );
             }
-            refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
-                .await?;
+            remote_closed =
+                refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
+                    .await?;
             continue;
         }
 
@@ -2566,8 +2573,9 @@ async fn start_control_shell_mode(
                     &format!("< download completed: {} -> {}", remote, local),
                 );
             }
-            refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
-                .await?;
+            remote_closed =
+                refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
+                    .await?;
             continue;
         }
 
@@ -2586,8 +2594,9 @@ async fn start_control_shell_mode(
             {
                 append_shell_transcript(&transcript, &format!("< {}", log_line));
             }
-            refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
-                .await?;
+            remote_closed =
+                refresh_remote_shell_prompt(&session_id, agent_sender, &mut shell_rx, &transcript)
+                    .await?;
             continue;
         }
 
@@ -2599,8 +2608,7 @@ async fn start_control_shell_mode(
             Duration::from_millis(150),
         )
         .await?;
-        print_shell_output(&output);
-        append_shell_transcript(&transcript, &output);
+        remote_closed = emit_shell_output(&output, &transcript);
     }
 
     let _ = agent_sender
@@ -2632,7 +2640,9 @@ async fn start_raw_shell_mode(
     );
     println!(
         "{}",
-        styling::format_hint("Entering raw terminal mode. Press Ctrl-] to detach.")
+        styling::format_hint(
+            "Raw terminal: every key goes to the remote PTY. Ctrl-] returns to the menu."
+        )
     );
 
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -2662,17 +2672,26 @@ async fn start_raw_shell_mode(
         Duration::from_millis(120),
     )
     .await?;
-    if initial_output.is_empty() {
+    if initial_output.text.is_empty() {
         println!(
             "{}",
             styling::format_hint("Connected. If the prompt is blank, press Enter.")
         );
-    } else {
-        print_shell_output(&initial_output);
-        append_shell_transcript(&transcript, &initial_output);
+    }
+    if emit_shell_output(&initial_output, &transcript) {
+        let mut sink = shell_events.lock().await;
+        *sink = None;
+        println!(
+            "{}",
+            styling::format_warning_msg(
+                styling::WARNING_INDICATOR,
+                "Remote shell exited immediately."
+            )
+        );
+        return Ok(());
     }
 
-    let _raw_guard = TerminalRawMode::enter()?;
+    let raw_guard = TerminalRawMode::enter()?;
     let stop = Arc::new(AtomicBool::new(false));
     let mut input_task =
         spawn_raw_shell_input_task(session_id.clone(), agent_sender.clone(), Arc::clone(&stop));
@@ -2706,9 +2725,12 @@ async fn start_raw_shell_mode(
                 Err(e) if e.is_cancelled() => {}
                 Err(e) => return Err(LabyrinthError::Message(format!("Raw shell output task failed: {}", e))),
             }
-            input_task.abort();
+            // The blocking key reader cannot be aborted; wait for it to see
+            // `stop` so it does not swallow keystrokes meant for the next menu.
+            let _ = input_task.await;
         }
     }
+    drop(raw_guard);
 
     {
         let mut sink = shell_events.lock().await;
@@ -2719,7 +2741,10 @@ async fn start_raw_shell_mode(
     println!();
     println!(
         "{}",
-        styling::format_success_msg(styling::SUCCESS_INDICATOR, "Detached from shell")
+        styling::format_success_msg(
+            styling::SUCCESS_INDICATOR,
+            "Left raw terminal. Back to the operator menu."
+        )
     );
 
     Ok(())
@@ -2971,14 +2996,22 @@ async fn send_shell_input(
         .map_err(|e| LabyrinthError::Message(format!("Failed to send shell input: {}", e)))
 }
 
+/// Output gathered from a remote shell, plus whether the remote side ended the
+/// session (for example because the operator typed `exit`).
+struct ShellOutput {
+    text: String,
+    closed: bool,
+}
+
 async fn collect_shell_output(
     session_id: &str,
     shell_rx: &mut mpsc::UnboundedReceiver<Message>,
     initial_wait: Duration,
     idle_wait: Duration,
-) -> Result<String> {
-    let mut output = String::new();
+) -> Result<ShellOutput> {
+    let mut text = String::new();
     let mut seen_output = false;
+    let mut closed = false;
 
     loop {
         let wait = if seen_output { idle_wait } else { initial_wait };
@@ -2988,22 +3021,25 @@ async fn collect_shell_output(
                 data_b64,
             })) if msg_session == session_id => {
                 let bytes = general_purpose::STANDARD.decode(data_b64.as_bytes())?;
-                output.push_str(&String::from_utf8_lossy(&bytes));
+                text.push_str(&String::from_utf8_lossy(&bytes));
                 seen_output = true;
             }
             Ok(Some(Message::ShellSessionClose {
                 session_id: msg_session,
             })) if msg_session == session_id => {
-                output.push_str("\n[labyrinth] remote shell session closed\n");
+                closed = true;
                 break;
             }
             Ok(Some(_)) => continue,
-            Ok(None) => break,
+            Ok(None) => {
+                closed = true;
+                break;
+            }
             Err(_) => break,
         }
     }
 
-    Ok(output)
+    Ok(ShellOutput { text, closed })
 }
 
 fn print_shell_output(output: &str) {
@@ -3011,6 +3047,14 @@ fn print_shell_output(output: &str) {
         print!("{}", output);
         let _ = std::io::stdout().flush();
     }
+}
+
+/// Prints and records a batch of shell output. Returns `true` when the remote
+/// shell has exited and the operator should be returned to the menu.
+fn emit_shell_output(output: &ShellOutput, transcript: &PathBuf) -> bool {
+    print_shell_output(&output.text);
+    append_shell_transcript(transcript, &output.text);
+    output.closed
 }
 
 fn shell_prompt(agent_name: &str) -> String {
@@ -3059,7 +3103,7 @@ async fn refresh_remote_shell_prompt(
     agent_sender: &mpsc::Sender<Message>,
     shell_rx: &mut mpsc::UnboundedReceiver<Message>,
     transcript: &PathBuf,
-) -> Result<()> {
+) -> Result<bool> {
     send_shell_input(session_id, "\n", agent_sender).await?;
     let output = collect_shell_output(
         session_id,
@@ -3068,9 +3112,7 @@ async fn refresh_remote_shell_prompt(
         Duration::from_millis(120),
     )
     .await?;
-    print_shell_output(&output);
-    append_shell_transcript(transcript, &output);
-    Ok(())
+    Ok(emit_shell_output(&output, transcript))
 }
 
 async fn execute_remote_message(
@@ -3521,7 +3563,7 @@ pub async fn run_interactive_server(
 
     spawn_agent_listener(Arc::clone(&server), listen_addr, transport, certs, key).await?;
 
-    // Run CLI
+    menu::install_interrupt_guard();
     run_cli(server).await
 }
 

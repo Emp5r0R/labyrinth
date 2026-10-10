@@ -292,7 +292,14 @@ port forward online.
 | `cert` | Print certificate fingerprint and base64 certificate. |
 | `stop` | Stop active tunnel or port forwarding. |
 | `clear` | Clear the terminal. |
-| `exit` | Shut down the interactive server. |
+| `exit` | Shut down the interactive server. Asks for confirmation while agents are connected. |
+
+`help` groups these commands into Agents, Pivoting, Dwellers, and Server.
+
+Menu navigation is the same everywhere: arrow keys or `j`/`k` move, Enter
+picks, and `Esc`, `q`, or `Ctrl-C` go back one level. `Ctrl-C` never quits
+Labyrinth, and `Ctrl-D` at the main prompt is ignored, so leaving a shell can't
+shut down the server by accident. Use `exit` to quit.
 
 ## Smart Access and Multi-Hop
 
@@ -352,13 +359,20 @@ bidirectional stream.
 
 ## Interactive Shells
 
-The `commands` menu offers two shell styles:
+`commands` opens a single operator menu for the selected agent. The OS profile
+is detected automatically (you're only asked when detection fails), and
+`Switch profile` swaps between Linux and Windows presets. The two shell styles
+sit at the top of the menu:
 
+- Shell: line-oriented shell on the PTY with local Labyrinth commands prefixed
+  by `!`. Typing `exit` in the remote shell, `!exit`, or `Ctrl-D` returns to the
+  operator menu. `Ctrl-C` interrupts the running remote program.
 - Raw terminal: SSH or WinRM-style PTY streaming with arrows, Ctrl-C,
   PowerShell, full-screen terminal programs, and prompts. Press `Ctrl-]` to
-  detach.
-- Control shell: line-oriented shell on the same PTY model with local Labyrinth
-  commands prefixed by `!`.
+  return to the operator menu. It also returns when the remote shell exits.
+
+Leaving either shell closes only that shell session. The agent connection and
+the Labyrinth server stay up.
 
 Control shell local commands include:
 
