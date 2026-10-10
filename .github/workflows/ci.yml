@@ -31,7 +31,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy --no-self-update
 
       - name: Cache Cargo artifacts
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
@@ -59,7 +59,7 @@ jobs:
 
       - name: Install pinned Rust toolchain
         shell: pwsh
-        run: rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --no-self-update
+        run: rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --component rustfmt,clippy --no-self-update
 
       - name: Cache Cargo artifacts
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
